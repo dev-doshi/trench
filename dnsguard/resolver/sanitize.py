@@ -111,12 +111,20 @@ def sanitize(resp: Message, qname: str) -> Sanitized:
     """Strip unsolicited records from `resp` in place. Returns what was removed."""
     dropped = Sanitized()
     q = resp.question
-    if q is None:
-        return dropped
     try:
-        owner = Name.from_text(qname) if qname else q.name
+        owner = Name.from_text(qname) if qname else (q.name if q else None)
     except Exception:
-        owner = q.name
+        owner = q.name if q else None
+    if owner is None:
+        # No question and no caller-supplied name: nothing can be shown to be in
+        # bailiwick for anything, so every record here is unsolicited. Returning
+        # early instead would hand the whole authority and additional sections
+        # straight through to the cache and the client.
+        dropped.answers = len(resp.answers)
+        dropped.authority = len(resp.authority)
+        dropped.additional = len(resp.additional)
+        resp.answers, resp.authority, resp.additional = [], [], []
+        return dropped
 
     allowed = _chain(owner, resp.answers)
     kept_answers = [rr for rr in resp.answers if rr.name in allowed]

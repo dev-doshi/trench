@@ -175,13 +175,22 @@ def test_empty_response_is_untouched():
     assert m.answers == [] and m.authority == [] and m.additional == []
 
 
-def test_response_without_a_question_is_left_alone():
-    """Nothing to judge against; the caller rejects these separately."""
+def test_response_without_a_question_keeps_nothing():
+    """With no question and no caller-supplied name there is nothing to judge
+    bailiwick against, so every record is unsolicited by definition.
+
+    Returning early here instead handed the authority and additional sections
+    through untouched — the caller's own check only looked at `answers`, so a
+    question-less response was a complete bypass of this module.
+    """
     m = Message(id=1)
     m.set_flag(Flags.QR, True)
     m.answers = [rr("whatever.example.", Type.A, A("1.1.1.1"))]
-    assert not sanitize(m, "")
-    assert len(m.answers) == 1
+    m.authority = [rr("bank.example.org.", Type.NS, NS(n("ns.attacker.tld.")))]
+    m.additional = [rr("www.bank.example.org.", Type.A, A("6.6.6.6"))]
+    cut = sanitize(m, "")
+    assert (cut.answers, cut.authority, cut.additional) == (1, 1, 1)
+    assert m.answers == [] and m.authority == [] and m.additional == []
 
 
 # --- end to end through the pipeline ---

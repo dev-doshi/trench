@@ -101,6 +101,25 @@ def _covered(name: Name, nsecs: list[tuple[Name, object]]) -> bool:
     return any(nsec_covers(o, rd.next_name, name) for o, rd in nsecs)
 
 
+def _is_delegation(rd) -> bool:
+    """True for a *parent-side* delegation record: NS set, SOA clear.
+
+    Such a record describes the cut, not the child's contents, so it proves
+    nothing about types inside the child — the same asymmetry `nsec_ds_denial`
+    relies on, read from the other direction. Without this test the parent's
+    own public NSEC/NSEC3 denies any type at the child's apex.
+    """
+    return (bitmap_has(rd.type_bitmap, Type.NS)
+            and not bitmap_has(rd.type_bitmap, Type.SOA))
+
+
+def _gap_unproven(rd) -> bool:
+    """True when a covering NSEC3 fails to prove its gap is empty — either no
+    record covers the name, or the one that does has Opt-Out (RFC 5155 §6) set
+    and therefore leaves room for an unsigned delegation."""
+    return rd is None or bool(rd.flags & 0x01)
+
+
 # ---------------------------------------------------------------- NSEC
 def nsec_nodata(qname: Name, qtype: int, nsecs: list[tuple[Name, object]]) -> bool:
     """A NODATA proof: an NSEC at exactly qname whose bitmap lacks qtype.
@@ -112,6 +131,8 @@ def nsec_nodata(qname: Name, qtype: int, nsecs: list[tuple[Name, object]]) -> bo
     for owner, rd in nsecs:
         if owner != qname:
             continue
+        if _is_delegation(rd):
+            return False
         return not (bitmap_has(rd.type_bitmap, qtype)
                     or bitmap_has(rd.type_bitmap, Type.CNAME))
     return False
@@ -293,6 +314,8 @@ def _closest_encloser(qname: Name, s: Nsec3Set) -> tuple[Name, Name] | None:
 def nsec3_nodata(qname: Name, qtype: int, s: Nsec3Set) -> bool:
     rd = s.match(qname)
     if rd is not None:
+        if _is_delegation(rd):                        # RFC 5155 §8.5
+            return False
         return (not bitmap_has(rd.type_bitmap, qtype)
                 and not bitmap_has(rd.type_bitmap, Type.CNAME))
     # NODATA at a name that exists only through a wildcard (RFC 5155 §8.6)
@@ -300,25 +323,33 @@ def nsec3_nodata(qname: Name, qtype: int, s: Nsec3Set) -> bool:
     if found is None:
         return False
     ce, next_closer = found
-    if s.cover(next_closer) is None:
+    if _gap_unproven(s.cover(next_closer)):
         return False
     wrd = s.match(wildcard_of(ce))
-    return wrd is not None and not bitmap_has(wrd.type_bitmap, qtype)
+    return (wrd is not None
+            and not bitmap_has(wrd.type_bitmap, qtype)
+            and not bitmap_has(wrd.type_bitmap, Type.CNAME))
 
 
 def nsec3_nxdomain(qname: Name, s: Nsec3Set) -> bool:
     """RFC 5155 §8.4: the closest encloser matched, the next closer covered,
-    and the wildcard under the closest encloser covered."""
+    and the wildcard under the closest encloser covered.
+
+    Every covering record must have Opt-Out clear. An opt-out NSEC3 states only
+    that no *signed* name falls in its gap, so it is compatible with an unsigned
+    delegation existing there — under an opt-out TLD the zone's own genuine
+    chain would otherwise prove NXDOMAIN for domains that plainly exist.
+    """
     found = _closest_encloser(qname, s)
     if found is None:
         return False
     ce, next_closer = found
-    if s.cover(next_closer) is None:
+    if _gap_unproven(s.cover(next_closer)):
         return False
     wild = wildcard_of(ce)
     if s.match(wild) is not None:
         return False
-    return s.cover(wild) is not None
+    return not _gap_unproven(s.cover(wild))
 
 
 def nsec3_wildcard_expansion(qname: Name, expanded_from: Name, s: Nsec3Set) -> bool:
@@ -327,7 +358,7 @@ def nsec3_wildcard_expansion(qname: Name, expanded_from: Name, s: Nsec3Set) -> b
         return False
     depth = len(ce.labels)
     next_closer = Name(qname.labels[len(qname.labels) - depth - 1:])
-    return s.cover(next_closer) is not None
+    return not _gap_unproven(s.cover(next_closer))
 
 
 def nsec3_ds_denial(child: Name, s: Nsec3Set) -> str | None:

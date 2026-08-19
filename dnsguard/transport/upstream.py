@@ -312,9 +312,12 @@ def _check_response(resp: Message, sent: Message, *, check_id: bool) -> None:
         return
     if got is None:
         # A response may legitimately omit the question only when it carries no
-        # answer to attribute (e.g. FORMERR); anything else is unattributable.
-        if resp.answers:
-            raise UpstreamError("upstream response has answers but no question")
+        # records at all to attribute (e.g. FORMERR); anything else is
+        # unattributable. Checking only `answers` left the authority and
+        # additional sections free to carry whatever the sender liked — and
+        # sanitize() cannot filter them either, having no question to work from.
+        if resp.answers or resp.authority or resp.additional:
+            raise UpstreamError("upstream response has records but no question")
         return
     if got.name != want.name or got.rtype != want.rtype or got.rclass != want.rclass:
         raise UpstreamError(f"upstream answered a different question "

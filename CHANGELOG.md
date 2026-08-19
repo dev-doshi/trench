@@ -25,7 +25,12 @@ First public release.
 - **Recursive resolver.** Iterative resolution from the root with QNAME
   minimization, a delegation cache, and bailiwick enforcement.
 - **DNSSEC validation.** RSA, ECDSA P-256 and P-384, Ed25519 and Ed448, with
-  NSEC and NSEC3 denial-of-existence proofs.
+  NSEC and NSEC3 denial-of-existence proofs. A covering NSEC3 with Opt-Out set
+  is not accepted as proof a name is absent (RFC 5155 §8.4) — it asserts only
+  that no *signed* name falls in the gap, so under an opt-out parent the
+  zone's own genuine chain would otherwise deny names that plainly exist. A
+  parent-side delegation record (NS set, SOA clear) likewise proves nothing
+  about types at the child's apex (§8.5).
 - **Authoritative server.** Zones, the common RR types, BIND zonefile import,
   online signing (RRSIG, NSEC, DNSKEY, DS), AXFR/IXFR in and out, NOTIFY, and
   RFC 2136 dynamic update — all transaction types authenticated with TSIG.

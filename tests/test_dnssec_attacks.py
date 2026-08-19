@@ -581,3 +581,61 @@ async def test_nsec3_nxdomain_needs_the_full_closest_encloser_proof():
     under = Name.from_text("under.wild.example.test.")
     assert await w.validator().validate_denial(
         under, Type.A, w.denial(zone, under), Rcode.NXDOMAIN) != ValidationResult.SECURE
+
+
+# ------------------------------------------------------- denial from the wrong side
+def _nsec3_chain(zone_text: str, present: list[str], *, opt_out: bool = False,
+                 bitmap: bytes = b""):
+    """An NSEC3 chain over exactly `present`, linked in hash order.
+
+    Names absent from `present` fall in a gap and are therefore *covered*;
+    names in it are *matched*. That is what a real zone publishes, so a proof
+    built from this chain is one the zone genuinely signed.
+    """
+    from dnsguard.resolver.dnssec.nsec import Nsec3Set, nsec3_b32, nsec3_hash
+
+    zone = Name.from_text(zone_text)
+    raw = sorted(nsec3_hash(Name.from_text(n), b"", 0) for n in present)
+    items = []
+    for i, h in enumerate(raw):
+        items.append((Name.from_text(f"{nsec3_b32(h)}.{zone_text}"),
+                      R.NSEC3(hash_algorithm=1, flags=1 if opt_out else 0,
+                              iterations=0, salt=b"",
+                              next_hashed=raw[(i + 1) % len(raw)],
+                              type_bitmap=bitmap)))
+    return Nsec3Set(items, zone)
+
+
+def test_opt_out_nsec3_cannot_prove_a_name_is_absent():
+    """RFC 5155 §6. Opt-out says only that no *signed* name is in the gap, so
+    an unsigned delegation may sit there. Without this rule an opt-out TLD's
+    own genuine chain proves NXDOMAIN for domains that plainly exist."""
+    from dnsguard.resolver.dnssec.nsec import nsec3_nxdomain
+
+    victim = Name.from_text("victim.example.test.")
+    signed = _nsec3_chain("example.test.", ["example.test."], opt_out=False)
+    assert signed.usable and nsec3_nxdomain(victim, signed)
+
+    opted = _nsec3_chain("example.test.", ["example.test."], opt_out=True)
+    assert opted.usable
+    assert not nsec3_nxdomain(victim, opted)
+
+
+def test_parent_side_delegation_nsec_cannot_deny_the_childs_own_types():
+    """An NSEC owned by the child but published by the *parent* carries NS and
+    no SOA. It describes the cut, not the child's contents — and it is public,
+    so accepting it denies any type at the apex of any delegated zone."""
+    from dnsguard.auth_zone.sign.signer import encode_type_bitmap
+    from dnsguard.resolver.dnssec.nsec import nsec_nodata
+
+    child = Name.from_text("child.example.test.")
+    delegation = R.NSEC(next_name=Name.from_text("z.example.test."),
+                        type_bitmap=encode_type_bitmap(
+                            {Type.NS, Type.DS, Type.RRSIG, Type.NSEC}))
+    assert not nsec_nodata(child, Type.A, [(child, delegation)])
+
+    # The child's own apex NSEC has SOA set and does deny it.
+    apex = R.NSEC(next_name=Name.from_text("z.child.example.test."),
+                  type_bitmap=encode_type_bitmap(
+                      {Type.SOA, Type.NS, Type.RRSIG, Type.NSEC}))
+    assert nsec_nodata(child, Type.A, [(child, apex)])

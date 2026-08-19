@@ -710,6 +710,10 @@ class APIServer:
         """Multiplexed live channel: an initial snapshot, per-query events as they
         happen, and a stats/series refresh every 2s — all typed JSON frames."""
         from aiohttp import WSMsgType
+        # Gate before the upgrade: this feed carries client IPs and queried
+        # domains straight out of the in-memory ring, so it needs at least the
+        # same role as the REST routes that serve the same data.
+        self._require(request, "viewer")
         ws = web.WebSocketResponse(heartbeat=30, max_msg_size=0)
         await ws.prepare(request)
         self._ws.add(ws)

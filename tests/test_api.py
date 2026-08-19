@@ -102,14 +102,36 @@ async def test_api_lockout(tmp_path):
 async def test_api_websocket(tmp_path):
     app, port = await make_app(tmp_path)
     base = f"http://127.0.0.1:{port}"
+    jar = aiohttp.CookieJar(unsafe=True)
     try:
-        async with aiohttp.ClientSession() as s, s.ws_connect(f"{base}/api/v1/ws") as ws:
-            msg = await ws.receive(timeout=3)
-            import json
-            payload = json.loads(msg.data)
-            # first frame hydrates the client with a snapshot
-            assert payload["type"] == "hello"
-            assert "total" in payload["data"]["stats"]
+        async with aiohttp.ClientSession(cookie_jar=jar) as s:
+            async with s.post(f"{base}/api/v1/auth/login",
+                              json={"name": "admin", "password": "secret123"}) as r:
+                assert r.status == 200
+            async with s.ws_connect(f"{base}/api/v1/ws") as ws:
+                msg = await ws.receive(timeout=3)
+                import json
+                payload = json.loads(msg.data)
+                # first frame hydrates the client with a snapshot
+                assert payload["type"] == "hello"
+                assert "total" in payload["data"]["stats"]
+    finally:
+        await app.api.stop()
+        await app.db.close()
+
+
+@pytest.mark.asyncio
+async def test_api_websocket_requires_a_session(tmp_path):
+    """The live feed carries client IPs and queried domains. It was the one
+    data route with no role check, so any host on the LAN could open it and
+    receive the recent-query ring plus every subsequent lookup."""
+    app, port = await make_app(tmp_path)
+    base = f"http://127.0.0.1:{port}"
+    try:
+        async with aiohttp.ClientSession() as s:
+            with pytest.raises(aiohttp.WSServerHandshakeError) as excinfo:
+                await s.ws_connect(f"{base}/api/v1/ws")
+            assert excinfo.value.status == 401
     finally:
         await app.api.stop()
         await app.db.close()
