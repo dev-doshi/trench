@@ -1,0 +1,139 @@
+# DNSGuard — Raspberry Pi production config
+#
+# Target: Pi with ~1 GB RAM, 4 cores, serving a home LAN on :53.
+# Memory is the binding constraint here, so every sizing choice below is
+# deliberate and measured (see deploy/README-raspi.md for the numbers).
+data_dir: /data
+dev: false
+uvloop: true
+
+server:
+  do53:
+    enabled: true
+    host: 0.0.0.0 # serve the whole LAN
+    port: 53
+    udp: true
+    tcp: true
+  dot: { enabled: false }
+  doh: { enabled: false }
+  doq: { enabled: false }
+  doh3: { enabled: false }
+  edns_udp_size: 1232
+  # This used to have to be 1. Each worker held its own copy of the compiled
+  # blocklist (~317 MB resident), so `workers: 0` (auto = 4) OOM-killed the box.
+  # The blocklist now lives in a shared-memory table built once by the
+  # supervisor before it forks, so the per-worker cost is the interpreter and
+  # the caches, not the 600k domains. All four cores are affordable.
+  workers: 4
+
+upstream:
+  servers:
+    - "tls://9.9.9.9#dns.quad9.net" # Quad9 — DoT, malware-filtered, DNSSEC-validating
+    - "tls://149.112.112.112#dns.quad9.net" # Quad9 secondary
+  strategy: fastest # race the two lowest-RTT upstreams, fall back on failure
+  timeout: 4.0
+  mode: forward
+  ecs: "off" # never leak client subnet upstream
+  verify: true # verify upstream TLS certificates
+  # NOTE: DNSSEC is validated by Quad9 upstream (bogus answers arrive as
+  # SERVFAIL). Local validation only applies to `mode: recursive`, so this
+  # stays false rather than pretending to do something it does not.
+  dnssec: false
+
+cache:
+  enabled: true
+  # A cached entry holds a parsed response; 30k entries is a large working set
+  # for a home network and costs far less than the blocklist itself.
+  max_entries: 30000
+  min_ttl: 0
+  max_ttl: 86400
+  negative_ttl: 900
+  serve_stale: true # keep answering if upstreams go down
+  serve_stale_max: 86400
+  prefetch: true
+  shared: true # 4 workers: one shared cache beats four cold private ones
+  shared_slots: 16384
+  shared_payload: 1232
+  persist: true # survive restarts warm
+  prewarm: true # learned popularity -> proactive refresh of the top names
+  prewarm_top: 40
+  prewarm_interval: 600
+
+filtering:
+  enabled: true
+  block_mode: zero_ip
+  block_ipv4: 0.0.0.0
+  block_ipv6: "::"
+  cname_inspect: true # catch CNAME-cloaked first-party trackers
+  ede: true # RFC 8914 — tell the client *why* a name was blocked
+
+  # ── HaGeZi aggressive combination ────────────────────────────────────────
+  # Deliberately NOT a pile of overlapping lists. Measured against Ultimate,
+  # these were dropped as redundant: pro.plus (98% contained), fake (adds 16
+  # domains), popupads (adds 768), and every native.* list (all inside
+  # Ultimate). What remains is additive and non-overlapping:
+  sources:
+    # Multi ULTIMATE — the most aggressive Multi tier. Ads, affiliate,
+    # tracking, metrics, telemetry, phishing, malware, scam, fake,
+    # cryptojacking, free hosters. Supersedes Pro/Pro++. (~293k)
+    - https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/ultimate.txt
+
+    # Threat Intelligence Feeds, medium tier — dedicated security feed that is
+    # NOT part of Multi: malware, spam, scam, phishing C2. Measured to add
+    # ~307k domains Ultimate does not have. (Full TIF is far larger and is the
+    # wrong trade on this hardware.)
+    - https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/tif.medium.txt
+
+    # Anti-circumvention: public DoH/VPN/proxy/Tor endpoints, so a device
+    # cannot simply route around this resolver. Adds ~16k. (~91% unique)
+    - https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/doh-vpn-proxy-bypass.txt
+
+    # Dynamic-DNS providers abused for phishing/C2 staging. Adds ~1.1k.
+    - https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/dyndns.txt
+
+  # Aggressive lists occasionally catch something you actually need; add
+  # exceptions here (they always win over an imported block rule).
+  allow: []
+  deny: []
+
+clients: []
+zones: []
+local_records: []
+plugins: []
+
+security:
+  rate_limit: 150 # queries/sec per client — anti-amplification
+  rate_burst: 300
+  rebinding_protection: true # drop private IPs in public answers
+  local_suffixes: [lan, local, home.arpa, internal, localhost, fritz.box]
+  use_0x20: true # 0x20 encoding — cache-poisoning resistance
+  dns_cookies: true # RFC 7873
+  dga_detection: true # flag algorithmically-generated (C2) domains
+  dga_block: true
+  dga_threshold: 0.62
+  tunnel_detection: true # flag DNS tunneling / exfiltration
+  tunnel_block: true
+  tunnel_threshold: 0.45
+
+dhcp:
+  enabled: false # the router still owns DHCP
+
+querylog:
+  enabled: true
+  retention_days: 14 # bounded so SQLite cannot fill the card
+  privacy_level: 0 # full detail; raise to 1-3 to store less
+  db: dnsguard.db
+
+gravity:
+  refresh_hours: 24
+
+web:
+  enabled: true
+  host: 0.0.0.0 # console reachable from the LAN
+  port: 8089
+  admin_password: null # auto-generated and printed on first start
+  tls: false
+
+log:
+  level: info
+  json_logs: false

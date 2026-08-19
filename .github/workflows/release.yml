@@ -1,0 +1,151 @@
+name: Release
+
+# Tag-driven. `git tag v2.0.0 && git push --tags` is the whole release
+# procedure; everything below derives from the tag.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v2.0.0)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  # The tag and the version in the source have to agree, or the artifacts get
+  # named one thing and report another for the rest of their life.
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - id: v
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          [ -n "${{ inputs.tag }}" ] && TAG="${{ inputs.tag }}" && TAG="${TAG#v}"
+          SRC=$(python3 -c "import re,pathlib;print(re.search(r'__version__ = \"([^\"]+)\"',pathlib.Path('dnsguard/version.py').read_text()).group(1))")
+          echo "tag=$TAG source=$SRC"
+          if [ "$TAG" != "$SRC" ]; then
+            echo "::error::tag v$TAG does not match dnsguard/version.py ($SRC)"
+            exit 1
+          fi
+          grep -q "^## \[$SRC\]" CHANGELOG.md || {
+            echo "::error::CHANGELOG.md has no section for $SRC"; exit 1; }
+          echo "version=$SRC" >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: ruff check dnsguard/ tests/ scripts/ deploy/
+      - run: python3 scripts/mypy_gate.py
+      - run: pytest -q
+
+  pypi:
+    needs: [verify, test]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      id-token: write        # trusted publishing — no long-lived API token
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: |
+          pip install build twine
+          python3 -m build
+          twine check dist/*
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  ghcr:
+    needs: [verify, test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ needs.verify.outputs.version }}
+            REVISION=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      # Lets anyone verify the image was built from this repo by this workflow.
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ghcr.io/${{ github.repository }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+  github_release:
+    needs: [verify, pypi, ghcr]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: |
+          pip install build
+          python3 -m build
+      - name: Extract this version's changelog section
+        run: |
+          python3 - <<'PY' > NOTES.md
+          import pathlib, re
+          v = "${{ needs.verify.outputs.version }}"
+          text = pathlib.Path("CHANGELOG.md").read_text()
+          m = re.search(rf"^## \[{re.escape(v)}\].*?$(.*?)(?=^## \[|\Z)",
+                        text, re.S | re.M)
+          body = (m.group(1) if m else "").strip()
+          # The reference-link block at the foot of the file belongs to the
+          # document, not to the release, and the last section would otherwise
+          # swallow it.
+          body = re.sub(r"\n\[[^\]]+\]: \S+(?=\n|$)", "", body).strip()
+          print(body)
+          PY
+      - uses: softprops/action-gh-release@v2
+        with:
+          body_path: NOTES.md
+          files: dist/*
+          fail_on_unmatched_files: true

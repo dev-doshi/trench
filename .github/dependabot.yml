@@ -1,0 +1,26 @@
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    groups:
+      python-dev:
+        dependency-type: development
+
+  - package-ecosystem: npm
+    directory: /dnsguard/web/frontend
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    groups:
+      frontend:
+        patterns: ["*"]
+
+  # Workflows pin actions by major tag; this is what keeps those current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+
+  - package-ecosystem: docker
+    directory: /
+    schedule: { interval: weekly }

@@ -1,0 +1,52 @@
+name: Bug report
+description: Something resolves, blocks, or serves incorrectly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not report a security vulnerability here — see
+        [SECURITY.md](../blob/main/SECURITY.md) for private reporting.
+  - type: input
+    id: version
+    attributes:
+      label: DNSGuard version
+      description: Output of `dnsguard --version`
+      placeholder: "2.0.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: How is it deployed?
+      options: [Docker, systemd, from source, other]
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens, and what you expected instead
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: >
+        The query that shows it, ideally as a `dig` line, plus the answer you
+        got. A packet capture helps for anything on the wire.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration
+      description: The relevant part of dnsguard.yaml, with secrets removed.
+      render: yaml
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: "Run with `log.level: debug` if the cause is not obvious."
+      render: shell

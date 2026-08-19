@@ -1,0 +1,74 @@
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.so
+.Python
+# Anchored to the repo root: `dist/` unanchored would also swallow the
+# committed admin SPA at dnsguard/web/dist.
+/build/
+/dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.hypothesis/
+.tox/
+
+# ── Node (admin console) ────────────────────────────────────────────────────
+node_modules/
+*.tsbuildinfo
+.vite/
+
+# ── Runtime state — never source ────────────────────────────────────────────
+# These are produced by a running server and routinely contain private data:
+# the query log records every hostname a client on the LAN looked up, and
+# app_user/api_token hold credential material.
+data/*.shm
+# compiled block table, rebuilt from the sources on every refresh
+data/*.table
+data/certs/
+*.db
+*.db-wal
+*.db-shm
+
+# TLS material of any kind.
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# ── Local configuration ─────────────────────────────────────────────────────
+# dnsguard.example.yaml is the documented template that ships. A real
+# dnsguard.yaml describes somebody's actual network and stays local.
+/dnsguard.yaml
+/config.json
+*.local.yaml
+*.local.yml
+
+# ── Superseded work kept only on the author's disk ──────────────────────────
+backup/
+
+# ── OS / editor ─────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+
+# ── Docs ────────────────────────────────────────────────────────────────────
+site/

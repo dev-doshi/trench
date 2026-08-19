@@ -1,0 +1,63 @@
+# Keep the build context to source. Without this the context carries the
+# frontend's node_modules (~62 MB), the runtime query-log database, and any
+# TLS key sitting in data/ — all of it uploaded to the daemon on every build,
+# and the last two would end up baked into a published image.
+
+# Version control and CI
+.git/
+.github/
+.gitignore
+
+# Tooling caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.hypothesis/
+.coverage*
+htmlcov/
+/build/
+/dist/
+*.egg-info/
+.venv/
+venv/
+
+# Frontend sources: the image consumes the prebuilt dnsguard/web/dist only,
+# so no Node toolchain and no node_modules are needed at build time.
+dnsguard/web/frontend/
+
+# Runtime state and secrets
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/*.shm
+data/certs/
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Local config — the image reads /data/dnsguard.yaml from a mount.
+dnsguard.yaml
+config.json
+
+# Not needed in the image
+tests/
+scripts/
+docs/
+backup/
+# deploy/ is excluded except the healthcheck the image installs.
+deploy/
+!deploy/healthcheck.py
+site/
+mkdocs.yml
+docker-compose.yml
+*.md
+!README.md
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/

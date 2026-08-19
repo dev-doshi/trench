@@ -1,0 +1,56 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Dependency advisories land on their own schedule, not on ours. Weekly so
+    # a CVE in a dependency surfaces without waiting for the next commit.
+    - cron: "23 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  codeql:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: python
+          queries: security-extended
+      - uses: github/codeql-action/analyze@v3
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: |
+          pip install pip-audit
+          pip install -e .
+      - name: Known vulnerabilities in the dependency tree
+        run: pip-audit --strict --desc
+
+  # The wire parser is the one component that reads attacker-controlled bytes
+  # by definition, so it gets its own standing fuzz run rather than relying on
+  # the fixed corpus in the test suite.
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      # The fuzzer is time-budgeted, not iteration-budgeted (BUDGET seconds,
+      # SEED for reproducibility), so a slow runner still gets a full pass.
+      - run: BUDGET=120 SEED=${{ github.run_number }} python3 scripts/fuzz_wire.py

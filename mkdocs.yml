@@ -1,0 +1,37 @@
+site_name: DNSGuard
+site_description: Self-hosted DNS sinkhole, validating recursive resolver, and authoritative server
+repo_url: https://github.com/OWNER/dnsguard
+edit_uri: edit/main/docs/
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: blue
+      toggle: { icon: material/weather-night, name: Dark mode }
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: blue
+      toggle: { icon: material/weather-sunny, name: Light mode }
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - search.highlight
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Deployment: deployment.md
+  - Configuration: configuration.md
+  - Security: security.md
+  - CLI: cli.md
+  - API: api.md
+  - Upgrading: upgrading.md
+  - Troubleshooting: troubleshooting.md
+markdown_extensions:
+  - admonition
+  - tables
+  - fenced_code
+  - toc: { permalink: true }
+  - pymdownx.superfences
+  - pymdownx.details

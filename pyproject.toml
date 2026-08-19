@@ -1,0 +1,104 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dnsguard"
+# Read from dnsguard/version.py so the package, the CLI's --version and the
+# User-Agent DNSGuard puts on the wire can never disagree.
+dynamic = ["version"]
+description = "Self-hosted DNS sinkhole, validating recursive resolver, and authoritative server"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "DNSGuard contributors" }]
+keywords = ["dns", "adblock", "sinkhole", "resolver", "dnssec", "doh", "dot", "doq", "pihole"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: No Input/Output (Daemon)",
+    "Intended Audience :: System Administrators",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet :: Name Service (DNS)",
+    "Topic :: System :: Networking",
+    "Topic :: Security",
+]
+dependencies = [
+    "aiohttp>=3.9",
+    "aioquic>=1.0",
+    "cryptography>=42",
+    "pydantic>=2.5",
+    "aiosqlite>=0.19",
+    "pyyaml>=6.0",
+    "uvloop>=0.19; sys_platform != 'win32'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "hypothesis>=6",
+    "dnspython>=2.6",
+    "ruff>=0.5",
+    "mypy>=1.8",
+    "coverage>=7",
+    "pytest-cov>=5",
+    "types-PyYAML",
+]
+docs = [
+    # Capped: MkDocs 2.0 removes the plugin system and rewrites theming, with
+    # no migration path, so an unpinned docs build would break on release day.
+    "mkdocs>=1.6,<2",
+    "mkdocs-material>=9.5,<10",
+]
+
+# TODO(release): replace OWNER with the real GitHub account before publishing.
+[project.urls]
+Homepage = "https://github.com/OWNER/dnsguard"
+Documentation = "https://OWNER.github.io/dnsguard/"
+Source = "https://github.com/OWNER/dnsguard"
+Issues = "https://github.com/OWNER/dnsguard/issues"
+Changelog = "https://github.com/OWNER/dnsguard/blob/main/CHANGELOG.md"
+
+[project.scripts]
+dnsguard = "dnsguard.cli.main:main"
+dnsguardd = "dnsguard.__main__:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "dnsguard.version.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["dnsguard*"]
+
+# The seed blocklist lives inside the package, not at the repo root: a
+# `../data` glob cannot be honoured by a wheel, so an installed DNSGuard had
+# no copy of it at all.
+[tool.setuptools.package-data]
+dnsguard = ["data/*.txt", "web/dist/**/*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
+ignore = ["E501", "B008", "SIM105", "E702", "SIM905"]
+
+[tool.ruff.lint.per-file-ignores]
+# The dev harness inserts the repo root on sys.path so it can be run from any
+# working directory; its dnsguard imports have to come after that.
+"scripts/uidev.py" = ["E402"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_ignores = false
+ignore_missing_imports = true
