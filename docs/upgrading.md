@@ -14,7 +14,7 @@ custom rules and zone data. Restoring is `dnsguard restore <archive>`.
 DNSGuard follows semantic versioning. Within a major version, configuration
 files keep working and the database migrates itself forward on first start.
 Anything that changes defaults or on-the-wire behaviour is called out in
-[the changelog](https://github.com/OWNER/dnsguard/blob/main/CHANGELOG.md).
+[the changelog](https://github.com/dev-doshi/dnsguard/blob/main/CHANGELOG.md).
 
 ## pip
 
@@ -34,7 +34,7 @@ docker compose up -d
 Pin a version rather than tracking `latest` on anything you depend on:
 
 ```yaml
-image: ghcr.io/OWNER/dnsguard:2.0.0
+image: ghcr.io/dev-doshi/dnsguard:2.0.0
 ```
 
 ## Database migrations

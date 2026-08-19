@@ -1,13 +1,13 @@
 # DNSGuard
 
-[![CI](https://github.com/OWNER/dnsguard/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/dnsguard/actions/workflows/ci.yml)
+[![CI](https://github.com/dev-doshi/dnsguard/actions/workflows/ci.yml/badge.svg)](https://github.com/dev-doshi/dnsguard/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/dnsguard)](https://pypi.org/project/dnsguard/)
 [![Python](https://img.shields.io/pypi/pyversions/dnsguard)](https://pypi.org/project/dnsguard/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-**[Documentation](https://OWNER.github.io/dnsguard/)** ·
-[Installation](https://OWNER.github.io/dnsguard/installation/) ·
-[Security](https://OWNER.github.io/dnsguard/security/) ·
+**[Documentation](https://dev-doshi.github.io/dnsguard/)** ·
+[Installation](https://dev-doshi.github.io/dnsguard/installation/) ·
+[Security](https://dev-doshi.github.io/dnsguard/security/) ·
 [Changelog](CHANGELOG.md)
 
 A self-hosted DNS server in **pure Python** (asyncio): an ad/tracker

@@ -4,7 +4,7 @@ DNSGuard sits in the resolution path for every device on the network. This
 page is about the settings that decide how much that exposes.
 
 To report a vulnerability, see
-[SECURITY.md](https://github.com/OWNER/dnsguard/blob/main/SECURITY.md).
+[SECURITY.md](https://github.com/dev-doshi/dnsguard/blob/main/SECURITY.md).
 Please do not open a public issue for one.
 
 ## What the defaults assume

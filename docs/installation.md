@@ -21,7 +21,7 @@ docker run -d --name dnsguard \
   --network host \
   -v /etc/dnsguard/dnsguard.yaml:/data/dnsguard.yaml \
   -v dnsguard-data:/data \
-  ghcr.io/OWNER/dnsguard:2.0.0
+  ghcr.io/dev-doshi/dnsguard:2.0.0
 ```
 
 Host networking is what lets the container serve DNS to the rest of the LAN.
@@ -34,7 +34,7 @@ A Compose file is in the repository. On a Raspberry Pi use
 ## From source
 
 ```bash
-git clone https://github.com/OWNER/dnsguard
+git clone https://github.com/dev-doshi/dnsguard
 cd dnsguard
 pip install -e ".[dev]"
 pytest -q

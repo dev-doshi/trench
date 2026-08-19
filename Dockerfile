@@ -61,8 +61,8 @@ LABEL org.opencontainers.image.title="DNSGuard" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}" \
       org.opencontainers.image.licenses="MIT" \
-      org.opencontainers.image.source="https://github.com/OWNER/dnsguard" \
-      org.opencontainers.image.documentation="https://OWNER.github.io/dnsguard/"
+      org.opencontainers.image.source="https://github.com/dev-doshi/dnsguard" \
+      org.opencontainers.image.documentation="https://dev-doshi.github.io/dnsguard/"
 
 ENTRYPOINT ["dnsguardd"]
 CMD ["--config", "/data/dnsguard.yaml"]

@@ -4,7 +4,7 @@ A self-hosted DNS server in pure-Python asyncio: ad/tracker sinkhole,
 validating recursive resolver, authoritative server with online DNSSEC signing, and
 opt-in DHCP — a superset of PiHole, AdGuard Home, and Technitium.
 
-See the [README](https://github.com/OWNER/dnsguard) for the feature matrix.
+See the [README](https://github.com/dev-doshi/dnsguard) for the feature matrix.
 This site covers installation, deployment, configuration, security and the
 API.
 

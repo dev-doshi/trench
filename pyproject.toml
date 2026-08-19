@@ -56,13 +56,12 @@ docs = [
     "mkdocs-material>=9.5,<10",
 ]
 
-# TODO(release): replace OWNER with the real GitHub account before publishing.
 [project.urls]
-Homepage = "https://github.com/OWNER/dnsguard"
-Documentation = "https://OWNER.github.io/dnsguard/"
-Source = "https://github.com/OWNER/dnsguard"
-Issues = "https://github.com/OWNER/dnsguard/issues"
-Changelog = "https://github.com/OWNER/dnsguard/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/dev-doshi/dnsguard"
+Documentation = "https://dev-doshi.github.io/dnsguard/"
+Source = "https://github.com/dev-doshi/dnsguard"
+Issues = "https://github.com/dev-doshi/dnsguard/issues"
+Changelog = "https://github.com/dev-doshi/dnsguard/blob/main/CHANGELOG.md"
 
 [project.scripts]
 dnsguard = "dnsguard.cli.main:main"

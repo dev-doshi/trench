@@ -1,6 +1,6 @@
 [Unit]
 Description=DNSGuard DNS server
-Documentation=https://github.com/OWNER/dnsguard
+Documentation=https://github.com/dev-doshi/dnsguard
 After=network-online.target
 Wants=network-online.target
 

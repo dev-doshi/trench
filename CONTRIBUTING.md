@@ -3,7 +3,7 @@
 ## Getting set up
 
 ```bash
-git clone https://github.com/OWNER/dnsguard
+git clone https://github.com/dev-doshi/dnsguard
 cd dnsguard
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"

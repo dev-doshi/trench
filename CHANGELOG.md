@@ -61,5 +61,5 @@ First public release.
   before enabling blocking on a network with unusual traffic — WiFi calling
   and some CDNs produce genuinely high-entropy names.
 
-[Unreleased]: https://github.com/OWNER/dnsguard/compare/v2.0.0...HEAD
-[2.0.0]: https://github.com/OWNER/dnsguard/releases/tag/v2.0.0
+[Unreleased]: https://github.com/dev-doshi/dnsguard/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/dev-doshi/dnsguard/releases/tag/v2.0.0
