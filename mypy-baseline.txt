@@ -1,6 +1,6 @@
 # Known mypy findings, recorded by scripts/mypy_gate.py.
 # New findings fail CI; this file may only ever shrink.
-# 129 finding(s).
+# 127 finding(s).
 dnsguard/analyze/lists.py	union-attr	Item "None" of "Any | None" has no attribute "nbytes"
 dnsguard/analyze/lists.py	union-attr	Item "None" of "Any | None" has no attribute "nbytes"
 dnsguard/api/auth.py	index	Value of type "Row | None" is not indexable
@@ -12,7 +12,6 @@ dnsguard/api/auth.py	index	Value of type "Row | None" is not indexable
 dnsguard/api/server.py	arg-type	Argument 1 to "append" of "list" has incompatible type "str"; expected "int"
 dnsguard/api/server.py	arg-type	Argument 1 to "append" of "list" has incompatible type "str"; expected "int"
 dnsguard/api/server.py	arg-type	Argument 1 to "append" of "list" has incompatible type "str"; expected "int"
-dnsguard/api/server.py	import-untyped	Library stubs not installed for "yaml"
 dnsguard/api/server.py	return-value	Incompatible return value type (got "FileResponse", expected "Response")
 dnsguard/app.py	assignment	Incompatible types in assignment (expression has type "Callable[[], int]", variable has type "Callable[[], None] | None")
 dnsguard/app.py	assignment	Incompatible types in assignment (expression has type "DoH3Server", variable has type "Do53Server")
@@ -57,7 +56,6 @@ dnsguard/cache/shared.py	attr-defined	"object" has no attribute "__enter__"
 dnsguard/cache/shared.py	attr-defined	"object" has no attribute "__exit__"
 dnsguard/cache/shared.py	attr-defined	"object" has no attribute "__exit__"
 dnsguard/cache/shared.py	attr-defined	"object" has no attribute "__exit__"
-dnsguard/cli/main.py	import-untyped	Library stubs not installed for "yaml"
 dnsguard/cli/main.py	operator	Unsupported operand types for in ("int" and "Iterator[Rcode]")
 dnsguard/config.py	import-untyped	Library stubs not installed for "yaml"
 dnsguard/dhcp/server.py	assignment	Incompatible types in assignment (expression has type "DatagramTransport", variable has type "None")

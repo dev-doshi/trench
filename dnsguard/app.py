@@ -103,6 +103,7 @@ class App:
         self.querylog: QueryLog | None = None
         self.api: APIServer | None = None
         self.scheduler = Scheduler()
+        self._bootstrap: asyncio.Task | None = None   # cold-start blocklist fetch
         self.pipeline = Pipeline(filter_engine=self.filter, cache=self.cache,
                                  forwarder=self.forwarder, counters=self.counters,
                                  config=config, clients=self.clients,
@@ -239,11 +240,21 @@ class App:
         self.filter = engine
         self.pipeline.filter = engine
 
-    async def load_blocklists(self) -> None:
+    async def load_blocklists(self, *, allow_fetch: bool = True) -> bool:
+        """Bring the filter up. Returns True if a network fetch is still owed.
+
+        With `allow_fetch=False` this does only the local, offline work —
+        adopting a pre-forked engine or mapping the cached table — and reports
+        back rather than downloading. Startup uses that to bind the listener
+        before touching the network: the sources are https:// URLs and on the
+        usual deployment this box *is* the LAN's resolver, so fetching them
+        first means resolving a hostname through a server that has not bound
+        its socket yet, and the whole network is without DNS until it finishes.
+        """
         sources = self.config.filtering.sources
         if not sources:
             log.info("no blocklist sources configured")
-            return
+            return False
         gravity = Gravity(sources, list(self.config.filtering.allow),
                           list(self.config.filtering.deny), db=self.db,
                           table_path=self.table_path)
@@ -258,7 +269,7 @@ class App:
             self.pipeline.filter = engine
             log.info("using pre-forked blocklist (%d domains)", engine.size)
             release_free_memory()
-            return
+            return False
 
         # A resolver that cannot answer is worse than one answering from a
         # slightly old list, and re-parsing 600k domains takes a minute on small
@@ -276,13 +287,17 @@ class App:
                          len(table), table.nbytes / 1_048_576, age / 3600)
                 release_free_memory()
                 if age < self.config.gravity.refresh_hours * 3600 or not self.primary:
-                    return   # still fresh, or a sibling worker owns the refresh
+                    return False  # still fresh, or a sibling worker owns the refresh
                 log.info("cached table is past its refresh interval; rebuilding now")
+
+        if not allow_fetch:
+            return True
 
         engine = await gravity.build()
         self.filter = engine
         self.pipeline.filter = engine
         release_free_memory()
+        return False
 
     async def refresh_blocklists(self) -> None:
         if getattr(self, "_gravity", None) is None:
@@ -554,6 +569,8 @@ class App:
 
     async def stop(self) -> None:
         self.scheduler.stop()
+        if self._bootstrap is not None and not self._bootstrap.done():
+            self._bootstrap.cancel()
         if self.primary and self.config.cache.persist:
             try:
                 self.cache.dump(self._cache_file())
@@ -594,11 +611,28 @@ class App:
             n = self.learn.load(self._learn_file())
             if n:
                 log.info("restored %d learned popularity scores", n)
-        await self.load_blocklists()
+        # Local work only, then bind. Anything needing the network happens after
+        # the listener is up, because on this deployment we are that network's
+        # resolver — see load_blocklists.
+        pending = await self.load_blocklists(allow_fetch=False)
         await self.start()
+        if pending:
+            log.info("serving now; fetching blocklists in the background")
+            self._bootstrap = asyncio.create_task(self._initial_blocklist_fetch())
         self._schedule_jobs()
         self._banner()
         await self._stop.wait()
+
+    async def _initial_blocklist_fetch(self) -> None:
+        """Cold-start fetch, off the critical path. A failure here leaves the
+        resolver answering unfiltered rather than not answering at all; the
+        scheduled refresh retries on its own interval."""
+        try:
+            await self.load_blocklists()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("initial blocklist load failed; serving unfiltered")
 
     def _schedule_jobs(self) -> None:
         hours = self.config.gravity.refresh_hours
@@ -618,6 +652,15 @@ class App:
         if self.learn is not None:
             self.scheduler.every(self.config.cache.prewarm_interval,
                                  self._prewarm_sweep, name="prewarm")
+        # Per-worker, and required: the limiter keys on the client address, so
+        # without a reaper a spoofed-source flood grows its table until the box
+        # is OOM-killed. Cheap enough to run regardless of the configured rate.
+        self.scheduler.every(60.0, self._reap_ratelimiter, name="ratelimit-gc")
+
+    async def _reap_ratelimiter(self) -> None:
+        rl = getattr(self.pipeline, "ratelimiter", None)
+        if rl is not None:
+            rl.gc()
 
     def _stream_limits(self):
         """Connection bounds shared by every length-prefixed frontend. The caps
