@@ -169,7 +169,14 @@ class ACMEClient:
         payload = {"termsOfServiceAgreed": True}
         if email:
             payload["contact"] = [f"mailto:{email}"]
-        status, headers, _ = await self._post(d["newAccount"], payload)
+        status, headers, body = await self._post(d["newAccount"], payload)
+        # The status was fetched and then ignored. A rejection — rate limit, ToS
+        # change, bad nonce — left kid None, and every later _post silently fell
+        # back to embedding the raw JWK as if this were still newAccount, so the
+        # real failure surfaced later as a confusing CA error on the order.
+        if status not in (200, 201) or not headers.get("Location"):
+            raise RuntimeError(f"ACME account registration refused "
+                               f"(status {status}): {body}")
         self.account.kid = headers.get("Location")
         return self.account.kid
 

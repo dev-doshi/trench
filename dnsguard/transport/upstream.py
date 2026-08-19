@@ -92,14 +92,32 @@ class _UdpSocket(asyncio.DatagramProtocol):
     outstanding on the same socket and UDP does not promise order.
     """
 
-    __slots__ = ("pending", "transport")
+    __slots__ = ("pending", "transport", "pool", "closed")
 
-    def __init__(self) -> None:
+    def __init__(self, pool: UdpPool | None = None) -> None:
         self.pending: dict[int, asyncio.Future] = {}
         self.transport: asyncio.DatagramTransport | None = None
+        self.pool = pool
+        self.closed = False
 
     def connection_made(self, transport) -> None:
         self.transport = transport
+
+    def connection_lost(self, exc: Exception | None) -> None:
+        """Take a dead socket out of the pool.
+
+        Without this a socket whose transport closed stayed in the pool and kept
+        being selected: `sendto` on it is silently dropped, so every query
+        routed there timed out — permanently, for 1/N of all upstream traffic,
+        until the process restarted.
+        """
+        self.closed = True
+        if self.pool is not None:
+            self.pool.discard(self)
+        for fut in self.pending.values():
+            if not fut.done():
+                fut.set_exception(UpstreamError("upstream socket closed"))
+        self.pending.clear()
 
     def datagram_received(self, data: bytes, addr) -> None:
         if len(data) < 2:
@@ -149,19 +167,33 @@ class UdpPool:
         self.size = size
         self._socks: list[_UdpSocket] = []
         self._lock = asyncio.Lock()
+        # What the pool settled for. Lowered if the box runs out of descriptors,
+        # so a capped pool refills to the size it can actually reach instead of
+        # re-attempting the impossible on every query.
+        self._target = size
+
+    def discard(self, sock: _UdpSocket) -> None:
+        """Drop a socket that reported its transport gone (see connection_lost)."""
+        try:
+            self._socks.remove(sock)
+        except ValueError:
+            pass
 
     async def _ensure(self) -> None:
-        if self._socks:
+        # Refill when sockets have died, not only on first use. Returning as
+        # soon as the list was non-empty meant a pool that had lost sockets
+        # never recovered them, and its port entropy quietly shrank with it.
+        if len(self._socks) >= self._target:
             return
         async with self._lock:
-            if self._socks:
+            if len(self._socks) >= self._target:
                 return
             loop = asyncio.get_running_loop()
-            socks = []
-            for _ in range(self.size):
+            socks = list(self._socks)
+            for _ in range(self.size - len(socks)):
                 try:
                     _t, proto = await loop.create_datagram_endpoint(
-                        _UdpSocket, remote_addr=(self.host, self.port))
+                        lambda: _UdpSocket(self), remote_addr=(self.host, self.port))
                 except OSError as e:
                     if not socks:
                         raise
@@ -169,6 +201,7 @@ class UdpPool:
                     # broken, so say so once and carry on with what we have.
                     log.warning("udp pool for %s:%d capped at %d sockets (%s)",
                                 self.host, self.port, len(socks), e)
+                    self._target = len(socks)
                     break
                 socks.append(proto)
             self._socks = socks

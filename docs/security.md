@@ -40,6 +40,27 @@ An unlimited resolver reachable by anything on the network is an amplification
 source: a small spoofed query returns a much larger answer to a forged victim
 address. 100/200 suits a home LAN. Clients over the limit get REFUSED.
 
+## Behind a reverse proxy
+
+```yaml
+security:
+  trusted_proxies: [10.0.0.5]     # or a CIDR
+```
+
+`X-Forwarded-For` is written by whoever sent the request, so it is believed
+only when the peer that delivered it is listed here. Left empty — the default
+— the socket address always wins, which is correct for every deployment that
+has no proxy.
+
+This matters more than a logging detail: the client identity chosen here
+selects the per-client filtering policy, the rate-limit bucket, the
+login-failure counter behind account lockout, and the subnet sent upstream in
+ECS. If the header were trusted unconditionally, one value rotated per request
+would defeat all four.
+
+Set it only to the proxy actually in front of DoH or the console. Listing a
+range wider than that hands the same free choice to everything inside it.
+
 ## Never expose port 53 to the internet
 
 DNSGuard is a resolver for a network you control. A recursive resolver open to

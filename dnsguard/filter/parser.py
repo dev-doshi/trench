@@ -8,10 +8,17 @@ from __future__ import annotations
 
 import re
 
+from ..log import get
 from ..wire.rrtypes import type_from_text
 from .rule import Rule, parse_dnsrewrite
 
-_VALID_DOMAIN = re.compile(r"^[a-z0-9_*.-]+\.[a-z0-9_-]+\.?$")
+log = get("filter.parser")
+
+# A single label is a valid rule: blocking a whole TLD (`zip`, `mov`) is a real
+# thing operators do. Requiring two labels silently dropped every such entry in
+# hosts and domain-format lists — with no diagnostic — while the same name in
+# adblock form (`||zip^`) was accepted, so the two syntaxes disagreed.
+_VALID_DOMAIN = re.compile(r"^[a-z0-9_*-]+(?:\.[a-z0-9_-]+)*\.?$")
 _HOSTS_IP = re.compile(r"^(?:0\.0\.0\.0|127\.0\.0\.1|::1?|::)$")
 _IGNORE = {"localhost", "localhost.localdomain", "broadcasthost",
            "ip6-localhost", "ip6-loopback", "ip6-allnodes", "ip6-allrouters"}
@@ -78,8 +85,12 @@ def _parse_adblock(line: str, source: str) -> Rule | None:
     if line.startswith("@@"):
         block = False
         line = line[2:]
-    # split off modifiers ($ cannot appear in a domain)
-    pattern, _, modstr = line.partition("$")
+    # Split off modifiers. `$` cannot appear in a domain — but it very much can
+    # appear in a regex, as the end anchor. Partitioning first truncated
+    # `/^ads[0-9]+\.evil\.com$/` to `/^ads[0-9]+\.evil\.com`, which then failed
+    # the trailing-slash test and fell through to the suffix branch as a literal
+    # that matches nothing, so the rule silently blocked nothing at all.
+    pattern, modstr = _split_modifiers(line)
     rule = Rule(raw=line, block=block, source=source)
     _apply_pattern(rule, pattern.strip())
     if rule.suffix is None and rule.exact is None and rule.regex is None:
@@ -89,18 +100,51 @@ def _parse_adblock(line: str, source: str) -> Rule | None:
     return rule
 
 
+def _split_modifiers(line: str) -> tuple[str, str]:
+    """`(pattern, modifiers)`, respecting a leading /regex/ literal."""
+    body = line[2:] if line.startswith("@@") else line
+    if body.startswith("/"):
+        end = body.rfind("/")
+        if end > 0:
+            rest = body[end + 1:]
+            if not rest or rest.startswith("$"):
+                return body[:end + 1], rest[1:] if rest else ""
+    pattern, _, modstr = line.partition("$")
+    return pattern, modstr
+
+
+#: Nested quantifiers are the classic catastrophic-backtracking shape. A rule
+#: list is remote input and `regex.search` runs against an attacker-chosen name
+#: on the event loop, so one such pattern anywhere in a subscribed list is a
+#: whole-resolver stall.
+_REDOS = re.compile(r"\((?:[^()]*[+*?][^()]*)\)\s*[+*]|(?:\[[^\]]*\][+*]){2,}")
+
+
+def _safe_regex(pat: str):
+    """Compile a list-supplied pattern, refusing shapes that can blow up."""
+    if _REDOS.search(pat):
+        log.warning("refusing regex rule with nested quantifiers: %s", pat)
+        return None
+    if len(pat) > 512:
+        log.warning("refusing over-long regex rule (%d chars)", len(pat))
+        return None
+    try:
+        return re.compile(pat, re.IGNORECASE)
+    except re.error:
+        return None
+
+
 def _apply_pattern(rule: Rule, pat: str) -> None:
     if not pat:
         return
     if pat.startswith("/") and pat.endswith("/") and len(pat) > 2:
-        try:
-            rule.regex = re.compile(pat[1:-1], re.IGNORECASE)
-        except re.error:
-            pass
+        rule.regex = _safe_regex(pat[1:-1])
         return
     # |domain| exact
     if pat.startswith("|") and pat.endswith("|") and not pat.startswith("||"):
-        rule.exact = pat.strip("|").rstrip("^").lower()
+        # rstrip(".") too: match() compares against qname.rstrip("."), so an
+        # absolute-form exact rule was filed under a key it could never produce.
+        rule.exact = pat.strip("|").rstrip("^").rstrip(".").lower()
         return
     # ||domain^
     p = pat

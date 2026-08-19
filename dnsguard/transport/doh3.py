@@ -42,6 +42,7 @@ class DoH3Protocol(QuicConnectionProtocol):
         super().__init__(*args, **kwargs)
         self._http: H3Connection | None = None
         self._streams: dict[int, _Stream] = {}
+        self._tasks: set = set()   # strong refs to in-flight handlers
 
     def quic_event_received(self, event: QuicEvent) -> None:
         if self._http is None:
@@ -60,13 +61,17 @@ class DoH3Protocol(QuicConnectionProtocol):
             elif k == b":path":
                 st.path = v.decode()
         if event.stream_ended:
-            asyncio.ensure_future(self._respond(event.stream_id))
+            task = asyncio.ensure_future(self._respond(event.stream_id))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
 
     def _on_data(self, event: DataReceived) -> None:
         st = self._streams.setdefault(event.stream_id, _Stream())
         st.body += event.data
         if event.stream_ended:
-            asyncio.ensure_future(self._respond(event.stream_id))
+            task = asyncio.ensure_future(self._respond(event.stream_id))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
 
     async def _respond(self, stream_id: int) -> None:
         st = self._streams.pop(stream_id, None)

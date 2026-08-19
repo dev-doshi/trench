@@ -128,7 +128,8 @@ class Validator:
         self.max_chain_queries = max_chain_queries
         self.max_nsec3_iterations = max_nsec3_iterations
         self.now = now
-        self._keys: dict[str, list[R.DNSKEY]] = {}
+        # keyed on (zone, DS-set fingerprint) — see _keys_for
+        self._keys: dict[tuple, list[R.DNSKEY]] = {}
         self._state: dict[str, tuple[str, Name, list[R.DNSKEY] | None]] = {}
 
     # ------------------------------------------------------------ public API
@@ -223,12 +224,22 @@ class Validator:
         all the way to the name itself to discover whether some ancestor is a
         proven-insecure delegation.
         """
+        # The *deepest* candidate signer, not the first one listed. Taking the
+        # first let anyone prepend one junk RRSIG naming a shallow ancestor
+        # (`signer=com`) to an authority section legitimately signed by
+        # `example.com`: the descent stopped at com, every genuine record was
+        # discarded as signed by the wrong zone, and a valid signed denial came
+        # back BOGUS — a one-packet denial of service against any name.
         target = owner
+        best = None
         for sig in rrsigs:
             signer = getattr(sig, "signer", None)
-            if signer is not None and owner.is_subdomain_of(signer):
-                target = signer
-                break
+            if signer is None or not owner.is_subdomain_of(signer):
+                continue
+            if best is None or len(signer.labels) > len(best.labels):
+                best = signer
+        if best is not None:
+            target = best
         return await self._trust_at(target, work)
 
     async def _trust_at(self, name: Name, work):
@@ -300,7 +311,13 @@ class Validator:
 
     async def _keys_for(self, zone: Name, ds_set: list[R.DS], work) -> list[R.DNSKEY]:
         """Fetch `zone`'s DNSKEY RRset and anchor it against a trusted DS."""
-        cached = self._keys.get(zone.to_text())
+        # Keyed on the DS set as well as the zone. Returning a cached key list
+        # before looking at `ds_set` meant a later descent arriving with a
+        # rolled or revoked DS reused the keys the old DS anchored — the cache
+        # answered a question it had not been asked.
+        ck = (zone.to_text(), tuple(sorted(
+            (d.key_tag, d.algorithm, d.digest_type, bytes(d.digest)) for d in ds_set)))
+        cached = self._keys.get(ck)
         if cached is not None:
             return cached
         work.query()
@@ -332,7 +349,7 @@ class Validator:
                 work.sign_op()
                 if verify_rrset(zone, Type.DNSKEY, 1, dnskeys, sig, k, now=self.now):
                     if len(self._keys) < 4096:
-                        self._keys[zone.to_text()] = usable
+                        self._keys[ck] = usable
                     return usable
         raise DNSSECError(f"DNSKEY for {zone.to_text()} not anchored to its DS")
 
@@ -356,6 +373,14 @@ class Validator:
         """
         if not rdatas:
             return False, None
+        # Tags are computed once per key and indexed, not recomputed per
+        # (sig, key) pair. `work.sign_op()` bounds signature verifications, so
+        # anything expensive *before* it is outside the budget: a zone
+        # publishing 200 DNSKEYs against 1000 RRSIGs bought 200 000 key_tag()
+        # calls — seconds of CPU per query, with zero signatures verified.
+        by_tag: dict[int, list] = {}
+        for k in keys:
+            by_tag.setdefault(key_tag(k), []).append(k)
         for sig in sigs:
             if sig.signer != zone:
                 continue
@@ -363,8 +388,8 @@ class Validator:
             if found is None:
                 continue
             signed_owner, expanded = found
-            for k in keys:
-                if sig.key_tag != key_tag(k) or sig.algorithm != k.algorithm:
+            for k in by_tag.get(sig.key_tag, ()):
+                if sig.algorithm != k.algorithm:
                     continue
                 work.sign_op()
                 if verify_rrset(signed_owner, rtype, 1, rdatas, sig, k, now=self.now):

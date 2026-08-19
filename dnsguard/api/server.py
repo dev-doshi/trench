@@ -72,11 +72,16 @@ class APIServer:
         self.start_ts = time.time()
         self._runner: web.AppRunner | None = None
         self._ws: set[web.WebSocketResponse] = set()
+        from ..security.clientaddr import TrustedProxies
+        self.trusted = TrustedProxies(
+            getattr(app.config.security, "trusted_proxies", ()))
 
     # ---- lifecycle ----
     async def start(self) -> None:
         await self.auth.ensure_admin(self.app.config.web.admin_password)
-        webapp = web.Application(middlewares=[self._auth_mw])
+        webapp = web.Application(middlewares=[self._auth_mw, self._headers_mw])
+        from ..security.clientaddr import TRUSTED_KEY
+        webapp[TRUSTED_KEY] = self.trusted
         self._add_routes(webapp)
         self._runner = web.AppRunner(webapp, access_log=None)
         await self._runner.setup()
@@ -152,6 +157,26 @@ class APIServer:
         request["user"] = user
         return await handler(request)
 
+    @web.middleware
+    async def _headers_mw(self, request: web.Request, handler):
+        """Anti-framing and sniffing headers on every response.
+
+        None of these were set anywhere. The session cookie is SameSite=Strict,
+        but that is still sent on a top-level framed navigation — so an attacker
+        page a logged-in admin visits could frame the console, overlay bait on
+        the filtering toggle, and disable network-wide filtering in one click.
+        """
+        resp = await handler(request)
+        resp.headers.setdefault("X-Frame-Options", "DENY")
+        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+        resp.headers.setdefault("Referrer-Policy", "same-origin")
+        resp.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
+            "object-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+            "connect-src 'self' ws: wss:")
+        return resp
+
     def _require(self, request: web.Request, role: str) -> dict:
         user = request.get("user")
         if user is None:
@@ -171,6 +196,10 @@ class APIServer:
         resp = web.json_response({"ok": True})
         resp.set_cookie("dgsession", token, httponly=True, samesite="Strict",
                         max_age=8 * 3600, secure=self.ssl_context is not None)
+        if self.ssl_context is None and self.host not in ("127.0.0.1", "::1", "localhost"):
+            log.warning("admin session issued over plaintext on %s — the cookie and "
+                        "password cross the network in the clear; set web.tls or "
+                        "bind web.host to 127.0.0.1", self.host)
         return resp
 
     async def logout(self, request: web.Request) -> web.Response:
@@ -344,13 +373,23 @@ class APIServer:
             "levels": [{"level": k, "name": v[0], "description": v[1]} for k, v in levels.items()],
         })
 
-    async def querylog_export(self, request: web.Request) -> web.Response:
+    # StreamResponse, not Response: this one streams the log out rather than
+    # buffering it. Response is a subclass, so the wider type is the accurate one.
+    async def querylog_export(self, request: web.Request) -> web.StreamResponse:
         self._require(request, "viewer")
         if self.app.querylog is None:
             return web.Response(text="", content_type="application/x-ndjson")
-        data = await self.app.querylog.export_ndjson()
-        return web.Response(text=data, content_type="application/x-ndjson",
-                            headers={"Content-Disposition": "attachment; filename=querylog.ndjson"})
+        # Streamed a line at a time. Building the whole export first held the
+        # rows, their JSON strings, the joined text and aiohttp's copy of it all
+        # at once — one authenticated request was enough to OOM the resolver.
+        resp = web.StreamResponse(headers={
+            "Content-Type": "application/x-ndjson",
+            "Content-Disposition": "attachment; filename=querylog.ndjson"})
+        await resp.prepare(request)
+        async for line in self.app.querylog.iter_ndjson():
+            await resp.write(line.encode() + b"\n")
+        await resp.write_eof()
+        return resp
 
     async def rules_get(self, request: web.Request) -> web.Response:
         """Operator-managed rules only. Imported blocklists are reported as a
@@ -772,11 +811,12 @@ async def _json(request: web.Request) -> dict:
 
 
 def _client_ip(request: web.Request) -> str:
-    xff = request.headers.get("X-Forwarded-For")
-    if xff:
-        return xff.split(",")[0].strip()
-    peer = request.transport.get_extra_info("peername") if request.transport else None
-    return peer[0] if peer else "?"
+    """The requesting address, trusting X-Forwarded-For only from a configured
+    proxy. This value keys the login-failure counter, so believing the header
+    unconditionally let one client rotate it per attempt and never trip the
+    lockout at all."""
+    from ..security.clientaddr import client_ip
+    return client_ip(request)
 
 
 _OPENAPI = {

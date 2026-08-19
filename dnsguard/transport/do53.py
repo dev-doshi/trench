@@ -42,6 +42,7 @@ class _UDPProtocol(asyncio.DatagramProtocol):
         self.max_inflight = max_inflight
         self.inflight = 0
         self.dropped = 0
+        self._tasks: set = set()   # strong refs to in-flight handlers
         self.fast = fast
         self.transport: asyncio.DatagramTransport | None = None
 
@@ -71,7 +72,13 @@ class _UDPProtocol(asyncio.DatagramProtocol):
                             self.inflight, self.dropped)
             return
         self.inflight += 1
-        asyncio.ensure_future(self._handle(data, addr))
+        # Held in a set until done. The loop keeps only a weak reference to a
+        # task, so one created and dropped like this can be garbage-collected
+        # mid-flight: the query vanishes and `inflight` is never decremented,
+        # permanently lowering the effective max_inflight ceiling.
+        task = asyncio.ensure_future(self._handle(data, addr))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
     async def _handle(self, data: bytes, addr) -> None:
         try:

@@ -39,6 +39,11 @@ class CacheKey(NamedTuple):
     qclass: int
     do: bool     # DNSSEC OK — secure and insecure answers cache separately
     ecs: str = ""  # ECS scope network text, "" when not ECS-scoped
+    # Checking Disabled. A CD=1 query is forwarded with the bit set, so the
+    # upstream skips validation and returns bogus data as NOERROR instead of
+    # SERVFAIL. Sharing a key with CD=0 let any client poison every other
+    # client's view of a name simply by asking for it with CD set.
+    cd: bool = False
 
 
 @dataclass
@@ -98,7 +103,8 @@ class Cache:
         q = msg.question
         if q is None:
             return None
-        return CacheKey(q.name.key, q.rtype, q.rclass, msg.wants_dnssec(), ecs)
+        return CacheKey(q.name.key, q.rtype, q.rclass, msg.wants_dnssec(), ecs,
+                        msg.cd)
 
     def _clamp(self, ttl: int) -> int:
         return max(self.min_ttl, min(self.max_ttl, ttl))
@@ -153,6 +159,12 @@ class Cache:
         # promote into the local L1 so subsequent hits are lock-free
         self._store[key] = _Entry(msg=msg, inserted=now, ttl=remaining,
                                   stale_until=now + remaining + self.serve_stale_max)
+        # Same trim `put` does. Without it this path grew L1 without limit: a
+        # read-mostly worker fed by a sibling's L2 never inserts through `put`,
+        # so max_entries was never enforced on it at all.
+        while len(self._store) > self.max_entries:
+            self._store.popitem(last=False)
+            self.stats["evictions"] += 1
         self.stats["shared_hits"] += 1
         return self._with_ttl(msg, max(0, int(remaining))), False
 
@@ -192,8 +204,13 @@ class Cache:
         mt = msg.min_ttl()
         if msg.rcode in (Rcode.NXDOMAIN, Rcode.NOERROR) and not msg.answers:
             # negative answer: use SOA minimum if present, else configured floor
-            soa_ttls = [rr.ttl for rr in msg.authority if rr.rtype == Type.SOA]
-            base = min(soa_ttls) if soa_ttls else self.negative_ttl
+            # RFC 2308 §4: the negative TTL is the *lesser* of the SOA's own TTL
+            # and its MINIMUM field. Reading only rr.ttl ignored the floor the
+            # zone actually publishes, so a name created moments ago stayed
+            # NXDOMAIN for the SOA's full TTL — an hour on many zones.
+            soa = [rr for rr in msg.authority if rr.rtype == Type.SOA]
+            base = min((min(rr.ttl, getattr(rr.rdata, "minimum", rr.ttl))
+                        for rr in soa), default=self.negative_ttl)
             return self._clamp(min(base, self.negative_ttl))
         return self._clamp(mt if mt is not None else self.min_ttl)
 
@@ -253,6 +270,14 @@ class Cache:
             if self.shared is not None:
                 from .shared import key64
                 self.shared.delete(key64(*k))
+        if self.shared is not None:
+            # The victim list comes from *this* worker's L1, but L2 is shared:
+            # an entry another worker cached and we never read is not in that
+            # list, survives the flush, and gets promoted back on our next miss.
+            # L2 is a hash table with no reverse index, so a targeted sweep is
+            # not possible — and a blocklist update that silently fails to
+            # invalidate is worse than the extra misses from clearing it.
+            self.shared.clear()
         return len(victims)
 
     @property

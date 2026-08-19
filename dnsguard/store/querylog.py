@@ -89,7 +89,15 @@ class QueryLog:
         for t in (self._writer_task, self._sweeper_task):
             if t is not None:
                 t.cancel()
-        await self._flush()  # drain remaining
+        # Loop until empty: _flush writes at most `max_batch` (500) records and
+        # the queue holds up to 50,000, so a single call silently dropped
+        # everything above the first batch on a busy shutdown — an unexplained
+        # gap in the log around every restart.
+        while not self._queue.empty():
+            before = self._queue.qsize()
+            await self._flush()
+            if self._queue.qsize() >= before:
+                break                    # not draining; stop rather than spin
 
     async def _writer(self) -> None:
         while self._running:
@@ -192,7 +200,15 @@ class QueryLog:
         """Delete every stored query (one-click privacy purge). Returns rows removed."""
         n = await self.count()
         await self.db.execute("DELETE FROM querylog")
-        await self.db.execute("VACUUM")
+        # VACUUM cannot run inside a transaction, and this connection is shared
+        # with the 250 ms flush loop — so it reliably raised *after* the rows
+        # were already gone, and the operator saw a 500 for a purge that had in
+        # fact succeeded. Reclaiming the file is best-effort; the delete is not.
+        try:
+            await self.db.vacuum()
+        except Exception:
+            log.warning("query log purged, but reclaiming disk space failed",
+                        exc_info=True)
         log.info("query log purged: %d rows removed", n)
         return n
 
@@ -201,8 +217,26 @@ class QueryLog:
         return r["n"] if r else 0
 
     async def export_ndjson(self) -> str:
-        rows = await self.db.fetchall("SELECT * FROM querylog ORDER BY ts DESC LIMIT 100000")
-        return "\n".join(json.dumps(dict(r)) for r in rows)
+        """The whole export as one string. Prefer `iter_ndjson` for serving.
+
+        Kept for callers that genuinely want it in memory; the HTTP handler no
+        longer does, because this held four live copies of the same data at once
+        (rows, their JSON strings, the join, and the response body).
+        """
+        return "\n".join([line async for line in self.iter_ndjson()])
+
+    async def iter_ndjson(self, batch: int = 2000, limit: int = 100_000):
+        """Yield the export one line at a time, a page of rows at a time."""
+        offset = 0
+        while offset < limit:
+            rows = await self.db.fetchall(
+                "SELECT * FROM querylog ORDER BY ts DESC LIMIT ? OFFSET ?",
+                (min(batch, limit - offset), offset))
+            if not rows:
+                return
+            for r in rows:
+                yield json.dumps(dict(r))
+            offset += len(rows)
 
 
 def record_from_ctx(qname: str, qtype: str, ctx, rcode: str, answers: list[str]) -> QueryRecord:

@@ -573,6 +573,16 @@ for _cls in (A, AAAA, NS, CNAME, PTR, DNAME, SOA, MX, SRV, TXT, SPF, HINFO,
     _REGISTRY[int(_cls.TYPE)] = _cls
 
 
+#: Types whose RDATA embeds a domain name, and which therefore may carry a
+#: compression pointer that is only meaningful against the message it arrived
+#: in. See the fallback in parse_rdata.
+_NAME_BEARING = frozenset(
+    getattr(Type, n) for n in
+    ("NS", "CNAME", "SOA", "PTR", "MX", "SRV", "NAPTR", "DNAME", "RRSIG",
+     "NSEC", "SVCB", "HTTPS", "KX", "RP")
+    if hasattr(Type, n))
+
+
 def parse_rdata(r: Reader, rtype: int, rdlen: int) -> Rdata:
     """Parse rdata of `rdlen` bytes. Unknown / undecodable types fall back to raw."""
     codec = _REGISTRY.get(rtype)
@@ -581,7 +591,17 @@ def parse_rdata(r: Reader, rtype: int, rdlen: int) -> Rdata:
     start = r.tell()
     try:
         rd = codec.parse(r, rdlen)
-    except WireError:
+    except WireError as e:
+        if rtype in _NAME_BEARING:
+            # No raw fallback for a type whose rdata contains a name. Unknown
+            # keeps the octets and re-emits them verbatim at whatever offset it
+            # lands on next, so a name that failed to parse *because* it held a
+            # compression pointer would have that pointer re-resolved against a
+            # different message — decoding as an entirely different,
+            # attacker-chosen name. Types with no embedded name are inert as raw
+            # bytes and still fall back, so one malformed record does not cost
+            # the rest of the message.
+            raise WireError(f"undecodable rdata for type {rtype}: {e}") from e
         r.seek(start)
         return Unknown(rtype, r.read(rdlen))
     used = r.tell() - start

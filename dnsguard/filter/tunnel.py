@@ -54,10 +54,17 @@ class TunnelDetector:
         self.block = block
         self.window = window
         self.rate_limit = rate_limit            # queries / window to one 2LD before volumetric flag
+        # Keyed on (client, registrable domain), both attacker-chosen. Unlike
+        # DGADetector this had no ceiling at all, so one host cycling distinct
+        # second-level domains retained a deque per name until the box died.
+        self.max_tracked = 20_000
         self._seen: dict[tuple[str, str], deque] = defaultdict(deque)
 
     def _volumetric(self, client: str, reg: str, now: float) -> float:
-        dq = self._seen[(client, reg)]
+        key = (client, reg)
+        if key not in self._seen and len(self._seen) >= self.max_tracked:
+            self._sweep(now)
+        dq = self._seen[key]
         dq.append(now)
         cutoff = now - self.window
         while dq and dq[0] < cutoff:
@@ -65,6 +72,19 @@ class TunnelDetector:
         if len(dq) >= self.rate_limit:
             return min(0.4, 0.2 + (len(dq) - self.rate_limit) / (self.rate_limit * 5))
         return 0.0
+
+    def _sweep(self, now: float) -> None:
+        """Drop entries whose window has emptied; clear outright if that is not
+        enough. This state is advisory, so losing it costs a detection delay,
+        never correctness — the same trade DGADetector makes."""
+        cutoff = now - self.window
+        for key, dq in list(self._seen.items()):
+            while dq and dq[0] < cutoff:
+                dq.popleft()
+            if not dq:
+                del self._seen[key]
+        if len(self._seen) >= self.max_tracked:
+            self._seen.clear()
 
     def score(self, qname: str, qtype: int, client: str = "", now: float | None = None) -> float:
         name = qname.rstrip(".").lower()

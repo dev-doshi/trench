@@ -94,6 +94,12 @@ security:
   # warns at startup if it finds this at 0 on a non-loopback listener.
   rate_limit: 0
   rate_burst: 0
+  # Peers whose X-Forwarded-For header may be believed, as IPs or CIDRs.
+  # Empty (the default) means the socket address always wins. Only add the
+  # reverse proxy in front of DoH or the console: the header is written by
+  # whoever sent the request, and the identity it sets picks the per-client
+  # policy, the rate-limit bucket, the lockout counter and the ECS subnet.
+  trusted_proxies: []
   rebinding_protection: true
   local_suffixes: [lan, local, home.arpa, internal, localhost]
   use_0x20: false

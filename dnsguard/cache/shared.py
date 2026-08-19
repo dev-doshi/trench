@@ -23,10 +23,12 @@ _HDR_LEN = _HDR.size
 _STRIPES = 64
 
 
-def key64(qname: bytes, qtype: int, qclass: int, do: bool, ecs: str = "") -> int:
+def key64(qname: bytes, qtype: int, qclass: int, do: bool, ecs: str = "",
+          cd: bool = False) -> int:
     # qname arrives as the lowercased wire form, so it is already a canonical
     # byte string and needs no formatting trip through str.
-    raw = b"%s|%d|%d|%d|%s" % (qname, qtype, qclass, int(do), ecs.encode())
+    raw = b"%s|%d|%d|%d|%s|%d" % (qname, qtype, qclass, int(do), ecs.encode(),
+                                  int(cd))
     return int.from_bytes(hashlib.blake2b(raw, digest_size=8).digest(), "big")
 
 
@@ -80,11 +82,17 @@ class SharedCache:
                 _HDR.pack_into(self.mm, off, 0, 0.0, 0, 0)
 
     def clear(self) -> None:
+        """Invalidate every slot.
+
+        One lock acquisition per stripe, not one per slot. Taking a
+        cross-process lock 16k times ran on the event-loop thread — every
+        in-flight query waited on it — and a worker killed mid-clear (this
+        deployment has an OOM history) left a stripe lock held forever, which
+        no reader can time out of.
+        """
+        blank = _HDR.pack(0, 0.0, 0, 0)
         for i in range(_STRIPES):
             with self.locks[i]:
-                pass
-        # zero the header region of every slot (cheap invalidation)
-        for b in range(self.slots):
-            off = b * self.slot_size
-            with self.locks[b % _STRIPES]:
-                _HDR.pack_into(self.mm, off, 0, 0.0, 0, 0)
+                for b in range(i, self.slots, _STRIPES):
+                    off = b * self.slot_size
+                    self.mm[off:off + _HDR_LEN] = blank

@@ -45,7 +45,9 @@ def import_adguard(yaml_path: str) -> ImportResult:
     import yaml
     res = ImportResult()
     data = yaml.safe_load(Path(yaml_path).read_text()) or {}
-    dns = data.get("filtering", data)  # newer configs nest under 'filtering'
+    # `or data`, not a default: a config carrying an explicit `filtering:`
+    # with nothing under it yields None, and the next line calls .get on it.
+    dns = data.get("filtering") or data
     for f in (data.get("filters") or dns.get("filters") or []):
         if f.get("enabled", True) and f.get("url"):
             res.sources.append(f["url"])

@@ -13,7 +13,14 @@ from ..log import get
 from ..wire import Message, Type
 from ..wire.rrtypes import Flags, Opcode, Rcode
 from .secondary import SecondaryZone
-from .tsig import TSIGError, TSIGKey, sign_wire, verify_wire
+from .tsig import (
+    ReplayWindow,
+    TSIGError,
+    TSIGKey,
+    sign_error,
+    sign_wire,
+    verify_wire,
+)
 from .update import UpdatePolicy, apply_update
 from .xfr_service import TransferService, ZoneTransferPolicy, is_notify
 
@@ -28,6 +35,9 @@ class AuthHandler:
         self.update_acl: dict[str, list[str]] = {}     # origin -> allowed client IPs
         self.update_key: dict[str, str] = {}           # origin -> required TSIG key name
         self.secondaries: dict[str, SecondaryZone] = {}
+        # Shared across UPDATE and NOTIFY: a valid MAC proves the sender knew
+        # the key, not that this is the first time they sent this message.
+        self.replay = ReplayWindow()
 
     # --- configuration ---
     def set_zone_policy(self, origin, *, allow_transfer=(), also_notify=(),
@@ -71,13 +81,16 @@ class AuthHandler:
         if query.opcode == Opcode.UPDATE:
             return self._handle_update(query_wire, query, client_ip, udp=udp)
         if is_notify(query):
-            return self._handle_notify(query, client_ip)
+            return self._handle_notify(query, client_ip, query_wire)
         return None
 
     def _handle_update(self, query_wire: bytes, query: Message, client_ip: str,
                        *, udp: bool = False) -> bytes:
         q = query.question
-        zone = self.zonestore.authoritative_for(q.name) if q else None
+        if q is None:
+            return self._reply(query, Rcode.NOTAUTH)   # unchanged: q None fell
+                                                       # through to this before
+        zone = self.zonestore.authoritative_for(q.name)
         if zone is None or zone.origin != q.name:
             return self._reply(query, Rcode.NOTAUTH)
         key = zone.origin.to_text().lower()
@@ -97,9 +110,10 @@ class AuthHandler:
         tkey = req_mac = None
         if self.update_key.get(key):
             try:
-                req_mac, tkey, _ = verify_wire(query_wire, self.keyring)
+                req_mac, tkey, _ = verify_wire(query_wire, self.keyring,
+                                               replay=self.replay)
             except TSIGError as e:
-                return self._reply(query, e.rcode)
+                return sign_error(self._reply(query, e.rcode), e)
             if tkey.name.lower() != self.update_key[key].lower():
                 return self._reply(query, Rcode.NOTAUTH)
         rc = apply_update(zone, query, UpdatePolicy())
@@ -118,7 +132,8 @@ class AuthHandler:
             return
         loop.create_task(self.xfr.notify_secondaries(zone))
 
-    def _handle_notify(self, query: Message, client_ip: str) -> bytes:
+    def _handle_notify(self, query: Message, client_ip: str,
+                       query_wire: bytes = b"") -> bytes:
         """RFC 1996 §3.10: only the zone's primary may tell us the zone changed.
 
         A NOTIFY costs the sender one small UDP packet and costs us a full zone
@@ -135,6 +150,19 @@ class AuthHandler:
             log.warning("NOTIFY for %s from %s refused (not the primary %s)",
                         q.name.to_text(), client_ip, sec.primary)
             return self._reply(query, Rcode.REFUSED)
+        # A source address is a claim. Where the secondary holds a key, require
+        # the sender to prove it too: otherwise one spoofed UDP packet — the
+        # cheapest thing an off-path attacker can send — drives a full zone
+        # transfer from our own primary, and a flood of them is an amplifier
+        # aimed at our own infrastructure.
+        key = getattr(sec, "key", None)
+        if key is not None:
+            try:
+                verify_wire(query_wire, {key.name: key}, replay=self.replay)
+            except TSIGError as e:
+                log.warning("NOTIFY for %s from %s refused: %s",
+                            q.name.to_text(), client_ip, e)
+                return sign_error(self._reply(query, e.rcode), e)
         log.info("NOTIFY for %s -> scheduling refresh", q.name.to_text())
         sec.notify()
         r = query.reply(Rcode.NOERROR)

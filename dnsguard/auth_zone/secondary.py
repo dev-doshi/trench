@@ -29,10 +29,22 @@ async def _read_tcp_message(reader: asyncio.StreamReader) -> bytes:
     return await reader.readexactly(length)
 
 
+#: Ceilings for one inbound transfer. A zone that legitimately needs more than
+#: this is not one this deployment can hold in memory anyway.
+MAX_XFR_RECORDS = 2_000_000
+MAX_XFR_BYTES = 512 * 1024 * 1024
+MAX_XFR_ENVELOPES = 100_000
+MAX_XFR_SECONDS = 900.0
+
+
 async def transfer_records(host: str, port: int, origin: Name, *,
                            key: TSIGKey | None = None, timeout: float = 30.0,
                            qtype: int = Type.AXFR,
-                           client_serial: int | None = None) -> list:
+                           client_serial: int | None = None,
+                           max_records: int = MAX_XFR_RECORDS,
+                           max_bytes: int = MAX_XFR_BYTES,
+                           max_envelopes: int = MAX_XFR_ENVELOPES,
+                           max_seconds: float = MAX_XFR_SECONDS) -> list:
     """Run an AXFR/IXFR against a primary; return the raw RR stream (TSIG
     stripped, envelopes verified). Interpretation (full zone vs delta) is the
     caller's job via `apply_ixfr`."""
@@ -47,13 +59,28 @@ async def transfer_records(host: str, port: int, origin: Name, *,
         writer.write(len(wire).to_bytes(2, "big") + wire)
         await writer.drain()
         records = []
+        nbytes = 0
+        envelopes = 0
+        deadline = time.monotonic() + max_seconds
         while not ixfr_complete(records):
+            # A primary is not necessarily benign — TSIG is optional per
+            # secondary, and the connection can be in the middle. Every envelope
+            # reset the per-message timeout, so an endless stream was accepted
+            # forever while the process grew until it was OOM-killed.
+            if (len(records) > max_records or nbytes > max_bytes
+                    or envelopes > max_envelopes
+                    or time.monotonic() > deadline):
+                raise TransferError(
+                    f"transfer of {origin.to_text()} exceeded its limits "
+                    f"({len(records)} records, {nbytes} bytes, {envelopes} messages)")
             data = await asyncio.wait_for(_read_tcp_message(reader), timeout)
             if key is not None:
                 req_mac, _, _ = verify_wire(data, {key.name: key}, request_mac=req_mac)
             msg = Message.parse(data)
             if msg.rcode != Rcode.NOERROR:
                 raise TransferError(f"transfer refused: rcode {msg.rcode}")
+            nbytes += len(data)
+            envelopes += 1
             records.extend(rr for rr in msg.answers if rr.rtype != Type.TSIG)
             if not records:  # primary sent an empty first message = error
                 raise TransferError("empty transfer")

@@ -32,11 +32,12 @@ def _b64url_decode(s: str) -> bytes:
 
 
 def _client_ip(request: web.Request) -> str:
-    xff = request.headers.get("X-Forwarded-For")
-    if xff:
-        return xff.split(",")[0].strip()
-    peer = request.transport.get_extra_info("peername") if request.transport else None
-    return peer[0] if peer else "?"
+    """The querying client's address, trusting X-Forwarded-For only from a
+    configured proxy. This value selects the client's filtering policy, its
+    rate-limit bucket and the ECS subnet sent upstream, so an unvalidated
+    header let a filtered device inherit an unfiltered device's policy."""
+    from ..security.clientaddr import client_ip
+    return client_ip(request)
 
 
 def message_to_json(msg: Message) -> dict:
@@ -73,9 +74,14 @@ class DoHServer(Frontend):
             self._ssl = server_ssl_context(cert, key, data_dir=data_dir or Path("./data"),
                                            alpn=["h2", "http/1.1"], hostnames=[host, "localhost"])
         self._runner: web.AppRunner | None = None
+        from ..security.clientaddr import TrustedProxies
+        sec = getattr(getattr(pipeline, "config", None), "security", None)
+        self.trusted = TrustedProxies(getattr(sec, "trusted_proxies", ()))
 
     def _build_app(self) -> web.Application:
         app = web.Application()
+        from ..security.clientaddr import TRUSTED_KEY
+        app[TRUSTED_KEY] = self.trusted
         app.router.add_get(self.path, self._handle)
         app.router.add_post(self.path, self._handle)
         app.router.add_get(self.path + "/{clientid}", self._handle)

@@ -1,11 +1,8 @@
 # Known mypy findings, recorded by scripts/mypy_gate.py.
 # New findings fail CI; this file may only ever shrink.
-# 127 finding(s).
+# 120 finding(s).
 dnsguard/analyze/lists.py	union-attr	Item "None" of "Any | None" has no attribute "nbytes"
 dnsguard/analyze/lists.py	union-attr	Item "None" of "Any | None" has no attribute "nbytes"
-dnsguard/api/auth.py	index	Value of type "Row | None" is not indexable
-dnsguard/api/auth.py	index	Value of type "Row | None" is not indexable
-dnsguard/api/auth.py	index	Value of type "Row | None" is not indexable
 dnsguard/api/auth.py	index	Value of type "Row | None" is not indexable
 dnsguard/api/auth.py	index	Value of type "Row | None" is not indexable
 dnsguard/api/auth.py	index	Value of type "Row | None" is not indexable
@@ -49,7 +46,6 @@ dnsguard/auth_zone/xfr_service.py	attr-defined	"Rdata" has no attribute "serial"
 dnsguard/auth_zone/xfr_service.py	union-attr	Item "None" of "Question | None" has no attribute "name"
 dnsguard/auth_zone/xfr_service.py	union-attr	Item "None" of "Question | None" has no attribute "name"
 dnsguard/auth_zone/xfr_service.py	union-attr	Item "None" of "Question | None" has no attribute "rtype"
-dnsguard/auth_zone/zone.py	return-value	Incompatible return value type (got "Rdata | None", expected "SOA | None")
 dnsguard/cache/shared.py	attr-defined	"object" has no attribute "__enter__"
 dnsguard/cache/shared.py	attr-defined	"object" has no attribute "__enter__"
 dnsguard/cache/shared.py	attr-defined	"object" has no attribute "__enter__"
@@ -57,7 +53,6 @@ dnsguard/cache/shared.py	attr-defined	"object" has no attribute "__exit__"
 dnsguard/cache/shared.py	attr-defined	"object" has no attribute "__exit__"
 dnsguard/cache/shared.py	attr-defined	"object" has no attribute "__exit__"
 dnsguard/cli/main.py	operator	Unsupported operand types for in ("int" and "Iterator[Rcode]")
-dnsguard/config.py	import-untyped	Library stubs not installed for "yaml"
 dnsguard/dhcp/server.py	assignment	Incompatible types in assignment (expression has type "DatagramTransport", variable has type "None")
 dnsguard/engine/pipeline.py	assignment	Incompatible types in assignment (expression has type "TunnelResult", variable has type "DGAResult")
 dnsguard/engine/pipeline.py	attr-defined	"object" has no attribute "reason"
@@ -79,7 +74,6 @@ dnsguard/engine/zerox20.py	union-attr	Item "None" of "Question | None" has no at
 dnsguard/engine/zerox20.py	union-attr	Item "None" of "Question | None" has no attribute "rclass"
 dnsguard/engine/zerox20.py	union-attr	Item "None" of "Question | None" has no attribute "rtype"
 dnsguard/filter/cnamecloak.py	attr-defined	"Rdata" has no attribute "name"
-dnsguard/ops/migrate_import.py	import-untyped	Library stubs not installed for "yaml"
 dnsguard/ops/whatif.py	assignment	Incompatible default for argument "allow" (default has type "tuple[()]", argument has type "list[str]")
 dnsguard/ops/whatif.py	assignment	Incompatible default for argument "deny" (default has type "tuple[()]", argument has type "list[str]")
 dnsguard/resolver/dnssec/chain.py	assignment	Incompatible types in assignment (expression has type "tuple[str, Name, None]", variable has type "tuple[str, Name, list[DNSKEY]]")
@@ -124,7 +118,6 @@ dnsguard/transport/upstream.py	assignment	Incompatible types in assignment (expr
 dnsguard/transport/upstream.py	assignment	Incompatible types in assignment (expression has type "str", variable has type "int")
 dnsguard/transport/upstream.py	attr-defined	"None" has no attribute "post"
 dnsguard/transport/upstream.py	attr-defined	"QuicConnectionProtocol" has no attribute "fut"
-dnsguard/transport/upstream.py	var-annotated	Need type annotation for "socks" (hint: "socks: list[<type>] = ...")
 dnsguard/wire/name.py	call-overload	No overload variant of "get" of "dict" matches argument type "bytes"
 dnsguard/wire/name.py	index	Invalid index type "bytes" for "dict[tuple[bytes, ...], int]"; expected type "tuple[bytes, ...]"
 dnsguard/wire/rdata.py	attr-defined	"type" has no attribute "parse"

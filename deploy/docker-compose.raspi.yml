@@ -7,8 +7,15 @@ services:
     container_name: dnsguard
     restart: unless-stopped
     network_mode: host # required to serve LAN DNS on :53
+    # Everything dropped, then the single capability binding :53 needs.
+    # cap_add alone leaves a root container holding CHOWN, SETUID,
+    # NET_RAW and the rest of the default set.
+    cap_drop:
+      - ALL
     cap_add:
-      - NET_BIND_SERVICE
+      - NET_BIND_SERVICE   # bind :53 / :853
+      - SETUID             # server.user: shed root once the ports are bound
+      - SETGID             # ...and the matching group
 
     # --- memory safety -----------------------------------------------------
     # Without a limit, a blocklist rebuild spike lets the kernel OOM-killer

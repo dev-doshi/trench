@@ -95,6 +95,14 @@ def _in_bailiwick(name: Name, qname: Name) -> bool:
 
 
 def _targets(rrs: list[RR]) -> set[Name]:
+    """Names a kept record points at, and which may therefore have glue.
+
+    A target only earns its glue when it sits inside the zone that named it.
+    Without that test an authority record for `com. NS ns.attacker.net` made
+    `ns.attacker.net` "wanted", so its address record in the additional section
+    survived and was relayed to the stub — the unsolicited-record relay this
+    module exists to stop, arriving through the allow-list rather than past it.
+    """
     out: set[Name] = set()
     for rr in rrs:
         if rr.rtype not in _TARGET_TYPES:
@@ -102,7 +110,8 @@ def _targets(rrs: list[RR]) -> set[Name]:
         for attr in ("target", "exchange", "nsdname", "name"):
             v = getattr(rr.rdata, attr, None)
             if isinstance(v, Name):
-                out.add(v)
+                if v == rr.name or v.is_subdomain_of(rr.name):
+                    out.add(v)
                 break
     return out
 

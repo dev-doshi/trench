@@ -64,6 +64,7 @@ class Pipeline:
         self.plugins = plugins          # PluginManager (P8)
         self.learn: PopularityTracker | None = None   # learned prewarm, set by App
         self._prefetching: set[Any] = set()  # cache keys with an in-flight prefetch
+        self._prefetch_tasks: set[Any] = set()   # strong refs; see _prefetch
         self._inflight: dict[Any, Any] = {}       # cache key -> future for the query in flight
         self._fwd_notes: bool | None = None  # does the forwarder report its upstream?
         # RFC 8767 §6 client response timer: how long a client waits for a
@@ -267,6 +268,10 @@ class Pipeline:
         key = self.cache.key_for(ctx.query, ecs=ecs_scope)
         if key is not None:
             hit = self.cache.get(key)
+            if hit is None and key.ecs:
+                # An answer the upstream marked scope 0 is filed globally, so a
+                # subnet-scoped miss still has to check there before forwarding.
+                hit = self.cache.get(key._replace(ecs=""))
             if hit is not None:
                 resp, stale = hit
                 ctx.response = resp
@@ -397,7 +402,14 @@ class Pipeline:
             answer = await self._fetch(ctx, key)
         except BaseException as e:
             if not fut.done():
-                fut.set_exception(e)
+                # A cancelled leader must not cancel its followers. CancelledError
+                # is a BaseException, so handing it over sails straight past the
+                # followers' `except Exception` and they end cancelled too —
+                # no SERVFAIL, no stale fallback, no reply at all for the whole
+                # burst. Their own query was never cancelled; only ours was.
+                fut.set_exception(
+                    UpstreamError("upstream query cancelled")
+                    if isinstance(e, asyncio.CancelledError) else e)
             raise
         else:
             if not fut.done():
@@ -440,8 +452,13 @@ class Pipeline:
         if (self.enabled and fc.enabled and fc.cname_inspect
                 and hasattr(self.filter, "match") and resp.answers):
             from ..filter.cnamecloak import inspect
+            pol = ctx.policy
             try:
-                d = inspect(self.filter, resp, ctx.qtype)
+                d = inspect(self.filter, resp, ctx.qtype,
+                            ctags=frozenset(getattr(pol, "ctags", ()) or ()),
+                            client=ctx.client_ip,
+                            client_names=frozenset(
+                                n for n in (getattr(pol, "name", "") or "",) if n))
             except Exception:
                 d = None
             if d is not None and d.blocked:
@@ -451,8 +468,29 @@ class Pipeline:
             from .rebinding import scrub
             scrub(resp, ctx.qname, local_suffixes=self.local_suffixes)
         if key is not None:
-            self.cache.put(key, resp)
+            self.cache.put(self._scoped_key(key, resp), resp)
         return _Answer(resp, None)
+
+    @staticmethod
+    def _scoped_key(key, resp):
+        """Re-key an answer onto the scope the upstream actually declared.
+
+        RFC 7871 §7.3.1: SCOPE PREFIX-LENGTH is the server's statement of how
+        widely its answer applies, and scope 0 means "for every client". Storing
+        under the asking client's own /24 regardless kept one duplicate entry
+        per subnet for answers that were never subnet-specific, so a network
+        with many subnets cached the same reply once per subnet and missed on
+        all of them.
+        """
+        if not key.ecs or resp.edns is None:
+            return key
+        try:
+            ecs = resp.edns.get_ecs()
+        except Exception:
+            return key
+        if ecs is None or ecs.scope_prefix == 0:
+            return key._replace(ecs="")      # global: one entry serves everyone
+        return key
 
     def _ecs_scope(self, ctx: QueryContext) -> str:
         if getattr(self.config.upstream, "ecs", "off") != "forward":
@@ -525,7 +563,9 @@ class Pipeline:
             finally:
                 self._prefetching.discard(key)
 
-        asyncio.ensure_future(refresh())
+        task = asyncio.ensure_future(refresh())
+        self._prefetch_tasks.add(task)
+        task.add_done_callback(self._prefetch_tasks.discard)
 
     async def _safe_search_chain(self, ctx: QueryContext, target: str) -> None:
         """Answer with CNAME qname->safe-target, resolving the target's address

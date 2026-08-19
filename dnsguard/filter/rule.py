@@ -22,8 +22,15 @@ class Rewrite:
     rtype: int = 0
 
 
-@dataclass
+@dataclass(slots=True)
 class Rule:
+    """One compiled rule.
+
+    `slots=True` matters at this scale: a large aggregate blocklist is ~600k
+    rules and a refresh holds two engines at once. Measured at ~310 B/rule
+    without slots, which is ~190 MB per copy — on a box with a 955 MB ceiling
+    that has already been OOM-killed.
+    """
     raw: str
     block: bool = True                # False => exception (@@)
     # match forms (exactly one primary form set)

@@ -27,6 +27,7 @@ class DoQProtocol(QuicConnectionProtocol):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._buffers: dict[int, bytearray] = {}
+        self._tasks: set = set()   # strong refs to in-flight handlers
 
     def quic_event_received(self, event: QuicEvent) -> None:
         if isinstance(event, StreamDataReceived):
@@ -35,7 +36,9 @@ class DoQProtocol(QuicConnectionProtocol):
             if event.end_stream or self._complete(buf):
                 data = bytes(buf)
                 self._buffers.pop(event.stream_id, None)
-                asyncio.ensure_future(self._answer(event.stream_id, data))
+                task = asyncio.ensure_future(self._answer(event.stream_id, data))
+                self._tasks.add(task)
+                task.add_done_callback(self._tasks.discard)
 
     @staticmethod
     def _complete(buf: bytearray) -> bool:

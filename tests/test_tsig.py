@@ -86,3 +86,40 @@ def test_response_chains_to_request_mac():
     # verifying without the request MAC must fail
     with pytest.raises(TSIGError):
         verify_wire(signed, {"xfr-key.": key}, now=1001)
+
+
+# ------------------------------------------------------------------ replay
+def test_a_signed_message_cannot_be_replayed():
+    """A valid MAC proves the sender knew the key, never that this is the first
+    time they said it. On UDP the datagram can simply be sent again, spoofing
+    the ACL'd source address, for the whole fudge window."""
+    from dnsguard.auth_zone.tsig import ReplayWindow, TSIGError, sign_wire, verify_wire
+
+    key = TSIGKey(name="k.", secret=b"s" * 32, algorithm="hmac-sha256.")
+    msg = Message(id=1234)
+    msg.questions.append(Question(Name.from_text("example.com."), Type.SOA, Class.IN))
+    wire, _ = sign_wire(msg.to_wire(), key)
+
+    replay = ReplayWindow()
+    verify_wire(wire, {"k.": key}, replay=replay)          # first time: fine
+    for _ in range(3):
+        with pytest.raises(TSIGError):
+            verify_wire(wire, {"k.": key}, replay=replay)
+
+    # a separate window (a fresh process) has no memory, which is why the
+    # window belongs on the long-lived handler rather than per request
+    verify_wire(wire, {"k.": key}, replay=ReplayWindow())
+
+
+def test_key_names_match_regardless_of_case_or_trailing_dot():
+    """Config may spell a key name either way. Matching only the exact
+    lowercased-absolute form failed every transfer with BADKEY, and the failure
+    was swallowed, so the secondary silently served a stale zone."""
+    from dnsguard.auth_zone.tsig import sign_wire, verify_wire
+
+    key = TSIGKey(name="XFR-Key.", secret=b"s" * 32, algorithm="hmac-sha256.")
+    msg = Message(id=7)
+    msg.questions.append(Question(Name.from_text("example.com."), Type.SOA, Class.IN))
+    wire, _ = sign_wire(msg.to_wire(), key)
+    _, got, _ = verify_wire(wire, {"XFR-Key.": key})
+    assert got is key

@@ -67,7 +67,22 @@ async def _amain(cfg: Config, *, primary: bool = True, worker_idx: int = 0,
         except NotImplementedError:  # pragma: no cover (Windows)
             pass
     try:  # SIGHUP -> hot reload (config + lists), without dropping queries
-        loop.add_signal_handler(signal.SIGHUP, lambda: asyncio.ensure_future(app.reload()))
+        # Guarded and strongly referenced. A bare ensure_future is only weakly
+        # held by the loop, and nothing stopped two HUPs (or a HUP during the
+        # scheduled refresh) running two blocklist rebuilds at once — each of
+        # which peaks at hundreds of MB, on a box with an OOM history.
+        _reloads: set = set()
+
+        def _on_hup() -> None:
+            if _reloads:
+                logmod.get("main").warning(
+                    "SIGHUP ignored: a reload is already running")
+                return
+            task = asyncio.ensure_future(app.reload())
+            _reloads.add(task)
+            task.add_done_callback(_reloads.discard)
+
+        loop.add_signal_handler(signal.SIGHUP, _on_hup)
     except (NotImplementedError, AttributeError):  # pragma: no cover
         pass
     runner = asyncio.ensure_future(app.run())

@@ -40,9 +40,15 @@ COPY deploy/healthcheck.py /usr/local/bin/dnsguard-healthcheck
 # An unprivileged account for DNSGuard to drop into. The container still
 # starts as root because :53 and :853 are privileged ports; set `server.user`
 # in the config and DNSGuard sheds root itself once every listener is bound.
+# /data must be writable both before and after the privilege drop, and
+# without relying on root's CAP_DAC_OVERRIDE — a hardened deployment drops it.
+# root:dnsguard 2775 gives root the owner bits and the dropped-to account the
+# group bits; the setgid bit keeps files created either side of the drop in
+# the group, so the other identity can still read them.
 RUN useradd --no-create-home --shell /usr/sbin/nologin --uid 1000 dnsguard \
     && mkdir -p /data \
-    && chown dnsguard:dnsguard /data
+    && chown root:dnsguard /data \
+    && chmod 2775 /data
 
 # Runtime
 EXPOSE 53/udp 53/tcp 853/tcp 853/udp 8443/tcp 8089/tcp

@@ -80,7 +80,12 @@ def query_key(data: bytes) -> tuple[bytes, int] | None:
     # The name is lowercased; everything after it is taken verbatim. Label
     # lengths are safe to pass through `bytes.lower()` because any octet above
     # 63 was rejected above, and 'A' is 65.
-    return data[12:p].lower() + data[p:] + data[2:4], p
+    #
+    # ARCOUNT is part of the key even though the additional bytes themselves
+    # already are: Message.parse reads it to decide whether a trailing OPT
+    # counts as EDNS at all, so the same trailing bytes with ARCOUNT zeroed is
+    # a different question and is owed a reply with no OPT (RFC 6891 §6.1.1).
+    return data[12:p].lower() + data[p:] + data[2:4] + data[10:12], p
 
 
 def ttl_offsets(blob: bytes) -> tuple[int, ...] | None:
@@ -183,17 +188,19 @@ class WireAnswer:
     same.
     """
 
-    __slots__ = ("blob", "ttls", "base_ttl", "inserted", "qend", "qname", "qtype",
-                 "action", "rcode", "reason", "rule", "source", "upstream",
-                 "proto", "answers", "rtype", "cookie_at", "q_cookie_at")
+    __slots__ = ("blob", "ttls", "original", "base_ttl", "inserted", "qend",
+                 "qname", "qtype", "action", "rcode", "reason", "rule", "source",
+                 "upstream", "proto", "answers", "rtype", "cookie_at", "q_cookie_at")
 
     def __init__(self, blob: bytes, ttls: tuple[int, ...], base_ttl: int,
                  inserted: float, qend: int, *, qname: str, qtype: str,
                  action: str, rcode: str, reason: str, rule: str, source: str,
                  upstream: str, proto: str, answers: list, rtype: int = 0,
-                 cookie_at: int = -1, q_cookie_at: int = -1):
+                 cookie_at: int = -1, q_cookie_at: int = -1,
+                 original: tuple[int, ...] = ()):
         self.blob = blob
         self.ttls = ttls
+        self.original = original or tuple(base_ttl for _ in ttls)
         self.base_ttl = base_ttl
         self.inserted = inserted
         self.qend = qend
@@ -250,6 +257,14 @@ class FastPath:
             return False
         if p.plugins is not None and p.plugins.active:
             return False                    # a plugin may rewrite anything
+        # $client rules are matched against the client's address and CIDRs, not
+        # against its Policy — and every unconfigured client shares the single
+        # default Policy. So the policy tag below cannot tell two such clients
+        # apart, and whichever asked first would have its verdict replayed to
+        # the other. The address is not in the key, so the only safe answer is
+        # to stand down entirely while any such rule exists.
+        if p.filter is not None and getattr(p.filter, "has_client_rules", False):
+            return False
         # With ECS in play the answers become subnet-specific, so a recorded
         # one cannot be replayed to another client.
         return getattr(p.config.upstream, "ecs", "off") in ("off", "strip")
@@ -270,6 +285,25 @@ class FastPath:
         if tag is None:
             tag = self._policy_ids[policy] = _U16.pack(len(self._policy_ids) + 1)
         return tag
+
+    def _time_dependent(self, ctx) -> bool:
+        """True when this client's verdict can change without the query changing.
+
+        A scheduled service block is the clear case: an answer resolved at 19:59
+        with a 3600s TTL would otherwise keep being replayed through a window
+        that opens at 20:00, so "no video after 8pm" simply did not apply to any
+        name already in the table. Safe-browsing data refreshes the same way.
+        """
+        pol = getattr(ctx, "policy", None)
+        if pol is None:
+            return False
+        p = self.pipeline
+        if p.services is not None:
+            svcs = frozenset(getattr(pol, "services", ()) or ())
+            if svcs and p.services.has_schedule(svcs):
+                return True
+        return p.safebrowse is not None and (getattr(pol, "safe_browse", False)
+                                             or getattr(pol, "parental", False))
 
     # ------------------------------------------------------------------ serve
     def serve(self, data: bytes, client_ip: str, client_id: str = ""):
@@ -311,9 +345,13 @@ class FastPath:
         # into 299, so flooring again reported 298 with no time having passed.
         # Rounding up makes an immediate replay byte-identical to the answer it
         # was recorded from, and still never exceeds that answer's own TTL.
-        ttl = -int(-remaining // 1)
-        for off in entry.ttls:
-            _U32.pack_into(out, off, ttl)
+        elapsed = entry.base_ttl - remaining
+        for off, was in zip(entry.ttls, entry.original, strict=False):
+            # Each record counts down from *its own* recorded TTL. Packing one
+            # shared countdown into every offset understated every TTL above the
+            # minimum — a CNAME at 3600 alongside an A at 60 replayed as 60/60,
+            # which is not the reply the pipeline would have produced.
+            _U32.pack_into(out, off, max(1, -int(-(was - elapsed) // 1)))
         if entry.cookie_at >= 0 and p.cookies is not None:
             # A server cookie is HMAC(secret, client_cookie || client_ip): a
             # function of who is asking, not of what they asked. The key pins the
@@ -366,6 +404,8 @@ class FastPath:
     def store(self, data: bytes, blob: bytes, ctx) -> None:
         if not self.usable or ctx.action not in self._STORABLE:
             return
+        if self._time_dependent(ctx):
+            return
         found = query_key(data)
         if found is None:
             return
@@ -375,7 +415,8 @@ class FastPath:
             # No TTL field means nothing to count down, and therefore no honest
             # moment to stop replaying. Not recorded.
             return
-        base = min(_U32.unpack_from(blob, o)[0] for o in offs)
+        original = tuple(_U32.unpack_from(blob, o)[0] for o in offs)
+        base = min(original)
         if base < 1:
             return                          # TTL 0 means "do not reuse this"
         resp = ctx.response
@@ -399,7 +440,7 @@ class FastPath:
         if len(self.table) >= self.max_entries:
             self.table.clear()              # cheaper than LRU, and rare
         self.table[key + self._policy_tag(ctx.client_ip, ctx.client_id)] = WireAnswer(
-            bytes(blob), offs, base, time.monotonic(), qend,
+            bytes(blob), offs, base, time.monotonic(), qend, original=original,
             qname=ctx.qname or ".", qtype=type_to_text(ctx.qtype),
             action=ctx.action, rcode=_rcode_text(resp.rcode), reason=ctx.reason,
             rule=ctx.rule, source=ctx.source, upstream=ctx.upstream,

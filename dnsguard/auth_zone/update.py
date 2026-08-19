@@ -158,14 +158,35 @@ def _resign(zone: Zone) -> None:
     NSEC/NSEC3 chains + their hashed owner names, DNSKEY, CDS/CDNSKEY), then
     re-run the signer with the SAME key and denial flavor — the DS at the
     parent must stay valid across dynamic updates."""
+    import copy
+
     from .sign import sign_zone
-    for name in list(zone.records):
-        node = zone.records[name]
+    # Stripped and re-signed on a copy, swapped in only once signing succeeds.
+    # Doing it in place had no rollback: a signer that raised — a missing key,
+    # bad sign_params — left a live zone stripped and unsigned while the
+    # parent's DS still pointed at it, so every validating resolver returned
+    # SERVFAIL for the whole zone.
+    staged = copy.copy(zone)
+    # Fresh containers, shared leaves. A deepcopy would try to clone the
+    # signing key, which is not copyable; the rdata objects are never mutated
+    # in place, so sharing them is safe and the copy stays cheap.
+    staged.records = {n: {t: list(rds) for t, rds in node.items()}
+                      for n, node in zone.records.items()}
+    staged.ttls = dict(zone.ttls)
+    staged.rrsigs = dict(zone.rrsigs)
+    for name in list(staged.records):
+        node = staged.records[name]
         for t in _DNSSEC_TYPES:
             node.pop(t, None)
-            zone.ttls.pop((name, t), None)
+            staged.ttls.pop((name, t), None)
         if not node:                        # e.g. an NSEC3 hashed owner name
-            del zone.records[name]
-    zone.rrsigs.clear()
-    zone.signed = False
-    sign_zone(zone, private_key=zone.signing_key, **zone.sign_params)
+            del staged.records[name]
+    staged.rrsigs.clear()
+    staged.signed = False
+    sign_zone(staged, private_key=staged.signing_key, **staged.sign_params)
+    zone.records = staged.records
+    zone.ttls = staged.ttls
+    zone.rrsigs = staged.rrsigs
+    zone.signed = staged.signed
+    zone.signing_key = staged.signing_key
+    zone.sign_params = staged.sign_params

@@ -44,12 +44,21 @@ def build_reply(req: DhcpPacket, scope: Scope, server_ip: str,
             return None
         return _reply(req, scope, server_ip, lease.ip, MessageType.OFFER)
     if mt == MessageType.REQUEST:
+        # A REQUEST naming a different server is that server's to answer.
+        # Replying anyway hands the client an ACK for an address out of our
+        # pool, so two servers ACK the same client and the addresses collide.
+        chosen = req.server_id()
+        if chosen and chosen != server_ip:
+            return None
         lease = scope.allocate(req.mac, req.hostname(), requested=req.requested_ip(), now=now)
         if lease is None or (req.requested_ip() and req.requested_ip() != lease.ip):
             return _nak(req, server_ip)
         return _reply(req, scope, server_ip, lease.ip, MessageType.ACK)
     if mt == MessageType.RELEASE:
-        scope.release(req.mac)
+        # Only the holder of the address may release it: ciaddr carries the
+        # address the client claims to be giving up, and it has to be the one
+        # we actually granted to this chaddr.
+        scope.release(req.mac, req.ciaddr)
         return None
     return None
 
@@ -88,6 +97,8 @@ class _Proto(asyncio.DatagramProtocol):
         try:
             req = DhcpPacket.parse(data)
         except Exception:
+            return
+        if req.op != 1:      # BOOTREQUEST; a reply on this port is not ours to act on
             return
         reply = build_reply(req, self.server.scope, self.server.server_ip)
         if reply is not None and self.server.transport is not None:

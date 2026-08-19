@@ -22,8 +22,12 @@ def parse_zonefile(text: str, origin: str) -> Zone:
         if not line.strip():
             continue
         if line.startswith("$ORIGIN"):
+            # Only the suffix for relative owner names. Reassigning zone.origin
+            # moved the apex, so a legal file that switches $ORIGIN partway left
+            # zone.soa (which reads records[origin]) returning None — and with
+            # it AXFR, dynamic UPDATE, and every negative answer's authority
+            # section quietly broke for that zone.
             org = Name.from_text(line.split()[1])
-            zone.origin = org
             continue
         if line.startswith("$TTL"):
             default_ttl = _ttl(line.split()[1])

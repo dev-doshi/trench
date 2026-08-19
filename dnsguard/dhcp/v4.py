@@ -69,6 +69,11 @@ class DhcpPacket:
         v = self.options.get(OPT_HOSTNAME)
         return v.decode("latin-1") if v else ""
 
+    def server_id(self) -> str | None:
+        """Option 54: which DHCP server this REQUEST is directed at."""
+        v = self.options.get(OPT_SERVER_ID)
+        return socket.inet_ntoa(v) if v and len(v) == 4 else None
+
     # --- codec ---
     @classmethod
     def parse(cls, data: bytes) -> DhcpPacket:

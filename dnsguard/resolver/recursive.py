@@ -37,6 +37,7 @@ ones, without a network.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import errno
 import random
 import socket
@@ -48,6 +49,13 @@ from ..wire import Class, Message, Question, Type
 from ..wire.name import Name
 from ..wire.rrtypes import Flags, Rcode
 from .roothints import ROOT_HINTS
+
+#: The budget of the resolve currently on this task. DNSSEC validation runs via
+#: a callback handed to Validator at construction time, so it has no other way
+#: to reach the job it is being performed for. A ContextVar rather than an
+#: attribute because several resolves share one Recursive instance.
+_current_job: contextvars.ContextVar = contextvars.ContextVar(
+    "dnsguard_recursive_job", default=None)
 
 log = get("recursive")
 
@@ -182,8 +190,20 @@ class InfraCache:
         return addrs
 
     def put_addrs(self, nsname: Name, addrs: tuple[str, ...], ttl: int) -> None:
-        if addrs:
-            self._addrs[nsname] = (addrs, self.clock() + max(1, min(ttl, 86_400)))
+        if not addrs:
+            return
+        # Bounded exactly like put_cut. This table is filled by remote input —
+        # a hostile delegation naming many distinct glueless nameservers gets
+        # one entry per name — and it was the one half of InfraCache with no
+        # cap and no sweep, so it grew until the box did.
+        if len(self._addrs) >= self.max_zones and nsname not in self._addrs:
+            now = self.clock()
+            for k, (_, exp) in list(self._addrs.items()):
+                if exp <= now:
+                    del self._addrs[k]
+            while len(self._addrs) >= self.max_zones:
+                self._addrs.pop(next(iter(self._addrs)))
+        self._addrs[nsname] = (addrs, self.clock() + max(1, min(ttl, 86_400)))
 
 
 @dataclass
@@ -243,6 +263,14 @@ class Recursive:
     async def resolve(self, qname: str, qtype: int) -> Message:
         name = Name.from_text(qname)
         job = _Job(deadline=self.clock() + self.budget, queries=self.max_queries)
+        token = _current_job.set(job)
+        try:
+            return await self._resolve_chain(job, name, qname, qtype)
+        finally:
+            _current_job.reset(token)
+
+    async def _resolve_chain(self, job, name: Name, qname: str,
+                             qtype: int) -> Message:
         answers: list = []
         seen = {name}
         for _ in range(self.max_cname):
@@ -369,9 +397,14 @@ class Recursive:
         """
         query = Message(id=0)
         query.questions.append(Question(qn, qtype, Class.IN))
+        # EDNS on every query, not only validating ones. Without it we advertise
+        # the 512-byte default, so referrals come back with their glue truncated
+        # away and each one costs either a depth-limited side resolution out of
+        # the client's packet budget or a TCP retry. DO is still set only when
+        # we intend to validate.
+        from ..wire.edns import Edns
+        query.edns = Edns(udp_size=1232)
         if self.validate:
-            from ..wire.edns import Edns
-            query.edns = Edns(udp_size=1232)
             query.edns.do = True
 
         for ip in self._order(servers):
@@ -491,10 +524,20 @@ class Recursive:
         ns = [rr for rr in msg.authority if rr.rtype == Type.NS]
         if not ns:
             return None
-        dz = ns[0].name
-        if len(dz) <= len(zone) or not dz.is_subdomain_of(zone):
-            return None
-        if not name.is_subdomain_of(dz):
+        # The deepest owner name that satisfies down-and-toward, not simply the
+        # first NS listed. Reading ns[0] let a server suppress a referral it is
+        # required to give by ordering any other NS ahead of it — prepending its
+        # own apex NS RRset was enough to make a perfectly good delegation look
+        # like no delegation at all, and the server was then scored lame.
+        dz = None
+        for cand in (rr.name for rr in ns):
+            if len(cand) <= len(zone) or not cand.is_subdomain_of(zone):
+                continue
+            if not name.is_subdomain_of(cand):
+                continue
+            if dz is None or len(cand) > len(dz):
+                dz = cand
+        if dz is None:
             return None
         if qtype == Type.DS and dz == name:
             # A DS record belongs to the parent zone, not the child. Following
@@ -581,7 +624,14 @@ class Recursive:
 
     # --------------------------------------------------------------- DNSSEC
     async def _validator_ask(self, name: Name, rtype: int) -> Message:
-        job = _Job(deadline=self.clock() + self.budget, queries=self.max_queries)
+        # Inherit the caller's budget. A fresh _Job per lookup gave every hop of
+        # a DS/DNSKEY chain its own full allowance, so one client query could
+        # walk a deliberately deep signed chain and spend hundreds of packets
+        # and tens of seconds — the amplification _Job exists to bound.
+        job = _current_job.get()
+        if job is None:
+            job = _Job(deadline=self.clock() + self.budget,
+                       queries=self.max_queries)
         msg, _ = await self._resolve_name(job, name, rtype, 0)
         return msg
 

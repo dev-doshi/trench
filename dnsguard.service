@@ -32,6 +32,11 @@ RestrictNamespaces=true
 LockPersonality=true
 MemoryDenyWriteExecute=false
 ReadWritePaths=/var/lib/dnsguard /etc/dnsguard
+# A ceiling so an unbounded-growth bug restarts this unit instead of letting the
+# kernel OOM-killer choose a victim elsewhere on the host. Raise it on a larger
+# box; the compiled blocklist is what sets the floor.
+MemoryMax=700M
+MemoryAccounting=true
 
 [Install]
 WantedBy=multi-user.target

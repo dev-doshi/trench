@@ -37,11 +37,22 @@ DEFAULT_FUDGE = 300
 
 
 class TSIGError(Exception):
-    """Verification failed. `.rcode` carries the TSIG error to echo back."""
-    def __init__(self, msg: str, rcode: int = Rcode.NOTAUTH, tsig_error: int = 0):
+    """Verification failed. `.rcode` carries the TSIG error to echo back.
+
+    `key` and `tsig` are attached when the failure happened *after* the MAC
+    checked out — BADTIME is the case that matters. Without them the handler
+    could only answer with a bare unsigned NOTAUTH, which a legitimate peer
+    cannot tell from an off-path forgery and which carries no clock for it to
+    resynchronise against, so a skewed secondary stayed broken permanently.
+    """
+
+    def __init__(self, msg: str, rcode: int = Rcode.NOTAUTH, tsig_error: int = 0,
+                 key: TSIGKey | None = None, tsig: R.TSIG | None = None):
         super().__init__(msg)
         self.rcode = rcode
         self.tsig_error = tsig_error
+        self.key = key
+        self.tsig = tsig
 
 
 @dataclass
@@ -163,13 +174,100 @@ def _locate_tsig(wire: bytes) -> tuple[int, R.TSIG, Name]:
     return last_start, last_rd, last_owner
 
 
+class ReplayWindow:
+    """Refuses a TSIG-signed message we have already accepted.
+
+    Two rules, because either alone leaves a hole. A per-key high-water mark on
+    `time_signed` stops an old message being replayed once a newer one has been
+    accepted; a set of MACs seen inside the current fudge window stops the same
+    message being replayed immediately, which the watermark alone permits since
+    a legitimate sender may sign several messages in the same second.
+
+    Without this, a captured UDP dynamic UPDATE could be resent for the whole
+    fudge window — spoofing the ACL'd source address costs nothing on UDP — to
+    revert a later legitimate change or restore a deleted record.
+    """
+
+    __slots__ = ("_high", "_seen", "_max_keys")
+
+    def __init__(self, max_keys: int = 4096):
+        self._high: dict[str, int] = {}
+        self._seen: dict[str, list[tuple[int, bytes]]] = {}
+        self._max_keys = max_keys
+
+    def check(self, key_name: str, time_signed: int, mac: bytes,
+              window: int, now: int) -> None:
+        seen = self._seen.get(key_name)
+        if seen is not None:
+            cutoff = now - window
+            seen = [(t, m) for t, m in seen if t >= cutoff]
+            if any(m == mac for _, m in seen):
+                raise TSIGError("TSIG message replayed", tsig_error=16)  # BADSIG
+        else:
+            seen = []
+            if len(self._seen) >= self._max_keys:
+                self._seen.clear()
+                self._high.clear()
+        high = self._high.get(key_name)
+        if high is not None and time_signed < high - window:
+            raise TSIGError("TSIG message older than the last one accepted",
+                            tsig_error=18)  # BADTIME
+        seen.append((time_signed, mac))
+        self._seen[key_name] = seen
+        self._high[key_name] = max(high or 0, time_signed)
+
+
+def sign_error(reply_wire: bytes, err: TSIGError, *,
+               now: int | None = None) -> bytes:
+    """Attach a TSIG RR carrying the error to an already-built error reply.
+
+    RFC 8945 §5.3.2. For BADTIME the `other` field carries our own 48-bit clock,
+    which is the whole mechanism by which a peer with a skewed clock discovers
+    the skew and corrects it. When the failure was BADKEY we never identified a
+    key, so the reply necessarily goes back unsigned.
+    """
+    if err.key is None or err.tsig is None:
+        return reply_wire
+    now = int(time.time()) if now is None else now
+    other = b""
+    if err.tsig_error == 18:                      # BADTIME
+        other = now.to_bytes(6, "big")
+    try:
+        signed, _ = sign_wire(reply_wire, err.key, time_signed=now,
+                              original_id=err.tsig.original_id,
+                              error=err.tsig_error, other=other)
+        return signed
+    except Exception:                             # never fail an error path
+        return reply_wire
+
+
 def verify_wire(wire: bytes, keyring: dict[str, TSIGKey], *,
                 request_mac: bytes | None = None, now: int | None = None,
-                fudge_max: int = DEFAULT_FUDGE) -> tuple[bytes, TSIGKey, R.TSIG]:
+                fudge_max: int = DEFAULT_FUDGE,
+                replay: ReplayWindow | None = None,
+                ) -> tuple[bytes, TSIGKey, R.TSIG]:
     """Verify a TSIG-signed message. Returns (received_mac, key, tsig_rr) on
-    success, else raises TSIGError with the appropriate TSIG error code."""
+    success, else raises TSIGError with the appropriate TSIG error code.
+
+    Pass `replay` on any path where the same datagram can simply be sent again
+    — UDP dynamic UPDATE and NOTIFY above all. A valid MAC proves the sender
+    knew the key, never that this is the *first* time they said it.
+    """
     tsig_start, tsig, owner = _locate_tsig(wire)
     key = keyring.get(owner.to_text().lower())
+    if key is None:
+        # Callers build this dict from config, where a key name may be written
+        # without a trailing dot or with capitals. Matching only the exact
+        # lowercased-absolute form made every transfer from such a config fail
+        # BADKEY — and the failure was swallowed, so the secondary silently
+        # served a stale zone forever.
+        for cand_name, cand in keyring.items():
+            try:
+                if Name.from_text(cand_name).to_text().lower() == owner.to_text().lower():
+                    key = cand
+                    break
+            except Exception:
+                continue
     if key is None or Name.from_text(key.algorithm) != tsig.algorithm:
         raise TSIGError(f"unknown key {owner.to_text()}", tsig_error=17)  # BADKEY
     # reconstruct the message as signed: strip TSIG, decrement ARCOUNT, restore original id
@@ -186,7 +284,8 @@ def verify_wire(wire: bytes, keyring: dict[str, TSIGKey], *,
     if len(got) > full or len(got) < max(10, full // 2):
         raise TSIGError("bad MAC length", tsig_error=16)  # BADSIG
     if not hmac.compare_digest(expected[:len(got)], got):
-        raise TSIGError("MAC verification failed", tsig_error=16)  # BADSIG
+        raise TSIGError("MAC verification failed", tsig_error=16,
+                        key=key, tsig=tsig)  # BADSIG
     if now is None:
         now = int(time.time())
     # The narrower of what the sender asked for and what we are willing to
@@ -197,5 +296,8 @@ def verify_wire(wire: bytes, keyring: dict[str, TSIGKey], *,
     # it. (It was a parameter here and was never read.)
     window = min(tsig.fudge, fudge_max)
     if abs(now - tsig.time_signed) > window:
-        raise TSIGError("clock skew outside fudge", tsig_error=18)  # BADTIME
+        raise TSIGError("clock skew outside fudge", tsig_error=18,
+                        key=key, tsig=tsig)  # BADTIME
+    if replay is not None:
+        replay.check(owner.to_text().lower(), tsig.time_signed, got, window, now)
     return got, key, tsig

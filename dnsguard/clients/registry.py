@@ -6,6 +6,7 @@ Match order: exact IP -> CIDR -> ClientID (encrypted-transport token) -> MAC
 from __future__ import annotations
 
 import ipaddress
+from collections import OrderedDict
 
 from ..log import get
 from .model import Client, Policy
@@ -32,16 +33,24 @@ class ClientRegistry:
                 self.by_clientid[c.ident] = c
             elif c.ident_type == "mac":
                 self.by_mac[c.ident.lower()] = c
-        self._cache: dict[tuple[str, str], Policy] = {}
+        # Keyed on (client_ip, client_id): both come off the wire. The old
+        # 100k ceiling simply *stopped caching* once reached, so a spoofed-source
+        # flood not only filled it but permanently evicted every real client
+        # from the fast path — and each subsequent miss paid a full _resolve,
+        # including the ARP lookup below.
+        self._cache: OrderedDict[tuple[str, str], Policy] = OrderedDict()
+        self.max_cache = 4096
 
     def identify(self, client_ip: str, client_id: str = "") -> Policy:
         key = (client_ip, client_id)
         cached = self._cache.get(key)
         if cached is not None:
+            self._cache.move_to_end(key)
             return cached
         policy = self._resolve(client_ip, client_id)
-        if len(self._cache) < 100_000:
-            self._cache[key] = policy
+        self._cache[key] = policy
+        while len(self._cache) > self.max_cache:
+            self._cache.popitem(last=False)
         return policy
 
     def _resolve(self, client_ip: str, client_id: str) -> Policy:
@@ -118,14 +127,52 @@ class ClientRegistry:
         return Client(row["ident"], row["ident_type"], row["name"] or "", pol)
 
 
+#: MAC addresses from the OS neighbour table, refreshed on a timer rather than
+#: looked up per query. `identify` runs on the hot path inside the event loop,
+#: and the old implementation forked `arp` there: one client configured
+#: `type: mac` meant every query from an unknown source forked a process and
+#: could stall every worker's loop for up to a second, which a spoofed-source
+#: flood turns into a fork bomb.
+_NEIGHBOURS: dict[str, str] = {}
+_NEIGHBOURS_AT = 0.0
+NEIGHBOUR_TTL = 30.0
+
+
 def _arp_lookup(ip: str) -> str | None:
-    """Best-effort MAC from the OS neighbor table (LAN only). Cheap + cached upstream."""
+    """The cached MAC for `ip`, or None. Never blocks and never forks."""
+    return _NEIGHBOURS.get(ip)
+
+
+def refresh_neighbours(timeout: float = 2.0) -> int:
+    """Reload the neighbour table. Blocking: call it from a worker thread.
+
+    Reads the whole table in one pass rather than one process per address.
+    """
     import subprocess
-    try:
-        out = subprocess.run(["arp", "-n", ip], capture_output=True, text=True, timeout=1)
-        for tok in out.stdout.split():
-            if ":" in tok and len(tok) >= 11:
-                return tok.lower()
-    except Exception:
-        return None
-    return None
+    import time as _t
+    global _NEIGHBOURS, _NEIGHBOURS_AT
+    table: dict[str, str] = {}
+    for argv in (["ip", "neigh", "show"], ["arp", "-an"]):
+        try:
+            out = subprocess.run(argv, capture_output=True, text=True,
+                                 timeout=timeout)
+        except Exception:
+            continue
+        if out.returncode != 0 or not out.stdout:
+            continue
+        for line in out.stdout.splitlines():
+            ip = mac = ""
+            for tok in line.replace("(", " ").replace(")", " ").split():
+                if not ip and tok.count(".") == 3 and tok[0].isdigit():
+                    ip = tok
+                elif not ip and ":" in tok and tok.count(":") > 5:
+                    pass
+                elif ":" in tok and len(tok) >= 11 and tok.count(":") == 5:
+                    mac = tok.lower()
+            if ip and mac:
+                table[ip] = mac
+        if table:
+            break
+    _NEIGHBOURS = table
+    _NEIGHBOURS_AT = _t.time()
+    return len(table)

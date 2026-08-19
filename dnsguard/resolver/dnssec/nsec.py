@@ -277,6 +277,11 @@ class Nsec3Set:
         for owner, rd in items:
             if not owner.labels:
                 return
+            if Name(owner.labels[1:]) != zone:
+                # An NSEC3 owner is <hash>.<zone>. Recording only labels[0] and
+                # ignoring the rest let a record from a deeper cut contribute its
+                # hash to this chain, shifting the gaps `cover()` reads.
+                continue
             self.records.append((owner.labels[0].decode("latin-1").lower(), rd))
         self.usable = True
 

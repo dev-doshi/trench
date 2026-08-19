@@ -56,6 +56,22 @@ class Database:
         await self.conn.execute(sql, tuple(params))
         await self.conn.commit()
 
+    async def vacuum(self) -> None:
+        """VACUUM on a dedicated connection.
+
+        It cannot run inside a transaction, and the shared connection nearly
+        always has one open — the query-log flush loop writes every 250 ms — so
+        issuing it there raised `cannot VACUUM from within a transaction`.
+        """
+        await self.conn.commit()
+        db = await aiosqlite.connect(self.path)
+        try:
+            await db.execute("PRAGMA busy_timeout=30000")
+            await db.execute("VACUUM")
+            await db.commit()
+        finally:
+            await db.close()
+
     async def executemany(self, sql: str, rows: Iterable[Iterable[Any]]) -> None:
         await self.conn.executemany(sql, [tuple(r) for r in rows])
         await self.conn.commit()

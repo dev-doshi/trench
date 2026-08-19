@@ -53,11 +53,22 @@ def drop_privileges(user: str | None, group: str | None = None) -> bool:
     if gid is not None:
         try:
             os.setgroups([gid])
-        except OSError:
-            log.warning("setgroups failed; continuing with existing supplementary groups")
+        except OSError as e:
+            # Not survivable. Carrying on meant keeping root's supplementary
+            # groups — gid 0, docker, wheel — through the setuid, so the
+            # "unprivileged" resolver still read and wrote everything those
+            # groups own. A drop that cannot be completed is a failure.
+            raise PrivDropError(f"setgroups failed: {e}") from e
         os.setgid(gid)
+        if os.getgid() != gid or os.getegid() != gid:
+            raise PrivDropError(f"setgid({gid}) did not take effect")
+        extra = set(os.getgroups()) - {gid}
+        if extra:
+            raise PrivDropError(f"supplementary groups survived the drop: {sorted(extra)}")
     if uid is not None:
         os.setuid(uid)
+        if os.getuid() != uid or os.geteuid() != uid:
+            raise PrivDropError(f"setuid({uid}) did not take effect")
         _assert_cannot_regain(uid)
     log.info("dropped privileges to uid=%s gid=%s", uid, gid)
     return True

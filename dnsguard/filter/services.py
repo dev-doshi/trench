@@ -65,6 +65,14 @@ class Services:
                 return sid
         return None
 
+    def has_schedule(self, services: frozenset[str]) -> bool:
+        """True if any of `services` is blocked only during certain windows.
+
+        A scheduled verdict is a function of the clock, not of the query, so a
+        recorded reply stops being correct the moment a window opens or closes.
+        """
+        return any(self.schedules.get(s) for s in services)
+
     def blocked_now(self, service: str, now: float | None = None) -> bool:
         windows = self.schedules.get(service)
         if not windows:

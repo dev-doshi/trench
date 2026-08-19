@@ -82,3 +82,28 @@ def test_guard_refuses_without_optin():
     # enabled but no --allow-dhcp -> refuse
     with pytest.raises(DNSGuardError):
         asyncio.run(srv.start(enabled=True, allow_dhcp=False, dev=False))
+
+
+def test_release_requires_the_holder_to_name_its_own_address():
+    """RELEASE is unauthenticated and carries whatever chaddr the sender picked.
+    Honouring it on that alone let any host on the LAN delete a neighbour's
+    lease while the neighbour was still using the address, then take it."""
+    scope = Scope(network="192.168.1.0/24", range_start="192.168.1.100",
+                  range_end="192.168.1.200")
+    victim = scope.allocate("aa:bb:cc:dd:ee:ff")
+    assert victim is not None
+
+    scope.release("aa:bb:cc:dd:ee:ff", "192.168.1.250")   # not the held address
+    assert [lease.ip for lease in scope.active_leases()] == [victim.ip]
+
+    scope.release("aa:bb:cc:dd:ee:ff", victim.ip)          # the real holder
+    assert scope.active_leases() == []
+
+
+def test_expired_leases_do_not_accumulate_without_bound():
+    scope = Scope(network="192.168.1.0/24", range_start="192.168.1.100",
+                  range_end="192.168.1.200", lease_time=1, max_leases=16)
+    for i in range(200):
+        scope.allocate(f"02:00:00:00:{i // 256:02x}:{i % 256:02x}", now=1000.0)
+    scope.allocate("02:00:00:00:ff:ff", now=2000.0)        # everything above expired
+    assert len(scope._leases) <= scope.max_leases + 1

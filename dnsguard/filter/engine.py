@@ -7,6 +7,8 @@ disabling, $denyallow carving out, and $dnstype/$ctag/$client gating.
 """
 from __future__ import annotations
 
+from functools import lru_cache
+
 from . import Action, Decision
 from .rule import Rule
 from .shared import SharedBlockTable
@@ -50,22 +52,37 @@ class FilterEngine:
         self.block_regex: list[Rule] = []
         self.allow_regex: list[Rule] = []
         self._n_rules = 0
+        #: True once any rule scopes itself to particular clients. Consumers
+        #: that key a cache on something coarser than the client address have
+        #: to fall back when this is set — see FastPath.usable.
+        self.has_client_rules = False
 
     # --- compilation ---
-    @classmethod
-    def compile(cls, rules: list[Rule], table_path=None) -> FilterEngine:
-        """`table_path` persists the compiled blocklist so other processes can
-        map the same copy, and so a restart does not have to re-parse it."""
-        eng = cls()
-        # $badfilter disables the rule with the same pattern; AdGuard matches by
-        # raw modifiers — we approximate by pattern identity.
+    @staticmethod
+    def _live_rules(rules: list[Rule]):
+        """The rules that survive $badfilter, which disables the rule carrying
+        the same pattern. AdGuard matches by raw modifiers; we approximate by
+        pattern identity.
+
+        Shared by both constructors on purpose. Applying it in `compile` only
+        meant $badfilter worked there and silently did nothing in `from_table`
+        — the path every non-primary worker and every restart-from-cache uses.
+        """
         bad_patterns = {_pattern_id(r) for r in rules if r.badfilter}
-        imported: list[tuple[str, str]] = []
         for r in rules:
             if r.badfilter:
                 continue
             if _pattern_id(r) in bad_patterns and not r.rewrite:
                 continue
+            yield r
+
+    @classmethod
+    def compile(cls, rules: list[Rule], table_path=None) -> FilterEngine:
+        """`table_path` persists the compiled blocklist so other processes can
+        map the same copy, and so a restart does not have to re-parse it."""
+        eng = cls()
+        imported: list[tuple[str, str]] = []
+        for r in cls._live_rules(rules):
             eng._add(r, imported)
         # Built in one shot at the end: the table is sized from the final count
         # and is immutable afterwards, which is what makes it shareable.
@@ -81,15 +98,15 @@ class FilterEngine:
         imported domains are mapped, not rebuilt.
         """
         eng = cls()
-        for r in rules:
-            if r.badfilter:
-                continue
+        for r in cls._live_rules(rules):
             eng._add(r)          # imported=None -> nothing is routed to the table
         eng.block_table = table
         return eng
 
     def _add(self, r: Rule, imported: list[tuple[str, str]] | None = None) -> None:
         self._n_rules += 1
+        if r.clients is not None or r.clients_not is not None:
+            self.has_client_rules = True
         if r.regex is not None:
             (self.block_regex if r.block else self.allow_regex).append(r)
         elif r.exact is not None:
@@ -253,6 +270,19 @@ def _pattern_id(r: Rule) -> tuple:
     return (r.suffix, r.exact, r.regex.pattern if r.regex else None, r.block)
 
 
+@lru_cache(maxsize=4096)
+def _net(entry: str):
+    """Parsed CIDR, cached. Rebuilt per candidate rule per query otherwise."""
+    import ipaddress
+    return ipaddress.ip_network(entry, strict=False)
+
+
+@lru_cache(maxsize=8192)
+def _ip(addr: str):
+    import ipaddress
+    return ipaddress.ip_address(addr)
+
+
 def _client_in(spec: frozenset[str], client: str, names: frozenset[str]) -> bool:
     """Does the requesting client match any entry of a $client modifier?
 
@@ -269,8 +299,7 @@ def _client_in(spec: frozenset[str], client: str, names: frozenset[str]) -> bool
         if "/" not in entry or not client:
             continue
         try:
-            import ipaddress
-            if ipaddress.ip_address(client) in ipaddress.ip_network(entry, strict=False):
+            if _ip(client) in _net(entry):
                 return True
         except ValueError:
             continue

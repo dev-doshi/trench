@@ -310,6 +310,17 @@ class App:
             return
         previous = self.filter
         engine = await self._gravity.build()
+        # A source that failed to fetch contributes zero rules, and the swap
+        # went ahead regardless — so a transient outage at refresh time silently
+        # unblocked every domain of every failing list, and the compiled table
+        # was rewritten with the truncated corpus so the next restart served it
+        # too. Keep what is already running instead; the schedule retries.
+        report = getattr(self._gravity, "report", None)
+        if report is not None and report.errors and previous is not None:
+            log.warning("blocklist refresh kept the previous rules: %d of %d "
+                        "sources failed (%s)", len(report.errors),
+                        len(self._gravity.sources), "; ".join(report.errors[:3]))
+            return
         # Compare against what was running *before* swapping, so the operator
         # gets a diff of what this update actually changed for their network.
         await self._record_list_review(previous, engine)
@@ -656,6 +667,17 @@ class App:
         # without a reaper a spoofed-source flood grows its table until the box
         # is OOM-killed. Cheap enough to run regardless of the configured rate.
         self.scheduler.every(60.0, self._reap_ratelimiter, name="ratelimit-gc")
+        if self.clients is not None and getattr(self.clients, "by_mac", None):
+            # Only when a client is actually identified by MAC. Off the loop:
+            # this shells out, and it used to do so on the query path.
+            self.scheduler.every(30.0, self._refresh_neighbours, name="arp-refresh")
+
+    async def _refresh_neighbours(self) -> None:
+        from .clients.registry import refresh_neighbours
+        try:
+            await asyncio.to_thread(refresh_neighbours)
+        except Exception:
+            log.debug("neighbour table refresh failed", exc_info=True)
 
     async def _reap_ratelimiter(self) -> None:
         rl = getattr(self.pipeline, "ratelimiter", None)

@@ -271,6 +271,12 @@ class SecurityConfig(BaseModel):
     local_suffixes: list[str] = Field(
         default_factory=lambda: ["lan", "local", "home.arpa", "internal", "localhost"])
     use_0x20: bool = False            # randomize query-name case (spoof resistance)
+    # Peers whose X-Forwarded-For we believe, as IPs or CIDRs. Empty means the
+    # header is ignored entirely, which is the only safe default: the client
+    # writes it, and the address it carries selects the filtering policy, the
+    # rate-limit bucket, the login lockout counter and the ECS subnet sent
+    # upstream. Set this only for an actual reverse proxy in front of us.
+    trusted_proxies: list[str] = Field(default_factory=list)
     dns_cookies: bool = False         # RFC 7873 server cookies (anti-spoof / anti-amplification)
     # real-time DGA / algorithmically-generated-domain detection
     dga_detection: bool = False       # score every name for DGA-likeness

@@ -46,9 +46,21 @@ def new_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+#: Process-wide pepper for token digests. Regenerated per start, so tokens do
+#: not survive a restart — acceptable for API tokens, and it means a database
+#: leak alone never yields anything precomputable.
+_TOKEN_PEPPER = secrets.token_bytes(32)
+
+
 def hash_token(token: str) -> str:
-    """Tokens are stored as a salted SHA-256 (fast lookup, not user passwords)."""
-    return hashlib.sha256(token.encode()).hexdigest()
+    """Stored digest for an API token: keyed SHA-256, not a bare one.
+
+    The docstring here used to claim "salted" over a plain `sha256(token)`,
+    which was simply untrue — a database leak yielded directly precomputable
+    digests. It was safe only because `new_token` happens to be 256-bit random,
+    an invariant nothing enforced.
+    """
+    return hmac.new(_TOKEN_PEPPER, token.encode(), hashlib.sha256).hexdigest()
 
 
 def constant_eq(a: str, b: str) -> bool:

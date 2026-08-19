@@ -24,6 +24,10 @@ class Scope:
     lease_time: int = 86400
     domain: str = "lan"
     reservations: dict[str, str] = field(default_factory=dict)   # mac -> ip
+    # Above this many tracked MACs, expired leases are swept before allocating.
+    # The table is keyed on a client-supplied chaddr, so it is only as bounded
+    # as the sender chooses to be.
+    max_leases: int = 4096
     _leases: dict[str, Lease] = field(default_factory=dict)        # mac -> lease
 
     def _pool(self):
@@ -39,6 +43,7 @@ class Scope:
                  now: float | None = None) -> Lease | None:
         now = now if now is not None else time.time()
         mac = mac.lower()
+        self._reap(now)
         if mac in self.reservations:
             ip = self.reservations[mac]
             return self._grant(mac, ip, hostname, now)
@@ -56,6 +61,19 @@ class Scope:
                 return self._grant(mac, ip, hostname, now)
         return None  # pool exhausted
 
+    def _reap(self, now: float) -> None:
+        """Drop expired leases before allocating.
+
+        Nothing evicted this table, while `_in_use` rebuilt a set over all of it
+        on every allocation — so a client cycling spoofed chaddrs across expiries
+        grew it without bound *and* made every subsequent DHCP packet cost
+        O(leases ever granted).
+        """
+        if len(self._leases) <= self.max_leases:
+            return
+        for mac in [m for m, lease in self._leases.items() if lease.expire <= now]:
+            del self._leases[mac]
+
     def _in_range(self, ip: str) -> bool:
         return (int(ipaddress.IPv4Address(self.range_start))
                 <= int(ipaddress.IPv4Address(ip))
@@ -66,8 +84,22 @@ class Scope:
         self._leases[mac] = lease
         return lease
 
-    def release(self, mac: str) -> None:
-        self._leases.pop(mac.lower(), None)
+    def release(self, mac: str, ciaddr: str = "") -> None:
+        """Drop a lease at the client's request.
+
+        `ciaddr` must match the lease being released. RELEASE is unauthenticated
+        and carries whatever chaddr the sender chose, so honouring it on the
+        sender's word alone let any host on the LAN delete a neighbour's lease
+        while that neighbour was still using the address — and then REQUEST the
+        freed address for itself.
+        """
+        mac = mac.lower()
+        held = self._leases.get(mac)
+        if held is None:
+            return
+        if ciaddr and held.ip != ciaddr:
+            return
+        self._leases.pop(mac, None)
 
     def active_leases(self, now: float | None = None) -> list[Lease]:
         now = now if now is not None else time.time()

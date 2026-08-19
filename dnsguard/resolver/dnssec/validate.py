@@ -29,9 +29,28 @@ def _canon_rdata(rd: R.Rdata) -> bytes:
     elif isinstance(rd, R.SOA):
         R.SOA(rd.mname.canonicalize(), rd.rname.canonicalize(), rd.serial,
               rd.refresh, rd.retry, rd.expire, rd.minimum).emit(w)
+    elif isinstance(rd, R.NAPTR):
+        # RFC 4034 §6.2 as corrected by RFC 6840 §5.1. Omitting NAPTR meant a
+        # correctly signed ENUM or SIP zone that publishes a mixed-case
+        # replacement failed verification and came back BOGUS.
+        R.NAPTR(rd.order, rd.preference, rd.flags, rd.service, rd.regexp,
+                rd.replacement.canonicalize()).emit(w)
     else:
         rd.emit(w)
     return w.getvalue()
+
+
+def _serial_le(a: int, b: int) -> bool:
+    """`a <= b` in RFC 1982 serial arithmetic, modulo 2**32."""
+    return ((b - a) % 0x100000000) < 0x80000000
+
+
+def _within_validity(rrsig: R.RRSIG, now: float) -> bool:
+    """RFC 4034 §3.1.5: inception and expiration are serial numbers, not plain
+    integers, so the comparison has to wrap. A plain `<=` also silently mixes a
+    float clock with 32-bit fields."""
+    t = int(now) & 0xFFFFFFFF
+    return _serial_le(rrsig.inception, t) and _serial_le(t, rrsig.expiration)
 
 
 def _canon_name_bytes(name: Name) -> bytes:
@@ -83,7 +102,7 @@ def verify_rrset(owner: Name, rtype: int, rclass: int, rdatas: list[R.Rdata],
     if rrsig.key_tag != key_tag(dnskey):
         return False
     now = now if now is not None else time.time()
-    if not (rrsig.inception <= now <= rrsig.expiration):
+    if not _within_validity(rrsig, now):
         return False
 
     data = _signed_data(owner, rtype, rclass, rrsig, rdatas)

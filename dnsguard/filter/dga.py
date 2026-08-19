@@ -95,9 +95,36 @@ def _longest_consonant_run(s: str) -> int:
     return best
 
 
+#: Second-level suffixes under which registrations happen, so the label worth
+#: scoring is one deeper. Not the full PSL — this is a scoring heuristic, and
+#: the cost of missing an entry is a lower score, not a wrong verdict.
+_TWO_LABEL_SUFFIXES = frozenset({
+    "co.uk", "org.uk", "me.uk", "ac.uk", "gov.uk", "net.uk", "sch.uk",
+    "com.au", "net.au", "org.au", "edu.au", "gov.au", "id.au",
+    "co.jp", "or.jp", "ne.jp", "ac.jp", "go.jp",
+    "co.nz", "net.nz", "org.nz", "govt.nz",
+    "co.za", "org.za", "net.za", "com.br", "net.br", "org.br",
+    "com.cn", "net.cn", "org.cn", "gov.cn", "com.mx", "com.ar", "com.tr",
+    "co.kr", "or.kr", "co.in", "net.in", "org.in", "com.sg", "com.hk",
+    "s3.amazonaws.com", "cloudfront.net", "blob.core.windows.net",
+})
+
+
 def _registrable_label(qname: str) -> str:
+    """The label a registrant actually chose, which is the one worth scoring.
+
+    Taking parts[-2] positionally meant that under any two-part suffix the
+    scored label was the suffix component itself — `co` for `x.co.uk`, which is
+    below min_len and therefore always scores 0.0. DGA detection was
+    structurally blind to every such zone.
+    """
     parts = qname.rstrip(".").lower().split(".")
-    return parts[-2] if len(parts) >= 2 else parts[0]
+    if len(parts) < 2:
+        return parts[0] if parts else ""
+    for depth in (3, 2):
+        if len(parts) > depth and ".".join(parts[-depth:]) in _TWO_LABEL_SUFFIXES:
+            return parts[-depth - 1]
+    return parts[-2]
 
 
 class DGADetector:

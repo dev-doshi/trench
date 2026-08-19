@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import datetime
 import ipaddress
+import os
 import ssl
 from pathlib import Path
 
@@ -46,13 +47,21 @@ def generate_self_signed(cert_path: Path, key_path: Path,
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
         .sign(key, hashes.SHA256())
     )
-    cert_path.parent.mkdir(parents=True, exist_ok=True)
+    cert_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
-    key_path.write_bytes(key.private_bytes(
-        serialization.Encoding.PEM,
-        serialization.PrivateFormat.TraditionalOpenSSL,
-        serialization.NoEncryption(),
-    ))
+    # Created 0600 *before* anything is written to it. This key terminates DoT,
+    # DoH, DoQ and the admin console; at the default umask it landed 0644, so
+    # after the privilege drop any local account could read it and impersonate
+    # the resolver. os.open with the mode avoids the window a later chmod
+    # would leave.
+    fd = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.NoEncryption(),
+        ))
+    os.chmod(key_path, 0o600)     # a pre-existing file keeps its old mode otherwise
     log.info("generated self-signed cert at %s", cert_path)
 
 

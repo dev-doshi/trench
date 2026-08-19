@@ -16,10 +16,34 @@ _BUILTINS = {
 
 
 def _load_class(ref: str) -> type[Plugin]:
-    ref = _BUILTINS.get(ref, ref)
+    """Resolve a plugin reference to its class.
+
+    A dotted path goes straight to `import_module`, which is arbitrary code
+    execution in the resolver process — before the privilege drop — for anyone
+    who can write the config or drop a module where Python will find it. Under
+    `python -m dnsguard` the working directory is `sys.path[0]`, so that second
+    condition is weaker than it looks.
+
+    So: builtins by name always; a dotted path only when the operator has opted
+    in via `plugins.allow_external`, and never from the current directory.
+    """
+    if ref in _BUILTINS:
+        ref = _BUILTINS[ref]
+    elif not _allow_external():
+        raise ValueError(
+            f"unknown plugin {ref!r}: dotted paths are refused unless "
+            f"DNSGUARD_ALLOW_EXTERNAL_PLUGINS=1 is set (known: "
+            f"{', '.join(sorted(_BUILTINS))})")
     module, _, cls = ref.partition(":")
+    if not module or not cls:
+        raise ValueError(f"malformed plugin reference {ref!r}")
     mod = importlib.import_module(module)
     return getattr(mod, cls)
+
+
+def _allow_external() -> bool:
+    import os
+    return os.environ.get("DNSGUARD_ALLOW_EXTERNAL_PLUGINS", "") == "1"
 
 
 class PluginManager:

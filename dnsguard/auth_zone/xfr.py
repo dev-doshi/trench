@@ -18,6 +18,14 @@ from .zone import Zone
 # how many RRs to pack per transfer message before flushing (RFC 5936 allows many)
 RRS_PER_MSG = 100
 
+#: Byte ceiling for one transfer envelope. A record count alone is not a size:
+#: 100 RRSIGs or TXT records serialize well past the 16-bit length prefix that
+#: frames a message on TCP, and the framing write then raises OverflowError —
+#: swallowed by the stream handler, so the client received nothing and that
+#: zone could never be transferred at all. Left well under 65535 for the TSIG
+#: record appended after packing.
+MAX_MSG_BYTES = 60000
+
 
 def serial_gt(a: int, b: int) -> bool:
     """RFC 1982 serial-number 'a is strictly newer than b' (mod 2^32)."""
@@ -55,14 +63,31 @@ def axfr_records(zone: Zone) -> list[RR]:
 
 
 def _chunk_into_messages(query: Message, records: list[RR]) -> Iterator[Message]:
-    for i in range(0, len(records), RRS_PER_MSG):
-        m = query.reply()
-        m.set_flag(Flags.AA, True)
-        m.answers = records[i:i + RRS_PER_MSG]
-        yield m
+    batch: list[RR] = []
+    for rr in records:
+        batch.append(rr)
+        if len(batch) < RRS_PER_MSG:
+            continue
+        yield from _flush(query, batch)
+        batch = []
+    if batch:
+        yield from _flush(query, batch)
     # never yield zero messages (empty zone still needs the SOA pair)
     if not records:
         yield query.reply()
+
+
+def _flush(query: Message, batch: list[RR]) -> Iterator[Message]:
+    """Emit `batch` as one envelope, splitting if it does not fit the wire."""
+    m = query.reply()
+    m.set_flag(Flags.AA, True)
+    m.answers = list(batch)
+    if len(batch) == 1 or len(m.to_wire()) <= MAX_MSG_BYTES:
+        yield m
+        return
+    half = len(batch) // 2
+    yield from _flush(query, batch[:half])
+    yield from _flush(query, batch[half:])
 
 
 def axfr_messages(query: Message, zone: Zone) -> list[Message]:

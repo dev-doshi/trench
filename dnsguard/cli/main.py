@@ -194,12 +194,37 @@ def _do_restore(args) -> int:
         members = tar.getmembers()
         # strip the leading archive top-dir so contents land directly in data-dir
         top = members[0].name.split("/")[0] + "/" if members else ""
+        root = dest.resolve()
         for m in members:
             if m.name == top.rstrip("/"):
                 continue
             m.name = m.name[len(top):] if m.name.startswith(top) else m.name
-            if m.name:
-                tar.extract(m, dest)  # noqa: S202 (trusted local backup)
+            if not m.name:
+                continue
+            # An archive is data, not a trusted input — "a local backup" is only
+            # true until someone is talked into restoring one. The name rewrite
+            # above deliberately *keeps* names that do not start with `top`, so
+            # a `../../etc/dnsguard/dnsguard.yaml` member passed through
+            # untouched, and Python 3.11 still extracts with no filter by
+            # default. Links are refused outright; everything else must resolve
+            # inside dest.
+            if m.islnk() or m.issym():
+                print(f"skipping link member {m.name!r}", file=sys.stderr)
+                continue
+            if not m.isfile() and not m.isdir():
+                print(f"skipping special member {m.name!r}", file=sys.stderr)
+                continue
+            target = (root / m.name).resolve()
+            if target != root and root not in target.parents:
+                print(f"refusing member outside the data dir: {m.name!r}",
+                      file=sys.stderr)
+                return 1
+            # `filter=` only exists from 3.11.4; the resolve() check above is
+            # what actually holds the line on older builds.
+            try:
+                tar.extract(m, dest, filter="data")
+            except TypeError:
+                tar.extract(m, dest)
     print(f"restored {args.archive} -> {dest}")
     return 0
 

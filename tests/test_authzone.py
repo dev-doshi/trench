@@ -116,3 +116,64 @@ def test_dnssec_signed_response_includes_rrsig():
     sign_zone(z)
     a = z.lookup(Name.from_text("www.example.com"), Type.A, do=True)
     assert any(rr.rtype == Type.RRSIG for rr in a.answers)
+
+
+# ------------------------------------------------- shapes that used to break
+def _zone_with(origin_text, records):
+    from dnsguard.wire import Class  # noqa: F401
+    z = Zone(Name.from_text(origin_text))
+    z.add(Name.from_text(origin_text), Type.SOA,
+          R.SOA(Name.from_text("ns." + origin_text),
+                Name.from_text("hm." + origin_text), 1, 2, 3, 4, 300))
+    for name, rtype, rd in records:
+        z.add(Name.from_text(name), rtype, rd)
+    return z
+
+
+def test_a_cname_loop_does_not_blow_the_stack():
+    """`a -> b -> a` is loadable from a zonefile, a dynamic UPDATE, or an
+    inbound AXFR. Chased recursively it turned one 30-byte query into a
+    RecursionError per packet."""
+    z = _zone_with("example.com.", [
+        ("a.example.com.", Type.CNAME, R.CNAME(Name.from_text("b.example.com."))),
+        ("b.example.com.", Type.CNAME, R.CNAME(Name.from_text("a.example.com."))),
+    ])
+    ans = z.lookup(Name.from_text("a.example.com."), Type.A)
+    assert len(ans.answers) <= Zone.MAX_CNAME_CHAIN
+
+    z2 = _zone_with("example.com.", [
+        ("self.example.com.", Type.CNAME, R.CNAME(Name.from_text("self.example.com."))),
+    ])
+    assert len(z2.lookup(Name.from_text("self.example.com."), Type.A).answers) <= 2
+
+
+def test_a_delegated_child_gets_a_referral_not_an_authoritative_nxdomain():
+    """The parent holds no records for the child, but it must not answer for
+    it: an AA=1 NXDOMAIN here denies the whole delegated zone to every client."""
+    z = _zone_with("example.com.", [
+        ("sub.example.com.", Type.NS, R.NS(Name.from_text("ns1.other.net."))),
+    ])
+    ans = z.lookup(Name.from_text("www.sub.example.com."), Type.A)
+    assert ans.rcode == Rcode.NOERROR
+    assert ans.aa is False
+    assert [rr.rtype for rr in ans.authority] == [Type.NS]
+
+
+def test_wildcards_synthesize_from_the_closest_encloser():
+    """RFC 4592. Trying only the immediate parent left `*.example.com` covering
+    `x.example.com` and returning NXDOMAIN for anything deeper."""
+    z = _zone_with("example.com.", [
+        ("*.example.com.", Type.A, R.A("1.2.3.4")),
+    ])
+    for qname in ("x.example.com.", "deep.sub.example.com."):
+        ans = z.lookup(Name.from_text(qname), Type.A)
+        assert ans.rcode == Rcode.NOERROR, qname
+        assert [rr.rdata.address for rr in ans.answers] == ["1.2.3.4"], qname
+
+
+def test_an_empty_non_terminal_is_nodata_not_nxdomain():
+    z = _zone_with("example.com.", [
+        ("a.b.example.com.", Type.A, R.A("1.2.3.4")),
+    ])
+    ans = z.lookup(Name.from_text("b.example.com."), Type.A)
+    assert ans.rcode == Rcode.NOERROR and not ans.answers

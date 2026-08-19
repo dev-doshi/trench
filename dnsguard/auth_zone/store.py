@@ -24,10 +24,24 @@ class ZoneStore:
         return not self.zones
 
     def authoritative_for(self, qname: Name) -> Zone | None:
+        """The zone that owns `qname`, if we hold one.
+
+        A real zone (one with an apex SOA) owns its whole subtree. A bare local
+        record does not: App registers each `local_records` entry as its own
+        one-record Zone, so claiming the subtree meant a record for
+        `www.example.com` made us answer an authoritative NXDOMAIN for
+        `secret.www.example.com` and everything under it — a silent blackhole
+        with no filtering rule involved.
+        """
         best: Zone | None = None
         best_len = -1
         for z in self.zones:
-            if qname.is_subdomain_of(z.origin) and len(z.origin) > best_len:
+            if len(z.origin) <= best_len:
+                continue
+            if z.soa is not None:
+                if qname.is_subdomain_of(z.origin):
+                    best, best_len = z, len(z.origin)
+            elif qname == z.origin:
                 best, best_len = z, len(z.origin)
         return best
 

@@ -119,6 +119,13 @@ def parse_options(data: bytes) -> list[tuple[int, bytes]]:
     while r.remaining() >= 4:
         code = r.u16()
         length = r.u16()
+        if length > r.remaining():
+            # An option claiming more octets than the OPT record holds. Stop and
+            # keep what parsed rather than raising: this propagates out of
+            # Message.parse uncaught, so one malformed option meant the whole
+            # message was undecodable and the server could not even read the id
+            # and question to answer FORMERR — the client saw a silent drop.
+            break
         out.append((code, r.read(length)))
     return out
 

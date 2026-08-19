@@ -68,6 +68,12 @@ class Gravity:
         self._text_cache: dict[str, str] = {}     # last body per URL (for HTTP 304)
         self._etags: dict[str, tuple[str, str]] = {}  # url -> (etag, last-modified)
 
+    #: Ceiling on one downloaded list. The largest lists in normal use are a
+    #: few tens of MB; anything past this is a mistake or an attack.
+    MAX_LIST_BYTES = 256 * 1024 * 1024
+    #: Above this, the body is not retained for HTTP 304 revalidation.
+    MAX_CACHED_BODY = 8 * 1024 * 1024
+
     async def _fetch(self, src: str) -> str:
         if src.startswith(("http://", "https://")):
             import aiohttp  # lazy import; only needed for remote lists
@@ -85,10 +91,30 @@ class Gravity:
                 if r.status == 304 and src in self._text_cache:
                     return self._text_cache[src]   # unchanged since last fetch
                 r.raise_for_status()
-                text = await r.text()
+                # Read with a ceiling. `await r.text()` buffered whatever the
+                # far end chose to send, so a compromised or redirected source
+                # streaming gigabytes was fully materialised into a str before
+                # anything looked at it — on a box with a hard memory limit.
+                chunks: list[bytes] = []
+                total = 0
+                async for chunk in r.content.iter_chunked(65536):
+                    total += len(chunk)
+                    if total > self.MAX_LIST_BYTES:
+                        raise ValueError(
+                            f"list exceeds {self.MAX_LIST_BYTES // 1048576} MB; refusing")
+                    chunks.append(chunk)
+                text = b"".join(chunks).decode("utf-8", "replace")
                 self._etags[src] = (r.headers.get("ETag", ""),
                                     r.headers.get("Last-Modified", ""))
-                self._text_cache[src] = text
+                # Only small bodies are worth keeping for a future 304. A big
+                # one stayed resident for the process lifetime *on top of* the
+                # compiled table it became; dropping the validators instead
+                # costs one full re-download per refresh and nothing else.
+                if len(text) <= self.MAX_CACHED_BODY:
+                    self._text_cache[src] = text
+                else:
+                    self._text_cache.pop(src, None)
+                    self._etags.pop(src, None)
                 return text
         # local file (sync read off-thread to keep the loop responsive)
         return await asyncio.to_thread(_local_path(src).read_text,
@@ -124,7 +150,13 @@ class Gravity:
 
         results = await asyncio.gather(*(one(s) for s in self.sources))
         all_rules: list[Rule] = []
-        for src, rules, err in results:
+        # Consumed destructively. Holding `results` while extending `all_rules`
+        # kept every source's list alive alongside the merged copy, so the peak
+        # was twice the corpus rather than once — and when the pre-fork build
+        # fails, all four workers pay that peak simultaneously.
+        results = list(results)
+        while results:
+            src, rules, err = results.pop()
             if err:
                 report.sources.append(SourceResult(src, 0, False, err))
                 report.errors.append(f"{src}: {err}")
@@ -132,6 +164,7 @@ class Gravity:
                 continue
             report.sources.append(SourceResult(src, len(rules)))
             all_rules.extend(rules)
+            rules.clear()
 
         # config-level allow/deny become important allow rules / block rules
         for d in self.allow:

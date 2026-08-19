@@ -76,6 +76,11 @@ class Message:
             if self.edns is None:
                 self.edns = Edns()
             self.edns.ext_rcode = (rcode >> 4) & 0xFF
+        elif self.edns is not None:
+            # The `rcode` property ORs these bits back in, so a stale ext_rcode
+            # left over from a parsed message makes a plain NOERROR read back
+            # as 16 (BADVERS) to every downstream check.
+            self.edns.ext_rcode = 0
 
     def set_flag(self, mask: int, on: bool = True) -> None:
         self.flags = (self.flags | mask) if on else (self.flags & ~mask)
@@ -117,9 +122,27 @@ class Message:
             # answer section — an upstream handing one back turned a 512-byte
             # limit into a 16 KB datagram in testing.
             # truncate: keep question (+OPT), drop answer/authority/extra RRs, set TC
+            #
+            # The OPT is rebuilt without its options rather than carried over.
+            # An option is arbitrary-length attacker- or upstream-controlled
+            # payload, so keeping them made the "truncated" form larger than the
+            # cap it exists to respect — a 60 KB option answered a 512-byte
+            # limit with a 60 KB datagram carrying TC=1.
+            edns = None if self.edns is None else Edns(
+                udp_size=self.edns.udp_size, ext_rcode=self.edns.ext_rcode,
+                version=self.edns.version, flags=self.edns.flags)
             trunc = Message(self.id, self.flags | Flags.TC, list(self.questions),
-                            [], [], [], self.edns)
+                            [], [], [], edns)
             data = trunc._encode(compress)
+            if len(data) > max_size:
+                # A question long enough to overrun the cap on its own. Drop the
+                # OPT, then the question: the client learns to retry over TCP
+                # from TC alone, and never from a datagram we refused to send.
+                data = Message(self.id, self.flags | Flags.TC,
+                               list(self.questions), [], [], [], None)._encode(compress)
+                if len(data) > max_size:
+                    data = Message(self.id, self.flags | Flags.TC,
+                                   [], [], [], [], None)._encode(compress)
         return data
 
     def _encode(self, compress: bool) -> bytes:
