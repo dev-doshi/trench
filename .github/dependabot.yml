@@ -9,7 +9,7 @@ updates:
         dependency-type: development
 
   - package-ecosystem: npm
-    directory: /dnsguard/web/frontend
+    directory: /trench/web/frontend
     schedule: { interval: weekly }
     open-pull-requests-limit: 5
     groups:

@@ -18,8 +18,8 @@ import dns.rdataclass
 import dns.rdatatype
 import dns.rrset
 
-from dnsguard.wire import Message
-from dnsguard.wire.writer import Writer
+from trench.wire import Message
+from trench.wire.writer import Writer
 
 RECORDS = [
     ("A", "93.184.216.34"),

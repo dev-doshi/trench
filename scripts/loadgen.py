@@ -22,8 +22,8 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from dnsguard.wire import Class, Message, Question, Type
-from dnsguard.wire.name import Name
+from trench.wire import Class, Message, Question, Type
+from trench.wire.name import Name
 
 # A mix rather than one name repeated: a single question would sit entirely in
 # whatever the innermost cache is and flatter every layer above it.
@@ -131,16 +131,16 @@ async def run(host: str, port: int, seconds: float, concurrency: int,
 
 async def _self_test(seconds: float, concurrency: int, depth: int, fast: bool) -> None:
     """Serve from an in-process pipeline on a loopback port, then hammer it."""
-    from dnsguard.cache import Cache
-    from dnsguard.config import Config
-    from dnsguard.engine import Pipeline
-    from dnsguard.engine.fastpath import FastPath
-    from dnsguard.filter import FilterEngine, compile_rules
-    from dnsguard.stats import Counters
-    from dnsguard.transport.do53 import Do53Server
-    from dnsguard.wire import RR
-    from dnsguard.wire import rdata as R
-    from dnsguard.wire.rrtypes import Rcode
+    from trench.cache import Cache
+    from trench.config import Config
+    from trench.engine import Pipeline
+    from trench.engine.fastpath import FastPath
+    from trench.filter import FilterEngine, compile_rules
+    from trench.stats import Counters
+    from trench.transport.do53 import Do53Server
+    from trench.wire import RR
+    from trench.wire import rdata as R
+    from trench.wire.rrtypes import Rcode
 
     class Up:
         async def resolve(self, query):

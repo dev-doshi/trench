@@ -1,4 +1,4 @@
-"""Dev harness: run the DNSGuard API + console UI and synthesize realistic live
+"""Dev harness: run the Trench API + console UI and synthesize realistic live
 traffic so every view has data to render. Not part of the shipped product."""
 from __future__ import annotations
 
@@ -13,10 +13,10 @@ _PKG_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PKG_ROOT not in sys.path:
     sys.path.insert(0, _PKG_ROOT)
 
-from dnsguard.api import APIServer
-from dnsguard.app import App
-from dnsguard.config import Config
-from dnsguard.store.querylog import QueryRecord
+from trench.api import APIServer
+from trench.app import App
+from trench.config import Config
+from trench.store.querylog import QueryRecord
 
 DOMAINS_OK = ["github.com", "cloudflare.com", "apple.com", "wikipedia.org", "netflix.com",
               "signal.org", "arxiv.org", "news.ycombinator.com", "npmjs.com", "python.org",
@@ -60,7 +60,7 @@ async def synth(app: App):
 async def main():
     import tempfile
     cfg = Config.model_validate({
-        "data_dir": tempfile.mkdtemp(prefix="dnsguard-uidev-"),
+        "data_dir": tempfile.mkdtemp(prefix="trench-uidev-"),
         "server": {"do53": {"enabled": False}},
         "querylog": {"enabled": True, "privacy_level": 0},
         "filtering": {"deny": ["ads.doubleclick.net", "tracker.example.com"]},

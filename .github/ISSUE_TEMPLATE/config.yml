@@ -1,8 +1,22 @@
 blank_issues_enabled: false
 contact_links:
   - name: Security vulnerability
-    url: https://github.com/dev-doshi/dnsguard/security/advisories/new
-    about: Report privately. Do not open a public issue for a vulnerability.
-  - name: Question or help with a configuration
-    url: https://github.com/dev-doshi/dnsguard/discussions
-    about: Ask in Discussions rather than the issue tracker.
+    url: https://github.com/dev-doshi/trench/security/advisories/new
+    about: >
+      Report privately through a security advisory. Never open a public issue
+      for a vulnerability — see SECURITY.md for what to expect.
+  - name: Question, or help with a configuration
+    url: https://github.com/dev-doshi/trench/discussions/categories/q-a
+    about: Ask in Discussions. Configuration help is not an issue.
+  - name: Show what you built with it
+    url: https://github.com/dev-doshi/trench/discussions/categories/show-and-tell
+    about: Dashboards, rule sets, deployments, hardware.
+  - name: Documentation
+    url: https://dev-doshi.github.io/trench/
+    about: Installation, configuration reference, CLI, API, troubleshooting.
+  - name: A name is on a blocklist you only consume
+    url: https://dev-doshi.github.io/trench/troubleshooting/
+    about: >
+      If the rule comes from an upstream list (HaGeZi, StevenBlack, OISD), the
+      fix belongs with that list. Open an issue here only if Trench applied
+      the list incorrectly.

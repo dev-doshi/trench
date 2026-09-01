@@ -8,7 +8,7 @@
 
 ## Checklist
 
-- [ ] `ruff check dnsguard/ tests/ scripts/ deploy/` passes
+- [ ] `ruff check trench/ tests/ scripts/ deploy/` passes
 - [ ] `python3 scripts/mypy_gate.py` reports no new type errors
 - [ ] `pytest -q` passes
 - [ ] Tests cover the change (a fix has a test that fails without it)

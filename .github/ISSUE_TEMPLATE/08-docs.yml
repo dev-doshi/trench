@@ -1,0 +1,40 @@
+name: "Documentation"
+description: Something in the docs is wrong, missing, or out of date
+title: "[docs] "
+labels: ["type/docs", "area/docs", "status/needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Documentation that disagrees with the code is a bug in one of them,
+        and which one is often not obvious — say what you expected and we will
+        work out which side is wrong.
+
+  - type: input
+    id: where
+    attributes:
+      label: Which page
+      description: The URL on the docs site, or the path in `docs/`.
+      placeholder: "https://dev-doshi.github.io/trench/configuration/ or docs/configuration.md"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What kind of problem
+      options:
+        - Wrong — the documented behaviour is not what the code does
+        - Missing — something undocumented
+        - Out of date — it described an older version
+        - Unclear — correct, but I could not follow it
+        - Broken link or formatting
+    validations:
+      required: true
+
+  - type: textarea
+    id: detail
+    attributes:
+      label: What it says, and what it should say
+    validations:
+      required: true

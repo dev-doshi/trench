@@ -1,0 +1,20 @@
+# Review routing. Every path has an owner so nothing merges unseen; the
+# security-critical paths are listed separately because "someone reviewed it"
+# is a weaker claim there than anywhere else in this repository.
+
+*                               @dev-doshi
+
+# The code that reads attacker-controlled bytes, decides trust, or grants
+# access. A change here is a change to the threat model.
+/trench/wire/                 @dev-doshi
+/trench/resolver/dnssec/      @dev-doshi
+/trench/auth_zone/tsig.py     @dev-doshi
+/trench/security/             @dev-doshi
+/trench/api/auth.py           @dev-doshi
+/trench/engine/fastpath.py    @dev-doshi
+/trench/ops/update.py         @dev-doshi
+
+# Release and supply chain.
+/.github/workflows/             @dev-doshi
+/Dockerfile                     @dev-doshi
+/pyproject.toml                 @dev-doshi

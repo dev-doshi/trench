@@ -29,13 +29,26 @@ jobs:
       - name: Install
         run: pip install -e ".[dev]"
       - name: Lint (ruff)
-        run: ruff check dnsguard/ tests/ scripts/ deploy/
+        run: ruff check trench/ tests/ scripts/ deploy/
       # Ratcheted: the existing backlog is recorded in mypy-baseline.txt and
       # only *new* findings fail. See scripts/mypy_gate.py.
       - name: Type check (mypy)
         run: python3 scripts/mypy_gate.py
       - name: Tests
         run: pytest -q
+
+  # Issue forms are YAML that GitHub only parses when a user opens the form,
+  # so a mistake in one is invisible until someone loses what they typed.
+  community:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml
+      - name: Issue forms, labels, and triage mapping agree
+        run: python3 scripts/check_templates.py
 
   # The admin console is committed as a build artifact, which only works if it
   # actually corresponds to the sources next to it. Rebuild and diff, or a
@@ -48,19 +61,19 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: dnsguard/web/frontend/package-lock.json
+          cache-dependency-path: trench/web/frontend/package-lock.json
       - name: Install
-        working-directory: dnsguard/web/frontend
+        working-directory: trench/web/frontend
         run: npm ci
       - name: Build
-        working-directory: dnsguard/web/frontend
+        working-directory: trench/web/frontend
         run: npm run build
       - name: Committed dist matches the sources
         run: |
-          if ! git diff --quiet -- dnsguard/web/dist; then
-            echo "::error::dnsguard/web/dist is stale. Run 'npm run build' in"
-            echo "::error::dnsguard/web/frontend and commit the result."
-            git diff --stat -- dnsguard/web/dist
+          if ! git diff --quiet -- trench/web/dist; then
+            echo "::error::trench/web/dist is stale. Run 'npm run build' in"
+            echo "::error::trench/web/frontend and commit the result."
+            git diff --stat -- trench/web/dist
             exit 1
           fi
 
@@ -111,7 +124,7 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: false
-          tags: dnsguard:ci
+          tags: trench:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -133,12 +146,12 @@ jobs:
         run: |
           python3 -m venv /tmp/v
           /tmp/v/bin/pip install dist/*.whl
-          /tmp/v/bin/dnsguard --version
+          /tmp/v/bin/trench --version
           # The seed blocklist and the admin console must survive packaging.
           /tmp/v/bin/python3 -c "
           from pathlib import Path
-          import dnsguard
-          root = Path(dnsguard.__file__).parent
+          import trench
+          root = Path(trench.__file__).parent
           assert (root / 'data' / 'default_blocklist.txt').is_file(), 'seed blocklist missing from the wheel'
           assert (root / 'web' / 'dist' / 'index.html').is_file(), 'admin console missing from the wheel'
           print('packaged data present')

@@ -1,0 +1,87 @@
+name: "Filtering: wrong verdict"
+description: A name is blocked that should not be, or allowed that should not be
+title: "[filtering] "
+labels: ["type/bug", "area/filtering", "status/needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Blocklists are maintained by other people. If a name is on a list this
+        project only *consumes* (HaGeZi, StevenBlack, OISD and so on), the fix
+        belongs upstream with that list — but report it here anyway if you
+        think Trench applied the list incorrectly, or if the built-in
+        allowlist should carry an exception.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before reporting
+      options:
+        - label: I searched the existing issues and this is not a duplicate.
+          required: true
+        - label: I ran `trench explain <name>` and pasted the output below.
+          required: true
+
+  - type: dropdown
+    id: direction
+    attributes:
+      label: Which way is it wrong?
+      options:
+        - Blocked, but should resolve (false positive)
+        - Resolved, but should be blocked (false negative)
+    validations:
+      required: true
+
+  - type: input
+    id: name
+    attributes:
+      label: The name
+      placeholder: "telemetry.example.com"
+    validations:
+      required: true
+
+  - type: textarea
+    id: explain
+    attributes:
+      label: "`trench explain <name>` output"
+      description: This names the rule, the list it came from, and the policy that applied.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: What broke, or what got through
+      description: >
+        For a false positive: the app or site that stopped working, and how it
+        failed. For a false negative: what the name is doing that it should
+        not.
+    validations:
+      required: true
+
+  - type: input
+    id: lists
+    attributes:
+      label: Which blocklists are enabled
+      description: The `filtering.sources` entries in your config, or their names.
+    validations:
+      required: true
+
+  - type: textarea
+    id: policy
+    attributes:
+      label: Client, group, and policy
+      description: >
+        If this only happens for some clients, say which — the client entry,
+        its filtering group and upstream group, and any `$client`/`$ctag` rules
+        in play.
+      render: yaml
+
+  - type: input
+    id: version
+    attributes:
+      label: Trench version
+      placeholder: "2.0.0"
+    validations:
+      required: true

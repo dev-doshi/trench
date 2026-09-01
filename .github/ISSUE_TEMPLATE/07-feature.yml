@@ -1,0 +1,72 @@
+name: Feature request
+description: Suggest a capability or a change in behaviour
+title: "[feature] "
+labels: ["type/enhancement", "status/needs-triage"]
+body:
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before requesting
+      options:
+        - label: I searched the existing issues and discussions for this idea.
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that Trench makes hard today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+      description: >
+        What should happen instead. If it needs configuration, sketch the YAML
+        you would want to write.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of Trench
+      options:
+        - Not sure
+        - Recursive resolver / upstream forwarding
+        - DNSSEC validation
+        - Filtering / blocklists / rules
+        - Answer cache
+        - Transports (Do53, DoT, DoH, DoQ)
+        - Authoritative zones / XFR / dynamic update
+        - DHCP server / lease-derived names
+        - Admin API
+        - Admin console (web UI)
+        - Query log / statistics / export
+        - CLI
+        - Packaging, Docker, or systemd
+    validations:
+      required: true
+
+  - type: input
+    id: rfc
+    attributes:
+      label: Relevant RFC or specification
+      description: If this changes what goes on the wire, name the RFC and section.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you have considered
+      description: Including how you work around it today, if you do.
+
+  - type: dropdown
+    id: contribute
+    attributes:
+      label: Would you be willing to implement it?
+      options:
+        - "No"
+        - "Maybe, with guidance"
+        - "Yes"

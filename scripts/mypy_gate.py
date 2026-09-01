@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fail CI on *new* type errors while the existing ones are worked off.
 
-DNSGuard carries a backlog of mypy findings, most of them the same shape: the
+Trench carries a backlog of mypy findings, most of them the same shape: the
 DNSSEC and wire layers pass rdata around as `object` and duck-type it, so mypy
 sees an attribute access on `object` and objects. Fixing that properly means
 introducing precise rdata types across the parser and the validator — worth
@@ -28,9 +28,9 @@ import subprocess
 import sys
 
 BASELINE = pathlib.Path(__file__).resolve().parent.parent / "mypy-baseline.txt"
-TARGET = "dnsguard/"
+TARGET = "trench/"
 
-# dnsguard/app.py:488: error: message here  [code]
+# trench/app.py:488: error: message here  [code]
 ERROR = re.compile(r"^(?P<file>[^:]+):\d+: error: (?P<msg>.*?)\s+\[(?P<code>[a-z-]+)\]$")
 
 

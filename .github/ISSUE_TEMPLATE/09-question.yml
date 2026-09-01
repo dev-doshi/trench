@@ -1,0 +1,28 @@
+name: "Question that turned out to need a change"
+description: Only if Discussions sent you here — otherwise start a discussion
+title: "[question] "
+labels: ["type/question", "status/needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Questions and configuration help belong in
+        [Discussions](https://github.com/dev-doshi/trench/discussions), where
+        more people will see them. Use this form only when a discussion has
+        concluded that something in Trench has to change and there is no
+        better form for it.
+
+  - type: input
+    id: discussion
+    attributes:
+      label: Link to the discussion
+      placeholder: "https://github.com/dev-doshi/trench/discussions/123"
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: What the discussion concluded
+    validations:
+      required: true

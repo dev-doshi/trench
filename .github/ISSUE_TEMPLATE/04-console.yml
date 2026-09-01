@@ -1,0 +1,80 @@
+name: "Admin console or API"
+description: The web console or the HTTP API misbehaves
+title: "[console] "
+labels: ["type/bug", "area/console", "status/needs-triage"]
+body:
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before reporting
+      options:
+        - label: I searched the existing issues and this is not a duplicate.
+          required: true
+        - label: I reloaded with the cache bypassed (the console is a committed build; a stale bundle looks like a bug).
+          required: true
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where
+      options:
+        - Console (web UI)
+        - HTTP API
+        - Both
+    validations:
+      required: true
+
+  - type: input
+    id: page
+    attributes:
+      label: Page or endpoint
+      placeholder: "Settings -> Filtering, or POST /api/v1/settings"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens, and what you expected instead
+      description: A screenshot helps for anything visual — drag it in here.
+    validations:
+      required: true
+
+  - type: textarea
+    id: console_errors
+    attributes:
+      label: Browser console errors
+      description: DevTools -> Console. Include the failing network request if there is one.
+      render: shell
+
+  - type: textarea
+    id: request
+    attributes:
+      label: The API request and response
+      description: >
+        For an API issue, the `curl` that shows it and the body that came
+        back. Strip your session cookie and any API token.
+      render: shell
+
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and version
+      placeholder: "Firefox 130, Safari 18, Chrome 129"
+
+  - type: dropdown
+    id: auth
+    attributes:
+      label: How were you authenticated?
+      options:
+        - Session (logged in through the console)
+        - API token
+        - Not authenticated (this happened on the login page)
+
+  - type: input
+    id: version
+    attributes:
+      label: Trench version
+      placeholder: "2.0.0"
+    validations:
+      required: true

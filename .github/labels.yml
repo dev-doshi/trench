@@ -1,0 +1,142 @@
+# The label taxonomy, and the source of truth for it.
+#
+# `scripts/sync_labels.py` reconciles the repository against this file, so a
+# label is created, recoloured or re-described by editing it here — not in the
+# web UI, where the change is invisible to review and drifts back on the next
+# sync.
+#
+# Every label an issue form applies must exist here; `scripts/check_templates.py`
+# fails CI if a form references one that does not.
+
+# ── type: what kind of thing this is. Exactly one per issue. ────────────────
+- name: type/bug
+  color: d73a4a
+  description: Behaviour that is wrong
+- name: type/enhancement
+  color: a2eeef
+  description: A capability or behaviour change that does not exist yet
+- name: type/docs
+  color: 0075ca
+  description: Documentation is wrong, missing, or unclear
+- name: type/question
+  color: d876e3
+  description: A question that concluded something has to change
+- name: type/regression
+  color: b60205
+  description: Worked in an earlier version, broken now
+- name: type/security
+  color: b60205
+  description: Security-relevant, already public (private reports go through advisories)
+
+# ── area: which part of the codebase. Zero or more. ─────────────────────────
+- name: area/resolver
+  color: 0e8a16
+  description: Recursion, upstream forwarding, qname minimisation
+- name: area/dnssec
+  color: 0e8a16
+  description: Validation, chain of trust, NSEC/NSEC3, trust anchors
+- name: area/filtering
+  color: 0e8a16
+  description: Blocklists, rules, groups, safe search, service blocking
+- name: area/cache
+  color: 0e8a16
+  description: Answer cache, negative caching, serve-stale, the fast path
+- name: area/transport
+  color: 0e8a16
+  description: Do53, DoT, DoH, DoQ, connection handling
+- name: area/wire
+  color: 0e8a16
+  description: Message parsing and serialization
+- name: area/auth-zone
+  color: 0e8a16
+  description: Authoritative zones, XFR, NOTIFY, dynamic update, TSIG
+- name: area/dhcp
+  color: 0e8a16
+  description: DHCP server and lease-derived names
+- name: area/api
+  color: 0e8a16
+  description: The admin HTTP API
+- name: area/console
+  color: 0e8a16
+  description: The web console
+- name: area/store
+  color: 0e8a16
+  description: Query log, statistics, export, persistence
+- name: area/cli
+  color: 0e8a16
+  description: The command-line interface
+- name: area/packaging
+  color: 0e8a16
+  description: Wheels, Docker image, systemd unit, install and upgrade
+- name: area/performance
+  color: 0e8a16
+  description: Speed, memory, stability under load
+- name: area/docs
+  color: 0e8a16
+  description: The documentation site and the files behind it
+- name: area/ci
+  color: 0e8a16
+  description: Workflows, gates, release automation
+- name: area/updates
+  color: 0e8a16
+  description: Update checking and applying
+
+# ── status: where it is in its life. Exactly one. ───────────────────────────
+- name: status/needs-triage
+  color: fbca04
+  description: Not yet looked at
+- name: status/needs-info
+  color: fbca04
+  description: Waiting on the reporter
+- name: status/confirmed
+  color: fbca04
+  description: Reproduced, and accepted as a defect
+- name: status/in-progress
+  color: fbca04
+  description: Someone is working on it
+- name: status/blocked
+  color: fbca04
+  description: Waiting on something outside this repository
+- name: status/upstream
+  color: fbca04
+  description: The fix belongs to a blocklist, a dependency, or another project
+- name: status/wontfix
+  color: ffffff
+  description: Understood, and deliberately not being changed
+- name: status/duplicate
+  color: ffffff
+  description: Already tracked elsewhere
+
+# ── priority ────────────────────────────────────────────────────────────────
+- name: priority/critical
+  color: b60205
+  description: Resolution is broken, data is at risk, or it is exploitable
+- name: priority/high
+  color: d93f0b
+  description: Next
+- name: priority/normal
+  color: fef2c0
+  description: Planned
+- name: priority/low
+  color: ededed
+  description: Someday
+
+# ── meta ────────────────────────────────────────────────────────────────────
+- name: good first issue
+  color: 7057ff
+  description: Small, self-contained, with a clear finish line
+- name: help wanted
+  color: 008672
+  description: Contributions especially welcome here
+- name: breaking-change
+  color: b60205
+  description: Changes configuration, defaults, or on-the-wire behaviour
+- name: dependencies
+  color: 0366d6
+  description: Dependency updates
+- name: pinned
+  color: ededed
+  description: Exempt from the stale bot
+- name: stale
+  color: ededed
+  description: Inactive, and heading for automatic closure

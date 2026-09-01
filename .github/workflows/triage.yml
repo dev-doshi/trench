@@ -1,0 +1,48 @@
+name: Triage
+
+# Turns the "which part of Trench" answer in an issue form into area labels,
+# so a new issue arrives routed instead of waiting for someone to read it and
+# retype the answer. Adds labels only — never removes one a human set.
+on:
+  issues:
+    types: [opened, edited]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Work out the labels
+        id: labels
+        env:
+          # Through the environment, never interpolated into the script: an
+          # issue body is attacker-controlled text.
+          BODY: ${{ github.event.issue.body }}
+        run: |
+          printf '%s' "$BODY" > /tmp/issue-body.md
+          {
+            echo "list<<EOF"
+            python3 scripts/triage_labels.py /tmp/issue-body.md
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+      - name: Apply them
+        if: steps.labels.outputs.list != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LABELS: ${{ steps.labels.outputs.list }}
+        run: |
+          while IFS= read -r label; do
+            [ -n "$label" ] || continue
+            echo "adding $label"
+            gh issue edit "${{ github.event.issue.number }}" \
+              --repo "${{ github.repository }}" --add-label "$label" || {
+                echo "::warning::could not add '$label' — run the Labels workflow"
+              }
+          done <<< "$LABELS"

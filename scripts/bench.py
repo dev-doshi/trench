@@ -27,16 +27,16 @@ import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-from dnsguard.cache import Cache
-from dnsguard.config import Config
-from dnsguard.engine import Pipeline
-from dnsguard.engine.responses import build_block
-from dnsguard.filter import FilterEngine, compile_rules
-from dnsguard.stats import Counters
-from dnsguard.wire import RR, Class, Message, Question, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import Rcode
+from trench.cache import Cache
+from trench.config import Config
+from trench.engine import Pipeline
+from trench.engine.responses import build_block
+from trench.filter import FilterEngine, compile_rules
+from trench.stats import Counters
+from trench.wire import RR, Class, Message, Question, Type
+from trench.wire import rdata as R
+from trench.wire.name import Name
+from trench.wire.rrtypes import Rcode
 
 # Regressions beyond this fraction fail --compare. Loose enough to absorb a
 # noisy shared runner, tight enough that a real algorithmic slip shows up —
@@ -100,7 +100,7 @@ def _query(name: str = WWW, qid: int = 1, qtype: int = Type.A) -> Message:
 
 
 class _FakeForwarder:
-    async def resolve(self, query: Message) -> Message:
+    async def resolve(self, query: Message, note=None) -> Message:
         r = query.reply(Rcode.NOERROR)
         for i in range(3):
             r.answers.append(RR(query.question.name, Type.A, Class.IN, 300, R.A(f"1.2.3.{i}")))
@@ -142,7 +142,12 @@ def bench_pipeline() -> None:
                     forwarder=_FakeForwarder(), counters=Counters(), config=cfg)
     loop = asyncio.new_event_loop()
     try:
-        loop.run_until_complete(pipe.resolve(_query(), "10.0.0.1"))
+        warm = loop.run_until_complete(pipe.resolve(_query(), "10.0.0.1"))
+        # The pipeline answers SERVFAIL rather than raising, so a benchmark
+        # against a broken fixture times the error path and reports it as a
+        # result. Check the fixture resolves before believing anything below.
+        assert warm.rcode == Rcode.NOERROR and warm.answers, \
+            "the fixture did not resolve; these numbers would be the failure path"
         bench_async("cache HIT", loop,
                     lambda i: pipe.resolve(_query(qid=i), "10.0.0.1"), 30_000)
         bench_async("forward (uncached)", loop,
@@ -153,8 +158,8 @@ def bench_pipeline() -> None:
 
 def bench_fastpath() -> None:
     print("\nwire-resident fast path")
-    from dnsguard.engine.fastpath import FastPath, query_key, ttl_offsets
-    from dnsguard.transport.base import process_query
+    from trench.engine.fastpath import FastPath, query_key, ttl_offsets
+    from trench.transport.base import process_query
 
     cfg = Config.model_validate({})
     pipe = Pipeline(filter_engine=FilterEngine.compile([]), cache=Cache(),
@@ -204,7 +209,7 @@ def bench_upstream() -> None:
     what a source-port pool saves over opening a socket per query.
     """
     print("\nupstream UDP (local echo server)")
-    from dnsguard.transport.upstream import Upstream, parse_upstream
+    from trench.transport.upstream import Upstream, parse_upstream
 
     class _Echo(asyncio.DatagramProtocol):
         def connection_made(self, t):

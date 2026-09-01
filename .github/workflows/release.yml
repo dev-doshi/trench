@@ -30,14 +30,20 @@ jobs:
         run: |
           TAG="${GITHUB_REF_NAME#v}"
           [ -n "${{ inputs.tag }}" ] && TAG="${{ inputs.tag }}" && TAG="${TAG#v}"
-          SRC=$(python3 -c "import re,pathlib;print(re.search(r'__version__ = \"([^\"]+)\"',pathlib.Path('dnsguard/version.py').read_text()).group(1))")
+          SRC=$(python3 -c "import re,pathlib;print(re.search(r'__version__ = \"([^\"]+)\"',pathlib.Path('trench/version.py').read_text()).group(1))")
           echo "tag=$TAG source=$SRC"
           if [ "$TAG" != "$SRC" ]; then
-            echo "::error::tag v$TAG does not match dnsguard/version.py ($SRC)"
+            echo "::error::tag v$TAG does not match trench/version.py ($SRC)"
             exit 1
           fi
           grep -q "^## \[$SRC\]" CHANGELOG.md || {
             echo "::error::CHANGELOG.md has no section for $SRC"; exit 1; }
+          for f in Dockerfile docker-compose.yml; do
+            if ! grep -qF "$SRC" "$f"; then
+              echo "::error::$f does not carry version $SRC (the image would be labelled with a stale one)"
+              exit 1
+            fi
+          done
           echo "version=$SRC" >> "$GITHUB_OUTPUT"
 
   test:
@@ -49,7 +55,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
-      - run: ruff check dnsguard/ tests/ scripts/ deploy/
+      - run: ruff check trench/ tests/ scripts/ deploy/
       - run: python3 scripts/mypy_gate.py
       - run: pytest -q
 
@@ -68,7 +74,10 @@ jobs:
           pip install build twine
           python3 -m build
           twine check dist/*
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      # Pinned by digest, not by tag: this step runs in the `release`
+      # environment with id-token: write, so a moved tag would be a
+      # supply-chain change nobody reviewed. Dependabot bumps the pin.
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
 
   ghcr:
     needs: [verify, test]

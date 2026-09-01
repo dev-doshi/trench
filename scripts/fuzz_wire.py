@@ -21,8 +21,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 import dns.message
 import dns.rdatatype
 
-from dnsguard.errors import WireError
-from dnsguard.wire import Message
+from trench.errors import WireError
+from trench.wire import Message
 
 SEED = int(os.environ.get("SEED", "1"))
 BUDGET = float(os.environ.get("BUDGET", "20"))
