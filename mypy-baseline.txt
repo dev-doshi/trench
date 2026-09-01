@@ -1,6 +1,6 @@
 # Known mypy findings, recorded by scripts/mypy_gate.py.
 # New findings fail CI; this file may only ever shrink.
-# 112 finding(s).
+# 110 finding(s).
 trench/analyze/lists.py	union-attr	Item "None" of "Any | None" has no attribute "nbytes"
 trench/analyze/lists.py	union-attr	Item "None" of "Any | None" has no attribute "nbytes"
 trench/api/auth.py	index	Value of type "Row | None" is not indexable
@@ -66,8 +66,6 @@ trench/engine/zerox20.py	union-attr	Item "None" of "Question | None" has no attr
 trench/engine/zerox20.py	union-attr	Item "None" of "Question | None" has no attribute "rclass"
 trench/engine/zerox20.py	union-attr	Item "None" of "Question | None" has no attribute "rtype"
 trench/filter/cnamecloak.py	attr-defined	"Rdata" has no attribute "name"
-trench/ops/whatif.py	assignment	Incompatible default for argument "allow" (default has type "tuple[()]", argument has type "list[str]")
-trench/ops/whatif.py	assignment	Incompatible default for argument "deny" (default has type "tuple[()]", argument has type "list[str]")
 trench/resolver/dnssec/chain.py	assignment	Incompatible types in assignment (expression has type "tuple[str, Name, None]", variable has type "tuple[str, Name, list[DNSKEY]]")
 trench/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "hash_algorithm"
 trench/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "hash_algorithm"

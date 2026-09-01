@@ -81,3 +81,6 @@ Thumbs.db
 
 # ── Docs ────────────────────────────────────────────────────────────────────
 site/
+
+# Editor and tooling configuration that is not this project.
+.claude/

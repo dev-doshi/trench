@@ -15,6 +15,7 @@ to the current decision, anything else keeps the current verdict.
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from ..filter import Action, FilterEngine
@@ -51,7 +52,7 @@ class WhatIfResult:
         }
 
 
-def compile_delta(deny: list[str] = (), allow: list[str] = (),
+def compile_delta(deny: Sequence[str] = (), allow: Sequence[str] = (),
                   list_text: str = "") -> FilterEngine:
     """Compile the proposed change: plain deny/allow domains plus optionally the
     raw text of a blocklist (hosts / adblock syntax) being considered."""
