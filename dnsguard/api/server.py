@@ -61,6 +61,16 @@ def _write_config(src, text: str) -> None:
     src.write_text(text)
 API = "/api/v1"
 
+#: Ceiling on one inbound WebSocket message. The console's own frames are a
+#: handful of bytes; this is generous for them and finite for everyone else.
+WS_MAX_MSG_BYTES = 64 * 1024
+
+
+class _NoUpdater(Exception):
+    """`updates.mode` is off, so there is no updater to ask. Not an error the
+    caller did anything to cause, so the handlers turn it into an explanation
+    rather than a 500."""
+
 
 class APIServer:
     def __init__(self, app, host: str, port: int, *, ssl_context=None):
@@ -72,13 +82,20 @@ class APIServer:
         self.start_ts = time.time()
         self._runner: web.AppRunner | None = None
         self._ws: set[web.WebSocketResponse] = set()
+        # Secrets offered for enrolment but not yet proven. Held here rather
+        # than written straight to the user row: a secret stored before the
+        # operator's authenticator has produced one matching code is a lockout
+        # waiting for the next login. Lost on restart, which is the right way
+        # for an unfinished enrolment to end.
+        self._pending_totp: dict[str, str] = {}
         from ..security.clientaddr import TrustedProxies
         self.trusted = TrustedProxies(
             getattr(app.config.security, "trusted_proxies", ()))
 
     # ---- lifecycle ----
     async def start(self) -> None:
-        await self.auth.ensure_admin(self.app.config.web.admin_password)
+        await self.auth.ensure_admin(self.app.config.web.admin_password,
+                                     data_dir=self.app.config.data_path)
         webapp = web.Application(middlewares=[self._auth_mw, self._headers_mw])
         from ..security.clientaddr import TRUSTED_KEY
         webapp[TRUSTED_KEY] = self.trusted
@@ -102,6 +119,12 @@ class APIServer:
         r.add_post(f"{API}/auth/login", self.login)
         r.add_post(f"{API}/auth/logout", self.logout)
         r.add_get(f"{API}/auth/me", self.me)
+        r.add_get(f"{API}/auth/tokens", self.tokens_list)
+        r.add_post(f"{API}/auth/tokens", self.tokens_create)
+        r.add_delete(f"{API}/auth/tokens/{{tid}}", self.tokens_delete)
+        r.add_post(f"{API}/auth/totp/enrol", self.totp_enrol)
+        r.add_post(f"{API}/auth/totp/confirm", self.totp_confirm)
+        r.add_delete(f"{API}/auth/totp", self.totp_disable)
         r.add_get(f"{API}/stats", self.stats)
         r.add_get(f"{API}/querylog", self.querylog)
         r.add_get(f"{API}/querylog/facets", self.querylog_facets)
@@ -113,18 +136,27 @@ class APIServer:
         r.add_get(f"{API}/rules", self.rules_get)
         r.add_post(f"{API}/rules", self.rules_post)
         r.add_post(f"{API}/toggle", self.toggle)
+        r.add_get(f"{API}/explain", self.explain)
+        r.add_get(f"{API}/history", self.history)
+        r.add_get(f"{API}/notary", self.notary)
+        r.add_get(f"{API}/silence", self.silence)
+        r.add_get(f"{API}/pause", self.pause_get)
+        r.add_post(f"{API}/pause", self.pause_post)
         r.add_get(f"{API}/settings", self.settings_get)
         r.add_put(f"{API}/settings", self.settings_put)
         r.add_post(f"{API}/cache/flush", self.cache_flush)
         r.add_post(f"{API}/gravity/refresh", self.gravity_refresh)
+        r.add_get(f"{API}/update", self.update_status)
+        r.add_post(f"{API}/update/check", self.update_check)
+        r.add_post(f"{API}/update/apply", self.update_apply)
+        r.add_post(f"{API}/update/rollback", self.update_rollback)
         r.add_get(f"{API}/clients", self.clients)
         r.add_get(f"{API}/clients/manage", self.clients_list)
         r.add_post(f"{API}/clients/manage", self.clients_create)
         r.add_put(f"{API}/clients/manage/{{cid}}", self.clients_update)
         r.add_delete(f"{API}/clients/manage/{{cid}}", self.clients_delete)
-        r.add_get(f"{API}/groups", self.groups_list)
-        r.add_post(f"{API}/groups", self.groups_create)
-        r.add_delete(f"{API}/groups/{{gid}}", self.groups_delete)
+        r.add_get(f"{API}/groups", self.groups)
+        r.add_get(f"{API}/services", self.services)
         r.add_post(f"{API}/whatif", self.whatif)
         r.add_get(f"{API}/collateral", self.collateral)
         r.add_get(f"{API}/lists", self.lists_roi)
@@ -174,7 +206,10 @@ class APIServer:
             "Content-Security-Policy",
             "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
             "object-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
-            "connect-src 'self' ws: wss:")
+            # `ws:`/`wss:` as bare schemes are not scoped to this origin: they
+            # permit a socket to anywhere. The console's only socket is its own
+            # /api/v1/ws, and 'self' already covers it for both schemes.
+            "connect-src 'self'")
         return resp
 
     def _require(self, request: web.Request, role: str) -> dict:
@@ -210,7 +245,85 @@ class APIServer:
         return resp
 
     async def me(self, request: web.Request) -> web.Response:
-        return web.json_response({"user": request.get("user")})
+        user = request.get("user")
+        totp_on = False
+        if user is not None:
+            totp_on = bool(await self.auth.totp_secret(user["name"]))
+        return web.json_response({"user": user, "totp": totp_on})
+
+    # ---- API tokens ----
+    # The console issues a session cookie; a script cannot use one. Tokens are
+    # how everything that is not a browser talks to this API — `dnsguard status`
+    # and the rest of the CLI's control commands take one — and until this
+    # existed there was no way to obtain one at all: the table, the validation
+    # path and the CLI flag were all in place around a hole where the minting
+    # should have been.
+    async def tokens_list(self, request: web.Request) -> web.Response:
+        self._require(request, "admin")
+        return web.json_response({"tokens": await self.auth.list_api_tokens()})
+
+    async def tokens_create(self, request: web.Request) -> web.Response:
+        user = self._require(request, "admin")
+        body = await _json(request)
+        name = (body.get("name") or "").strip()
+        scope = body.get("scope", "viewer")
+        days = int(body.get("expires_days") or 0)
+        if not name:
+            return web.json_response({"error": "name required"}, status=400)
+        expires = int(time.time() + days * 86400) if days > 0 else 0
+        try:
+            raw = await self.auth.create_api_token(user["id"], name, scope, expires)
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=400)
+        await self._audit(request, "token.create", name, scope)
+        # The only time the token itself is ever readable. Nothing stores it.
+        return web.json_response({"token": raw, "name": name, "scope": scope,
+                                  "expires": expires})
+
+    async def tokens_delete(self, request: web.Request) -> web.Response:
+        self._require(request, "admin")
+        tid = request.match_info["tid"]
+        if not await self.auth.revoke_api_token(int(tid)):
+            return web.json_response({"error": "not found"}, status=404)
+        await self._audit(request, "token.revoke", str(tid))
+        return web.json_response({"ok": True})
+
+    # ---- TOTP enrolment ----
+    # Verification has always been here; enrolling had no route, so the second
+    # factor the README advertises could not be switched on by any supported
+    # means. Enrol hands back a secret, confirm proves the operator's
+    # authenticator agrees before anything is stored — without that step a
+    # mistyped setup locks the account out on the next login.
+    async def totp_enrol(self, request: web.Request) -> web.Response:
+        user = self._require(request, "admin")
+        from ..security import totp
+        secret = totp.new_secret()
+        self._pending_totp[user["name"]] = secret
+        return web.json_response({
+            "secret": secret,
+            "uri": totp.provisioning_uri(secret, user["name"], issuer="DNSGuard"),
+        })
+
+    async def totp_confirm(self, request: web.Request) -> web.Response:
+        user = self._require(request, "admin")
+        from ..security import totp
+        body = await _json(request)
+        secret = self._pending_totp.get(user["name"], "")
+        if not secret:
+            return web.json_response({"error": "start enrolment first"}, status=400)
+        if not totp.verify(secret, str(body.get("code", ""))):
+            return web.json_response({"error": "that code does not match"}, status=400)
+        await self.auth.set_totp(user["name"], secret)
+        self._pending_totp.pop(user["name"], None)
+        await self._audit(request, "totp.enable", user["name"])
+        return web.json_response({"ok": True})
+
+    async def totp_disable(self, request: web.Request) -> web.Response:
+        user = self._require(request, "admin")
+        await self.auth.set_totp(user["name"], "")
+        self._pending_totp.pop(user["name"], None)
+        await self._audit(request, "totp.disable", user["name"])
+        return web.json_response({"ok": True})
 
     # ---- data routes ----
     async def stats(self, request: web.Request) -> web.Response:
@@ -356,7 +469,10 @@ class APIServer:
         levels = {
             0: ("Full logging", "Every query stored with client IP, domain, and answer."),
             1: ("Hide clients", "Queries stored, but client IPs are dropped before disk."),
-            2: ("Anonymous", "Client IPs and domains are hashed before disk."),
+            2: ("Anonymous", "Client IPs and domains are replaced with a salted "
+                              "hash before disk, and answers are dropped. Counts "
+                              "and repeat visits still add up; the names do not "
+                              "survive."),
             3: ("No logging", "Nothing is written to disk; only in-memory live stats exist."),
         }
         level = ql.privacy_level if ql else 3
@@ -460,6 +576,91 @@ class APIServer:
         await self._audit(request, "toggle", str(self.app.pipeline.enabled))
         return web.json_response({"enabled": self.app.pipeline.enabled})
 
+    async def explain(self, request: web.Request) -> web.Response:
+        """Why did this name do what it did? `?name=` plus optional `client=`,
+        `type=` and `resolve=1` to try it live."""
+        self._require(request, "viewer")
+        q = request.query
+        name = (q.get("name") or "").strip()
+        if not name:
+            return web.json_response({"error": "name is required"}, status=400)
+        from ..ops.explain import explain as run_explain
+        report = await run_explain(self.app, name, q.get("type", "A"),
+                                   q.get("client", ""),
+                                   resolve=q.get("resolve", "") in ("1", "true", "yes"))
+        return web.json_response(report)
+
+    async def history(self, request: web.Request) -> web.Response:
+        """What a name has resolved to over time, from this household's own log."""
+        self._require(request, "viewer")
+        name = (request.query.get("name") or "").strip()
+        if not name:
+            return web.json_response({"error": "name is required"}, status=400)
+        if self.app.querylog is None:
+            return web.json_response({"name": name, "history": []})
+        try:
+            days = int(request.query.get("days", "0"))
+        except ValueError:
+            days = 0
+        since = int((time.time() - days * 86400) * 1_000_000) if days > 0 else None
+        rows = await self.app.querylog.history(name, since=since)
+        return web.json_response({"name": name, "history": rows})
+
+    async def notary(self, request: web.Request) -> web.Response:
+        """Pinned names whose upstreams disagreed, or that moved network."""
+        self._require(request, "viewer")
+        notary = getattr(self.app, "notary", None)
+        if notary is None:
+            return web.json_response({"enabled": False, "findings": []})
+        return web.json_response({
+            "enabled": True,
+            "names": notary.names,
+            "findings": [f.to_json() for f in reversed(notary.findings)],
+        })
+
+    async def silence(self, request: web.Request) -> web.Response:
+        """Devices that have stopped asking this resolver anything."""
+        self._require(request, "viewer")
+        ledger = getattr(self.app, "ledger", None)
+        if ledger is None:
+            return web.json_response({"enabled": False, "devices": []})
+        rows = ledger.report()
+        only = request.query.get("status", "")
+        if only:
+            rows = [r for r in rows if r["status"] == only]
+        return web.json_response({"enabled": True, "devices": rows})
+
+    async def pause_get(self, request: web.Request) -> web.Response:
+        self._require(request, "viewer")
+        return web.json_response(self.app.pipeline.pause_state())
+
+    async def pause_post(self, request: web.Request) -> web.Response:
+        """Suspend filtering for a while, for everyone or for one device.
+
+        `{"seconds": 300}` pauses everything for five minutes;
+        `{"seconds": 300, "client": "192.168.1.50"}` pauses that device only;
+        `{"seconds": 0}` resumes. Unlike the toggle this expires by itself,
+        which is the difference between letting one download through and
+        leaving the network unfiltered until somebody notices.
+        """
+        self._require(request, "editor")
+        body = await _json(request)
+        try:
+            seconds = float(body.get("seconds", 300))
+        except (TypeError, ValueError):
+            return web.json_response({"error": "seconds must be a number"}, status=400)
+        if seconds < 0 or seconds > 86_400:
+            return web.json_response({"error": "seconds must be 0..86400"}, status=400)
+        client = str(body.get("client", "") or "")
+        pipe = self.app.pipeline
+        if seconds == 0:
+            pipe.resume(client)
+            await self._audit(request, "resume", client or "all")
+        else:
+            pipe.pause(seconds, client)
+            await self._audit(request, "pause", f"{client or 'all'} {seconds:g}s")
+        return web.json_response(pipe.pause_state())
+
     # ---- settings ----
     async def settings_get(self, request: web.Request) -> web.Response:
         self._require(request, "viewer")
@@ -525,11 +726,11 @@ class APIServer:
         try:
             # Apply, do not "reload": a full reload re-downloads and recompiles
             # every blocklist, which is several seconds of the interface sitting
-            # frozen because somebody changed the log level. Lists are only
-            # refetched when the list of sources is itself what changed.
-            self.app.apply_config()
-            if "filtering.sources" in changes:
-                asyncio.ensure_future(self.app.refresh_blocklists())
+            # frozen because somebody changed the log level. Passing the changed
+            # paths means only the appliers those settings name actually run —
+            # and `filtering.sources` is the one that rebuilds the lists, in the
+            # background, so this request is not holding the browser open for it.
+            await self.app.apply_config(list(changes))
         except Exception:
             log.exception("settings saved but could not be applied")
             return web.json_response({"ok": True, "reloaded": False,
@@ -548,6 +749,70 @@ class APIServer:
         asyncio.ensure_future(self.app.refresh_blocklists())
         await self._audit(request, "gravity.refresh")
         return web.json_response({"ok": True})
+
+    # ── updates ─────────────────────────────────────────────────────────────
+    # Reading is a viewer's business; installing code on the box is an admin's,
+    # and is deliberately a heavier permission than editing a setting.
+    def _updater(self):
+        up = getattr(self.app, "updater", None)
+        if up is None:
+            raise _NoUpdater
+        return up
+
+    async def update_status(self, request: web.Request) -> web.Response:
+        self._require(request, "viewer")
+        try:
+            return web.json_response(self._updater().status())
+        except _NoUpdater:
+            return web.json_response({"mode": self.app.config.updates.mode,
+                                      "current_version": __version__,
+                                      "update_available": False,
+                                      "why_not": "update checking is off"})
+
+    async def update_check(self, request: web.Request) -> web.Response:
+        """Check now. Never installs anything, whatever the mode is."""
+        self._require(request, "editor")
+        try:
+            updater = self._updater()
+        except _NoUpdater:
+            return web.json_response({"error": "update checking is off"}, status=409)
+        await updater.check()
+        await self._audit(request, "update.check", updater.state.latest_version)
+        return web.json_response(updater.status())
+
+    async def update_apply(self, request: web.Request) -> web.Response:
+        """Install a release. Long-running on purpose: the caller waits for the
+        verdict rather than being told 'started' and having to guess."""
+        self._require(request, "admin")
+        try:
+            updater = self._updater()
+        except _NoUpdater:
+            return web.json_response({"error": "update checking is off"}, status=409)
+        body = await _json(request)
+        version = (body.get("version") or "").strip() or None
+        from ..ops.update import UpdateError
+        try:
+            status = await updater.apply(version=version)
+        except UpdateError as e:
+            await self._audit(request, "update.apply.failed", version or "", str(e))
+            return web.json_response({"error": str(e)}, status=409)
+        await self._audit(request, "update.apply", status.get("applied_version", ""),
+                          f"from {status.get('previous_version', '')}")
+        return web.json_response(status)
+
+    async def update_rollback(self, request: web.Request) -> web.Response:
+        self._require(request, "admin")
+        try:
+            updater = self._updater()
+        except _NoUpdater:
+            return web.json_response({"error": "update checking is off"}, status=409)
+        from ..ops.update import UpdateError
+        try:
+            status = await updater.rollback()
+        except UpdateError as e:
+            return web.json_response({"error": str(e)}, status=409)
+        await self._audit(request, "update.rollback", status.get("applied_version", ""))
+        return web.json_response(status)
 
     async def clients(self, request: web.Request) -> web.Response:
         self._require(request, "viewer")
@@ -692,33 +957,49 @@ class APIServer:
         return web.json_response({"ok": True})
 
     # ---- groups CRUD ----
-    async def groups_list(self, request: web.Request) -> web.Response:
+    async def services(self, request: web.Request) -> web.Response:
+        """The blocked-services catalogue: ids, categories and domain counts.
+
+        The console cannot offer "block TikTok for this device" without knowing
+        what the ids are, and the categories existed with nothing able to read
+        them.
+        """
         self._require(request, "viewer")
-        rows = await self.app.db.fetchall(
-            'SELECT id, name, enabled, comment FROM "group" ORDER BY id')
-        return web.json_response({"groups": [dict(r) for r in rows]})
+        from ..filter.services import CATEGORIES
+        table = self.app.services.table if self.app.services is not None else {}
+        rows = [{"id": sid, "category": CATEGORIES.get(sid, "other"),
+                 "domains": len(domains)}
+                for sid, domains in sorted(table.items())]
+        return web.json_response({"services": rows})
 
-    async def groups_create(self, request: web.Request) -> web.Response:
-        self._require(request, "editor")
-        body = await _json(request)
-        name = (body.get("name") or "").strip()
-        if not name:
-            return web.json_response({"error": "name required"}, status=400)
-        try:
-            await self.app.db.execute(
-                'INSERT INTO "group"(name, enabled, comment) VALUES(?,?,?)',
-                (name, int(body.get("enabled", True)), body.get("comment", "")))
-        except Exception:
-            return web.json_response({"error": "group exists"}, status=409)
-        await self._audit(request, "group.create", name)
-        return web.json_response({"ok": True})
+    async def groups(self, request: web.Request) -> web.Response:
+        """The filtering groups that actually decide verdicts.
 
-    async def groups_delete(self, request: web.Request) -> web.Response:
-        self._require(request, "editor")
-        gid = request.match_info["gid"]
-        await self.app.db.execute('DELETE FROM "group" WHERE id=?', (gid,))
-        await self._audit(request, "group.delete", str(gid))
-        return web.json_response({"ok": True})
+        Read-only, and derived from what the pipeline is running rather than
+        from a table: this used to be create/list/delete over a `group` table no
+        verdict ever consulted, so a group made here changed nothing. Groups are
+        declared in `filtering.groups` and enforced per client; what the console
+        needs is to see them, including whether their lists compiled.
+        """
+        self._require(request, "viewer")
+        pipe = self.app.pipeline
+        configured = self.app.config.filtering.groups or {}
+        members: dict[str, list[str]] = {}
+        for c in self.app.config.clients:
+            if c.group:
+                members.setdefault(c.group, []).append(c.name or c.ident)
+        out = []
+        for name, spec in configured.items():
+            live = pipe.group_filters.get(name)
+            out.append({
+                "name": name,
+                "inherit": spec.inherit,
+                "sources": len(spec.sources),
+                "rules": getattr(getattr(live, "own", None), "size", 0),
+                "compiled": live is not None,
+                "clients": sorted(members.get(name, [])),
+            })
+        return web.json_response({"groups": out})
 
     async def system(self, request: web.Request) -> web.Response:
         self._require(request, "viewer")
@@ -735,7 +1016,7 @@ class APIServer:
     # ---- ops ----
     async def prometheus(self, request: web.Request) -> web.Response:
         text = metrics.render(self.app.counters, self.app.cache, self.app.filter.size,
-                              getattr(self.app, "fast", None))
+                              getattr(self.app, "fast", None), self.app.pipeline)
         return web.Response(text=text, content_type="text/plain")
 
     async def healthz(self, request: web.Request) -> web.Response:
@@ -753,7 +1034,12 @@ class APIServer:
         # domains straight out of the in-memory ring, so it needs at least the
         # same role as the REST routes that serve the same data.
         self._require(request, "viewer")
-        ws = web.WebSocketResponse(heartbeat=30, max_msg_size=0)
+        # Bound what one client may buffer here. `max_msg_size=0` disables
+        # aiohttp's reassembly limit entirely, so a viewer — the lowest role
+        # there is — could stream unbounded continuation frames into the primary
+        # worker, which is the same process as the resolver. Nothing this
+        # console sends upstream is larger than a control frame.
+        ws = web.WebSocketResponse(heartbeat=30, max_msg_size=WS_MAX_MSG_BYTES)
         await ws.prepare(request)
         self._ws.add(ws)
         loop = asyncio.get_running_loop()
@@ -828,6 +1114,27 @@ _OPENAPI = {
         f"{API}/rules": {"get": {"summary": "List allow/deny rules"},
                          "post": {"summary": "Add/remove an allow/deny rule"}},
         f"{API}/toggle": {"post": {"summary": "Toggle global blocking"}},
+        f"{API}/notary": {
+            "get": {"summary": "Quorum findings for the pinned names"}},
+        f"{API}/history": {
+            "get": {"summary": "What a name has resolved to over time"}},
+        f"{API}/services": {
+            "get": {"summary": "Blocked-services catalogue by category"}},
+        f"{API}/groups": {
+            "get": {"summary": "Filtering groups in force, and their members"}},
+        f"{API}/explain": {
+            "get": {"summary": "Explain what this resolver did with a name"}},
+        f"{API}/silence": {
+            "get": {"summary": "Devices that stopped querying this resolver"}},
+        f"{API}/pause": {
+            "get": {"summary": "Current pause state"},
+            "post": {"summary": "Pause filtering for N seconds (optionally one client)"},
+        },
+        f"{API}/auth/tokens": {
+            "get": {"summary": "List API tokens (admin)"},
+            "post": {"summary": "Create an API token; returned once (admin)"}},
+        f"{API}/auth/totp/enrol": {"post": {"summary": "Begin TOTP enrolment (admin)"}},
+        f"{API}/auth/totp/confirm": {"post": {"summary": "Confirm and enable TOTP (admin)"}},
         f"{API}/gravity/refresh": {"post": {"summary": "Refresh blocklists"}},
         "/metrics": {"get": {"summary": "Prometheus metrics"}},
     },

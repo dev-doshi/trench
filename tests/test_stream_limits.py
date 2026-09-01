@@ -376,3 +376,57 @@ async def test_a_zero_length_message_ends_the_connection():
         await writer.drain()
         assert await asyncio.wait_for(reader.read(1), 2.0) == b""
         writer.close()
+
+
+# --- QUIC frontends carry the same caps -----------------------------------
+
+def test_the_quic_frontends_admit_and_release_through_the_tracker():
+    """DoQ and DoH3 were built without limits at all, so the number of
+    established QUIC connections one worker held was whatever peers asked for —
+    while the config described these caps as covering every connection-oriented
+    frontend."""
+    from aioquic.quic import events
+
+    from dnsguard.transport.quiclimits import LimitedQuicProtocol
+    from dnsguard.transport.stream import ConnectionTracker, StreamLimits
+
+    class Fake(LimitedQuicProtocol):
+        def __init__(self, tracker, peer):
+            self.tracker = tracker
+            self._admitted = None
+            self._peer = peer
+            self.closed = False
+
+        def peer_ip(self):
+            return self._peer
+
+        def close(self):
+            self.closed = True
+
+        def transmit(self):
+            pass
+
+    tracker = ConnectionTracker(StreamLimits(max_connections=2, max_per_client=2))
+    done = events.ConnectionTerminated(error_code=0, frame_type=None, reason_phrase="")
+    hello = events.HandshakeCompleted(alpn_protocol="doq", early_data_accepted=False,
+                                      session_resumed=False)
+
+    a, b, c = (Fake(tracker, "10.0.0.1") for _ in range(3))
+    assert a.note_quic_event(hello) is True
+    assert b.note_quic_event(hello) is True
+    assert tracker.total == 2
+
+    # third is over the cap: refused, and told so rather than left hanging
+    assert c.note_quic_event(hello) is False
+    assert c.closed is True
+    assert tracker.total == 2 and tracker.rejected == 1
+
+    # a closed connection frees its slot
+    a.note_quic_event(done)
+    assert tracker.total == 1
+    assert c.note_quic_event(hello) is True
+
+    # releasing twice must not drive the count negative
+    b.note_quic_event(done)
+    b.note_quic_event(done)
+    assert tracker.total == 1

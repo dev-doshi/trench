@@ -16,7 +16,7 @@ from dnsguard.wire.rrtypes import Rcode
 
 
 class FakeForwarder:
-    async def resolve(self, query: Message) -> Message:
+    async def resolve(self, query: Message, note=None) -> Message:
         resp = query.reply(Rcode.NOERROR)
         q = query.question
         if q.rtype == Type.A:

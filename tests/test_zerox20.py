@@ -40,7 +40,7 @@ def test_verify_and_restore():
 class CaseForwarder:
     """Echoes back the EXACT case it received (compliant upstream)."""
     def __init__(self, mangle=False): self.mangle = mangle
-    async def resolve(self, query: Message) -> Message:
+    async def resolve(self, query: Message, note=None) -> Message:
         name = query.question.name
         if self.mangle:  # simulate a spoofer that doesn't preserve 0x20 case
             name = Name(tuple(la.lower() for la in name.labels))

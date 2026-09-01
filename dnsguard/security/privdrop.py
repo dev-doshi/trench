@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import os
 
+from ..errors import DNSGuardError
 from ..log import get
 
 log = get("privdrop")
 
 
-class PrivDropError(Exception):
+class PrivDropError(DNSGuardError):
     pass
 
 

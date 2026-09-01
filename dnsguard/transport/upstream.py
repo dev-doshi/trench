@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from ..errors import UpstreamError
 from ..log import get
 from ..wire import Message
+from ..wire.name import suffixes
 from ..wire.rrtypes import Flags
 
 log = get("upstream")
@@ -544,16 +545,28 @@ class Router:
     routes: dict[str, list[Upstream]] = field(default_factory=dict)
 
     def group_for(self, qname: str) -> list[Upstream]:
-        name = qname.rstrip(".").lower()
-        labels = name.split(".")
-        best: list[Upstream] | None = None
-        best_len = -1
-        for i in range(len(labels)):
-            cand = ".".join(labels[i:])
-            g = self.routes.get(cand)
-            if g and len(cand) > best_len:
-                best, best_len = g, len(cand)
-        return best if best is not None else self.default
+        for cand in suffixes(qname):          # longest first: most specific wins
+            group = self.routes.get(cand)
+            if group:
+                return group
+        return self.default
+
+    async def close(self) -> None:
+        """Release every upstream's persistent connection and HTTP session.
+
+        Reached when a live settings change replaces the whole router. An
+        Upstream can be reachable from `default` and from several routes at
+        once, so it is closed by identity rather than once per appearance.
+        """
+        seen: dict[int, Upstream] = {}
+        for group in (self.default, *self.routes.values()):
+            for up in group:
+                seen.setdefault(id(up), up)
+        for up in seen.values():
+            try:
+                await up.close()
+            except Exception:  # noqa: BLE001 — teardown must not raise into a reload
+                log.debug("closing upstream %r failed", up, exc_info=True)
 
     @classmethod
     def build(cls, specs: list[str], *, timeout: float = 4.0, verify: bool = True,

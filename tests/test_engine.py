@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import asyncio
 
+from support import blocked_engine
+
 from dnsguard.cache import Cache
 from dnsguard.config import Config
 from dnsguard.engine import Pipeline
-from dnsguard.filter import Action, SimpleEngine
+from dnsguard.filter import Action
 from dnsguard.stats import Counters
 from dnsguard.wire import RR, Class, Message, Question, Type
 from dnsguard.wire import rdata as R
@@ -29,8 +31,8 @@ def mkanswer(query, ip="1.2.3.4", ttl=100):
 
 
 # --- filter ---
-def test_simple_engine_precedence():
-    eng = SimpleEngine(blocked={"ads.com"}, deny={"tracker.net"}, allow={"good.ads.com"})
+def test_engine_precedence():
+    eng = blocked_engine("ads.com", "tracker.net", allow=("good.ads.com",))
     assert eng.match("ads.com").action == Action.BLOCK
     assert eng.match("x.ads.com").action == Action.BLOCK          # subdomain
     assert eng.match("good.ads.com").action == Action.ALLOW       # allow wins
@@ -83,7 +85,7 @@ def test_cache_negative():
 # --- pipeline ---
 class FakeForwarder:
     def __init__(self, answer): self.answer = answer; self.calls = 0
-    async def resolve(self, query):
+    async def resolve(self, query, note=None):
         self.calls += 1
         a = self.answer
         a.id = query.id
@@ -92,7 +94,7 @@ class FakeForwarder:
 
 def build_pipeline(forwarder, blocked=None):
     cfg = Config()
-    eng = SimpleEngine(blocked=blocked or {"doubleclick.net"})
+    eng = blocked_engine(*(blocked or {"doubleclick.net"}))
     return Pipeline(filter_engine=eng, cache=Cache(), forwarder=forwarder,
                     counters=Counters(), config=cfg)
 

@@ -12,9 +12,21 @@ def test_password_hash_roundtrip():
 
 
 def test_token_hash():
+    pepper = b"\x01" * 32
     t = hashutil.new_token()
-    assert hashutil.hash_token(t) == hashutil.hash_token(t)
-    assert hashutil.hash_token(t) != hashutil.hash_token(hashutil.new_token())
+    assert hashutil.hash_token(t, pepper) == hashutil.hash_token(t, pepper)
+    assert hashutil.hash_token(t, pepper) != hashutil.hash_token(hashutil.new_token(), pepper)
+    # keyed, not bare: a different installation's key gives a different digest
+    assert hashutil.hash_token(t, pepper) != hashutil.hash_token(t, b"\x02" * 32)
+
+
+def test_identifier_hash_is_stable_and_salted():
+    salt = b"\x07" * 32
+    a = hashutil.hash_identifier("ads.example.com", salt)
+    assert a == hashutil.hash_identifier("ads.example.com", salt)   # counts still count
+    assert a != hashutil.hash_identifier("other.example.com", salt)
+    assert a != hashutil.hash_identifier("ads.example.com", b"\x08" * 32)
+    assert len(a) == 32 and "ads" not in a
 
 
 def test_totp_verify_window():

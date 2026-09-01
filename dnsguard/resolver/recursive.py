@@ -694,11 +694,12 @@ class RecursiveForwarder:
     """
 
     def __init__(self, *, timeout: float = 4.0, qmin: bool = True,
-                 validate: bool = False, budget: float = 5.0,
+                 validate: bool = False, anchors=None, budget: float = 5.0,
                  max_queries: int = 40, query_timeout: float = 1.5):
         self.timeout = timeout
         self.rec = Recursive(self._udp, qmin=qmin, validate=validate,
-                             budget=budget, max_queries=max_queries,
+                             anchors=anchors, budget=budget,
+                             max_queries=max_queries,
                              query_timeout=query_timeout)
         self._pool: dict[str, object] = {}
 

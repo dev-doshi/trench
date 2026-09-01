@@ -40,7 +40,7 @@ class Upstream:
     def __init__(self):
         self.calls = 0
 
-    async def resolve(self, query: Message) -> Message:
+    async def resolve(self, query: Message, note=None) -> Message:
         self.calls += 1
         q = query.question
         r = query.reply(Rcode.NOERROR)

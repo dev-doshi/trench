@@ -3,12 +3,13 @@ from __future__ import annotations
 
 from dnsguard.auth_zone import Zone, ZoneStore
 from dnsguard.auth_zone.sign import sign_zone
+from dnsguard.auth_zone.update import apply_update
 from dnsguard.auth_zone.zonefile import parse_zonefile
 from dnsguard.resolver.dnssec import verify_rrset
-from dnsguard.wire import Class, Message, Question, Type
+from dnsguard.wire import RR, Class, Message, Question, Type
 from dnsguard.wire import rdata as R
 from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import Rcode
+from dnsguard.wire.rrtypes import Flags, Opcode, Rcode
 
 ORIGIN = Name.from_text("example.com")
 
@@ -177,3 +178,42 @@ def test_an_empty_non_terminal_is_nodata_not_nxdomain():
     ])
     ans = z.lookup(Name.from_text("b.example.com."), Type.A)
     assert ans.rcode == Rcode.NOERROR and not ans.answers
+
+
+def _update_msg(origin, records):
+    """An UPDATE message carrying `records` in the update (authority) section."""
+    msg = Message(id=9)
+    msg.flags |= (Opcode.UPDATE << Flags.OPCODE_SHIFT)
+    msg.questions.append(Question(Name.from_text(origin), Type.SOA, Class.IN))
+    msg.authority.extend(records)
+    return msg
+
+
+def test_deleting_the_apex_soa_is_ignored_rather_than_bricking_the_zone():
+    """RFC 2136 §3.4.2.4. The class-NONE branch had none of the guards the
+    class-ANY branches have: the delete was applied, then `_bump_serial` raised
+    on the missing SOA — no reply, no journal entry, no NOTIFY, and SERVFAIL for
+    every update afterwards."""
+    zone = build_zone()
+    before = zone.soa.serial
+    rr = RR(zone.origin, Type.SOA, Class.NONE, 0, zone.records[zone.origin][Type.SOA][0])
+    assert apply_update(zone, _update_msg("example.com.", [rr])) == Rcode.NOERROR
+    assert zone.soa is not None
+    assert zone.soa.serial == before          # nothing changed, so no bump either
+
+
+def test_the_last_apex_ns_survives_an_individual_delete():
+    zone = build_zone()
+    ns = zone.records[zone.origin][Type.NS]
+    while len(zone.records[zone.origin][Type.NS]) > 1:
+        zone.records[zone.origin][Type.NS].pop()
+    rr = RR(zone.origin, Type.NS, Class.NONE, 0, ns[0])
+    assert apply_update(zone, _update_msg("example.com.", [rr])) == Rcode.NOERROR
+    assert zone.records[zone.origin][Type.NS]
+
+
+def test_an_update_record_of_a_foreign_class_is_formerr():
+    zone = build_zone()
+    rr = RR(Name.from_text("new.example.com."), Type.A, Class.CH, 60, R.A("10.0.0.9"))
+    assert apply_update(zone, _update_msg("example.com.", [rr])) == Rcode.FORMERR
+    assert Name.from_text("new.example.com.") not in zone.records

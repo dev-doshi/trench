@@ -137,11 +137,21 @@ class DGADetector:
 
     def __init__(self, *, threshold: float = 0.62, min_len: int = 10, block: bool = False,
                  burst_min_names: int = BURST_MIN_NAMES,
-                 burst_window_s: float = BURST_WINDOW_S):
+                 burst_window_s: float = BURST_WINDOW_S, workers: int = 1):
         self.threshold = threshold
         self.min_len = min_len
         self.block = block
-        self.burst_min_names = burst_min_names
+        self.workers = max(1, int(workers))
+        # One detector per worker, and the kernel spreads a client's queries
+        # across all of them, so each sees roughly 1/N of the evidence. Left
+        # unscaled, five names split four ways almost never puts five on any one
+        # worker (4 x (1/4)^5, under half a percent) and confirmation — the whole
+        # basis for blocking rather than merely flagging — effectively never
+        # fires. Scaling the per-worker threshold keeps the number the operator
+        # set meaning what it says in aggregate; it cannot go below two, because
+        # one failed random name is not a campaign on any worker.
+        self.burst_min_names = (burst_min_names if self.workers == 1
+                                else max(2, round(burst_min_names / self.workers)))
         self.burst_window_s = burst_window_s
         # client -> deque[(ts, label)] of random-looking names that did NOT resolve
         self._failed: dict[str, deque] = {}

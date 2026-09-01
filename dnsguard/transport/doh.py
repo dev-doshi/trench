@@ -12,16 +12,23 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from aiohttp import web
 
-from ..engine import Pipeline
 from ..log import get
 from ..wire import Class, Message, Question, Type
 from ..wire.edns import Edns
 from ..wire.name import Name
 from ..wire.rrtypes import type_from_text
 from .base import Frontend, apply_padding
+
+if TYPE_CHECKING:
+    # Type-only. A transport is handed a pipeline; it does not need the
+    # engine package at import time, and importing it for real closes a
+    # cycle (engine -> resolver -> transport -> engine) that forces the
+    # query path to keep every module lazily imported to break it.
+    from ..engine import Pipeline
 
 log = get("doh")
 

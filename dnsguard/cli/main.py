@@ -7,6 +7,8 @@ import argparse
 import asyncio
 import json
 import sys
+import urllib.error
+import urllib.parse
 import urllib.request
 
 from ..version import __version__
@@ -33,6 +35,34 @@ def _build_parser() -> argparse.ArgumentParser:
         s = sub.add_parser(name, help=help_)
         s.add_argument("--url", default="http://127.0.0.1:8089")
         s.add_argument("--token", default="")
+
+    # `update` above refreshes blocklists and has meant that for two major
+    # versions; upgrading DNSGuard itself is a different verb on purpose.
+    up = sub.add_parser("upgrade", help="check for, install, or roll back a DNSGuard release")
+    up.add_argument("action", nargs="?", default="status",
+                    choices=["status", "check", "apply", "rollback"])
+    up.add_argument("--version", dest="pin", default="",
+                    help="install this exact version instead of the newest")
+    up.add_argument("--json", action="store_true", dest="as_json")
+    up.add_argument("--url", default="http://127.0.0.1:8089")
+    up.add_argument("--token", default="")
+
+    why = sub.add_parser("why", help="explain what this server did with a name")
+    why.add_argument("name")
+    why.add_argument("type", nargs="?", default="A")
+    why.add_argument("--client", default="", help="the device that complained")
+    why.add_argument("--resolve", action="store_true",
+                     help="also resolve it now and report what came back")
+    why.add_argument("--json", action="store_true", dest="as_json")
+    why.add_argument("--url", default="http://127.0.0.1:8089")
+    why.add_argument("--token", default="")
+
+    pause = sub.add_parser("pause", help="suspend filtering for a while")
+    pause.add_argument("duration", nargs="?", default="5m",
+                       help="e.g. 30s, 5m, 1h; 0 resumes")
+    pause.add_argument("--client", default="", help="one device only")
+    pause.add_argument("--url", default="http://127.0.0.1:8089")
+    pause.add_argument("--token", default="")
 
     imp = sub.add_parser("import", help="import PiHole/AdGuard config")
     imp.add_argument("kind", choices=["pihole", "adguard"])
@@ -68,6 +98,8 @@ def _build_parser() -> argparse.ArgumentParser:
     pw.add_argument("--db", default="dnsguard.db", help="database file inside the data dir")
     pw.add_argument("--password", help="new password (omit to generate one and print it)")
     pw.add_argument("--role", default="admin", help="role if the user has to be created")
+    pw.add_argument("--clear-totp", action="store_true", dest="clear_totp",
+                    help="also remove the account's two-factor secret")
 
     st = sub.add_parser("stamp", help="emit a DNS stamp (sdns://)")
     st.add_argument("kind", choices=["doh", "dot"])
@@ -102,10 +134,21 @@ async def _do_query(args) -> int:
     return 0
 
 
-def _api_call(url: str, path: str, token: str, method: str = "GET"):
-    req = urllib.request.Request(url + path, method=method,
-                                 headers={"Authorization": f"Bearer {token}"} if token else {})
-    with urllib.request.urlopen(req, timeout=5) as r:
+def _api_call(url: str, path: str, token: str, method: str = "GET",
+              body: dict | None = None, timeout: float = 5):
+    """One call to the daemon's API.
+
+    `timeout` is a parameter because the fixed five seconds is right for
+    `status` and wrong for anything that runs pip: an install that takes two
+    minutes was being reported as a failure while it was still succeeding.
+    """
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode()
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url + path, method=method, headers=headers, data=data)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read())
 
 
@@ -116,6 +159,110 @@ def _do_control(args) -> int:
     try:
         out = _api_call(args.url, path, args.token, method)
         print(json.dumps(out, indent=2))
+        return 0
+    except Exception as e:
+        print(f"error: {e} (is the daemon running? do you need --token?)", file=sys.stderr)
+        return 1
+
+
+def _do_upgrade(args) -> int:
+    """Drive the daemon's update endpoints.
+
+    Deliberately a thin client: the daemon owns the decision about whether this
+    installation may update itself, so the CLI never does the work itself and
+    cannot be used to sidestep that judgement.
+    """
+    routes = {"status": ("/api/v1/update", "GET"),
+              "check": ("/api/v1/update/check", "POST"),
+              "apply": ("/api/v1/update/apply", "POST"),
+              "rollback": ("/api/v1/update/rollback", "POST")}
+    path, method = routes[args.action]
+    body = {"version": args.pin} if args.action == "apply" and args.pin else None
+    try:
+        # Installing runs pip twice and can take minutes on an SD card.
+        timeout = 900 if args.action in ("apply", "rollback") else 30
+        out = _api_call(args.url, path, args.token, method, body=body, timeout=timeout)
+    except urllib.error.HTTPError as e:
+        try:
+            detail = json.loads(e.read()).get("error", "")
+        except Exception:
+            detail = ""
+        print(f"error: {detail or e}", file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f"error: {e} (is the daemon running? do you need --token?)", file=sys.stderr)
+        return 1
+    if args.as_json:
+        print(json.dumps(out, indent=2))
+        return 0
+    if "error" in out:
+        print(f"error: {out['error']}", file=sys.stderr)
+        return 1
+    print(f"running   {out.get('current_version', '?')}")
+    latest = out.get("latest_version") or "unknown"
+    if out.get("update_available"):
+        print(f"available {latest}")
+    else:
+        print(f"latest    {latest}" if latest != "unknown" else "latest    not checked yet")
+    if out.get("restart_required"):
+        print(f"staged    {out.get('applied_version', '')} — restart to run it")
+    if out.get("last_error"):
+        print(f"last error: {out['last_error']}")
+    if not out.get("can_apply") and out.get("why_not"):
+        print(f"cannot install here: {out['why_not']}")
+    return 0
+
+
+def _seconds(text: str) -> float:
+    """`30s`, `5m`, `1h`, or a bare number of seconds."""
+    text = text.strip().lower()
+    units = {"s": 1, "m": 60, "h": 3600}
+    if text and text[-1] in units:
+        return float(text[:-1] or 0) * units[text[-1]]
+    return float(text or 0)
+
+
+def _do_why(args) -> int:
+    params = {"name": args.name, "type": args.type}
+    if args.client:
+        params["client"] = args.client
+    if args.resolve:
+        params["resolve"] = "1"
+    path = "/api/v1/explain?" + urllib.parse.urlencode(params)
+    try:
+        out = _api_call(args.url, path, args.token)
+    except Exception as e:
+        print(f"error: {e} (is the daemon running? do you need --token?)", file=sys.stderr)
+        return 1
+    if args.as_json:
+        print(json.dumps(out, indent=2))
+        return 0
+    print(out.get("verdict", ""))
+    for f in out.get("findings", []):
+        print(f"  · [{f['stage']}] {f['verdict']}: {f['detail']}")
+    live = out.get("live") or {}
+    if live and "error" not in live:
+        answers = ", ".join(live.get("answers") or []) or "no addresses"
+        print(f"  · [live] {live.get('action')}: {live.get('rcode')} -> {answers}")
+        for ede in live.get("extended_errors", []):
+            print(f"  · [live] extended error {ede['code']}: {ede['text']}")
+    recent = out.get("recent") or []
+    if recent:
+        print(f"  · [log] {len(recent)} recent quer(y|ies); last action "
+              f"{recent[0].get('action')}")
+    return 0
+
+
+def _do_pause(args) -> int:
+    seconds = _seconds(args.duration)
+    body = json.dumps({"seconds": seconds, "client": args.client}).encode()
+    req = urllib.request.Request(
+        args.url + "/api/v1/pause", data=body, method="POST",
+        headers={"Content-Type": "application/json",
+                 **({"Authorization": f"Bearer {args.token}"} if args.token else {})})
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            print(json.dumps(json.loads(r.read()), indent=2))
         return 0
     except Exception as e:
         print(f"error: {e} (is the daemon running? do you need --token?)", file=sys.stderr)
@@ -242,11 +389,16 @@ def _do_profile(args) -> int:
 async def _do_passwd(args) -> int:
     """Reset a web password without being able to log in.
 
-    The autogenerated first-run password is only ever printed to the log; once
-    that log rotates, an operator with full physical access to the box can be
-    locked out of their own resolver. Write access to the database is the proof
-    of ownership here, so this deliberately works offline against the file
-    rather than through the authenticated API.
+    The autogenerated first-run password is shown once; once that has scrolled
+    away, an operator with full physical access to the box can be locked out of
+    their own resolver. Write access to the database is the proof of ownership
+    here, so this deliberately works offline against the file rather than
+    through the authenticated API.
+
+    `--clear-totp` covers the other half of being locked out. A lost
+    authenticator is not recoverable through the console — the console is what
+    you cannot reach — and resetting the password alone leaves the second factor
+    standing, so the reset appeared to work and the next login still failed.
     """
     import secrets
     from pathlib import Path
@@ -270,6 +422,9 @@ async def _do_passwd(args) -> int:
         else:
             await auth.create_user(args.user, password, args.role)
             what = f"user created ({args.role})"
+        if args.clear_totp:
+            await auth.set_totp(args.user, "")
+            what += ", two-factor removed"
     finally:
         await db.close()
     # Sessions live in the daemon's memory, so a running daemon keeps serving
@@ -303,6 +458,12 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_do_passwd(args))
     if args.cmd in ("status", "toggle", "flush-cache", "update"):
         return _do_control(args)
+    if args.cmd == "upgrade":
+        return _do_upgrade(args)
+    if args.cmd == "why":
+        return _do_why(args)
+    if args.cmd == "pause":
+        return _do_pause(args)
     if args.cmd == "import":
         return _do_import(args)
     if args.cmd in handlers:

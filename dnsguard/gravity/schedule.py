@@ -12,7 +12,10 @@ log = get("schedule")
 
 class Scheduler:
     def __init__(self) -> None:
-        self._tasks: list[asyncio.Task] = []
+        # Keyed by name, so a job can be replaced or dropped when the setting
+        # behind it changes. Without that a live config change could start a
+        # second copy of a job while the first kept running on the old interval.
+        self._tasks: dict[str, asyncio.Task] = {}
         self._running = False
 
     def every(self, seconds: float, coro_factory: Callable[[], Awaitable], *,
@@ -20,14 +23,28 @@ class Scheduler:
         """Run coro_factory() every `seconds` (with +/- jitter), starting after
         one interval. coro_factory is called fresh each tick.
 
+        Replaces any job already registered under `name`.
+
         `offset` delays the first tick — used to stagger memory-hungry jobs
         across forked workers so they never rebuild at the same moment."""
-        self._tasks.append(
-            asyncio.ensure_future(self._loop(seconds, coro_factory, jitter, name, offset)))
+        self.cancel(name)
+        self._running = True
+        self._tasks[name] = asyncio.ensure_future(
+            self._loop(seconds, coro_factory, jitter, name, offset))
+
+    def cancel(self, name: str) -> bool:
+        """Stop one job. False when there was nothing under that name."""
+        task = self._tasks.pop(name, None)
+        if task is None:
+            return False
+        task.cancel()
+        return True
+
+    def running(self, name: str) -> bool:
+        return name in self._tasks
 
     async def _loop(self, seconds: float, factory, jitter: float, name: str,
                     offset: float = 0.0) -> None:
-        self._running = True
         if offset:
             await asyncio.sleep(offset)
         while self._running:
@@ -44,6 +61,6 @@ class Scheduler:
 
     def stop(self) -> None:
         self._running = False
-        for t in self._tasks:
+        for t in self._tasks.values():
             t.cancel()
         self._tasks.clear()

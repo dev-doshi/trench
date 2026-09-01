@@ -1,7 +1,7 @@
 """Client + effective Policy data model."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -14,10 +14,8 @@ class Policy:
     parental: bool = False                   # adult-content protection
     services: frozenset[str] = frozenset()   # blocked service ids
     upstream_group: str = ""                 # named upstream set (P5)
+    group: str = ""                          # filtering group (its own lists)
 
-    def merged_with(self, **overrides) -> Policy:
-        clean = {k: v for k, v in overrides.items() if v is not None}
-        return replace(self, **clean)
 
 
 @dataclass

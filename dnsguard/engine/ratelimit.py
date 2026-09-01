@@ -11,10 +11,21 @@ MAX_KEYS = 65536
 
 
 class RateLimiter:
-    def __init__(self, rate: float = 0.0, burst: int = 0, max_keys: int = MAX_KEYS):
+    def __init__(self, rate: float = 0.0, burst: int = 0, max_keys: int = MAX_KEYS,
+                 workers: int = 1):
         # rate <= 0 disables limiting
-        self.rate = rate
-        self.burst = burst if burst > 0 else max(1, int(rate))
+        #
+        # `workers` divides both figures. There is one limiter per worker and
+        # the kernel spreads a client's datagrams across all of them, so an
+        # unscaled `rate_limit: 150` on a four-worker box let a single source
+        # sustain ~600 q/s — four independent buckets, none of which knew about
+        # the others. A token bucket splits cleanly, so the aggregate after
+        # dividing is the number the operator actually typed; only the shape of
+        # a burst differs.
+        self.workers = max(1, int(workers))
+        self.rate = rate / self.workers if rate > 0 else rate
+        self.burst = ((burst / self.workers) if burst > 0 else max(1.0, self.rate))
+        self.burst = max(1.0, self.burst)
         self.max_keys = max_keys
         self._buckets: dict[str, tuple[float, float]] = {}  # key -> (tokens, last)
 

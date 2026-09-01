@@ -895,6 +895,46 @@ input.sw::after {
 input.sw:checked { background: var(--o-cache); border-color: var(--o-cache); }
 input.sw:checked::after { left: 16px; background: #fff; }
 
+/* ── Access: tokens and the second factor ─────────────────────────────────
+   A token is readable exactly once, so the row that carries it is the one
+   thing on this screen that has to be impossible to scroll past. It gets the
+   warning colour and a border; everything else stays on the single plane. */
+.st-minted {
+  margin: var(--b-3) 0 0; padding: var(--b-3);
+  border: 1px solid var(--o-failed); border-radius: var(--b-r);
+  color: var(--b-ink-2); font-size: var(--b-ui-s);
+}
+.st-minted code {
+  display: block; margin-top: var(--b-2); color: var(--b-ink);
+  font: 400 var(--b-id-s)/1.5 var(--b-id); word-break: break-all;
+  user-select: all;
+}
+.st-toks {
+  width: 100%; border-collapse: collapse; margin-top: var(--b-4);
+  font: 400 var(--b-ui-s)/1.5 var(--b-ui); font-variant-numeric: tabular-nums;
+}
+.st-toks th {
+  text-align: left; font: 500 var(--b-cap)/1 var(--b-ui); letter-spacing: .06em;
+  text-transform: uppercase; color: var(--b-ink-4);
+  padding: 0 var(--b-3) var(--b-2) 0; border-bottom: 1px solid var(--b-edge);
+}
+.st-toks td {
+  padding: var(--b-2) var(--b-3) var(--b-2) 0; color: var(--b-ink-2);
+  border-bottom: 1px solid var(--b-edge-soft);
+}
+.st-toks td:first-child { color: var(--b-ink); font-family: var(--b-id); }
+.st-toks td:last-child { text-align: right; padding-right: 0; }
+.st-none { color: var(--b-ink-4); font-size: var(--b-ui-s); margin: var(--b-4) 0 0; }
+.st-totp {
+  margin-top: var(--b-3); padding: var(--b-3);
+  border: 1px solid var(--b-edge); border-radius: var(--b-r);
+}
+.st-totp p { margin: 0 0 var(--b-3); color: var(--b-ink-3); font-size: var(--b-ui-s); }
+.st-totp code {
+  display: block; margin-bottom: var(--b-3); color: var(--b-ink);
+  font: 400 var(--b-id-s)/1.5 var(--b-id); word-break: break-all; user-select: all;
+}
+
 .st-dirty { color: var(--o-failed); font-size: var(--b-cap); }
 .st-warn { color: var(--o-failed); margin: var(--b-4) 0 0; }
 .st-path { color: var(--b-ink-4); font-size: var(--b-cap); margin: var(--b-4) 0 0; }

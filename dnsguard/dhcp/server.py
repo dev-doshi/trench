@@ -12,6 +12,7 @@ from ..errors import DNSGuardError
 from ..log import get
 from .scope import Scope
 from .v4 import (
+    OPT_DNR,
     OPT_DNS,
     OPT_LEASE_TIME,
     OPT_MSG_TYPE,
@@ -36,13 +37,21 @@ def _subnet_mask(network: str) -> str:
 
 
 def build_reply(req: DhcpPacket, scope: Scope, server_ip: str,
-                now: float | None = None) -> DhcpPacket | None:
+                now: float | None = None, dns_register=None,
+                dnr_option: bytes = b"") -> DhcpPacket | None:
+    """The reply to one DHCP message, registering the lease in DNS on ACK.
+
+    `dns_register(ip, hostname)` is called only for an ACK — an OFFER is not a
+    lease, and registering one would put a name in DNS for an address the client
+    may never take.
+    """
     mt = req.msg_type
     if mt == MessageType.DISCOVER:
         lease = scope.allocate(req.mac, req.hostname(), now=now)
         if lease is None:
             return None
-        return _reply(req, scope, server_ip, lease.ip, MessageType.OFFER)
+        return _reply(req, scope, server_ip, lease.ip, MessageType.OFFER,
+                      dnr_option=dnr_option)
     if mt == MessageType.REQUEST:
         # A REQUEST naming a different server is that server's to answer.
         # Replying anyway hands the client an ACK for an address out of our
@@ -53,7 +62,13 @@ def build_reply(req: DhcpPacket, scope: Scope, server_ip: str,
         lease = scope.allocate(req.mac, req.hostname(), requested=req.requested_ip(), now=now)
         if lease is None or (req.requested_ip() and req.requested_ip() != lease.ip):
             return _nak(req, server_ip)
-        return _reply(req, scope, server_ip, lease.ip, MessageType.ACK)
+        if dns_register is not None and lease.hostname:
+            try:
+                dns_register(lease.ip, lease.hostname)
+            except Exception:
+                log.exception("could not register %s in DNS", lease.ip)
+        return _reply(req, scope, server_ip, lease.ip, MessageType.ACK,
+                      dnr_option=dnr_option)
     if mt == MessageType.RELEASE:
         # Only the holder of the address may release it: ciaddr carries the
         # address the client claims to be giving up, and it has to be the one
@@ -64,7 +79,7 @@ def build_reply(req: DhcpPacket, scope: Scope, server_ip: str,
 
 
 def _reply(req: DhcpPacket, scope: Scope, server_ip: str, yiaddr: str,
-           mtype: MessageType) -> DhcpPacket:
+           mtype: MessageType, dnr_option: bytes = b"") -> DhcpPacket:
     opts = {
         OPT_MSG_TYPE: bytes([mtype]),
         OPT_SERVER_ID: opt_ip(server_ip),
@@ -77,6 +92,12 @@ def _reply(req: DhcpPacket, scope: Scope, server_ip: str, yiaddr: str,
         opts[OPT_ROUTER] = opt_ip(scope.router)
     if scope.dns:
         opts[OPT_DNS] = opt_ips(scope.dns)
+    # RFC 9463: hand the client our encrypted endpoints in the lease itself, so
+    # it is configured before it asks anything. Only when the client asked for
+    # the option — an unsolicited one is wasted space in a packet with a small
+    # budget, and some clients are unhappy about options they did not request.
+    if dnr_option and OPT_DNR in req.requested_options():
+        opts[OPT_DNR] = dnr_option
     return DhcpPacket(op=2, htype=req.htype, hlen=req.hlen, xid=req.xid,
                       flags=req.flags, yiaddr=yiaddr, siaddr=server_ip,
                       giaddr=req.giaddr, chaddr=req.chaddr, options=opts)
@@ -100,7 +121,9 @@ class _Proto(asyncio.DatagramProtocol):
             return
         if req.op != 1:      # BOOTREQUEST; a reply on this port is not ours to act on
             return
-        reply = build_reply(req, self.server.scope, self.server.server_ip)
+        reply = build_reply(req, self.server.scope, self.server.server_ip,
+                            dns_register=self.server.dns_register,
+                            dnr_option=self.server.dnr_option)
         if reply is not None and self.server.transport is not None:
             # broadcast the reply (clients have no IP yet)
             self.server.transport.sendto(reply.to_wire(), ("255.255.255.255", 68))
@@ -109,10 +132,14 @@ class _Proto(asyncio.DatagramProtocol):
 
 
 class DhcpServer:
-    def __init__(self, scope: Scope, server_ip: str, *, dns_register=None):
+    def __init__(self, scope: Scope, server_ip: str, *, dns_register=None,
+                 dnr_option: bytes = b""):
         self.scope = scope
         self.server_ip = server_ip
         self.dns_register = dns_register
+        # RFC 9463 DNR payload, precomputed by `discovery`. Empty when
+        # encrypted-DNS discovery is off, which is the default.
+        self.dnr_option = dnr_option
         self.transport = None
 
     async def start(self, *, enabled: bool, allow_dhcp: bool, dev: bool) -> None:

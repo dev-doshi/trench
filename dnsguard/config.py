@@ -1,4 +1,4 @@
-"""Configuration model (pydantic v2) loaded from YAML + env overrides.
+"""Configuration model (pydantic v2), loaded and validated from one YAML file.
 
 One validated tree is the single source of truth at boot; the live API mutates
 a copy and triggers a reload. Extended per phase — fields here cover P0/P1.
@@ -8,12 +8,25 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .errors import ConfigError
 
 
-class Do53Config(BaseModel):
+class Section(BaseModel):
+    """Base for every configuration section: an unknown key is an error.
+
+    Pydantic drops keys it does not recognise. That turns a misspelling, or a
+    wrong indent — `rate_limit` under `server:` rather than `security:` — into a
+    setting that is silently absent, so the protection the operator believes they
+    configured is simply off and nothing anywhere says otherwise. Refusing the
+    file is the only outcome that cannot be misread.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class Do53Config(Section):
     enabled: bool = True
     host: str = "127.0.0.1"
     port: int = 5354
@@ -21,7 +34,7 @@ class Do53Config(BaseModel):
     tcp: bool = True
 
 
-class DoTConfig(BaseModel):
+class DoTConfig(Section):
     enabled: bool = False
     host: str = "127.0.0.1"
     port: int = 8853
@@ -29,7 +42,7 @@ class DoTConfig(BaseModel):
     key: str | None = None
 
 
-class DoHConfig(BaseModel):
+class DoHConfig(Section):
     enabled: bool = False
     host: str = "127.0.0.1"
     port: int = 8443
@@ -39,7 +52,7 @@ class DoHConfig(BaseModel):
     key: str | None = None
 
 
-class DoQConfig(BaseModel):
+class DoQConfig(Section):
     enabled: bool = False
     host: str = "127.0.0.1"
     port: int = 8854
@@ -47,7 +60,7 @@ class DoQConfig(BaseModel):
     key: str | None = None
 
 
-class DoH3Config(BaseModel):
+class DoH3Config(Section):
     enabled: bool = False
     host: str = "127.0.0.1"
     port: int = 8444
@@ -56,12 +69,30 @@ class DoH3Config(BaseModel):
     key: str | None = None
 
 
-class ServerConfig(BaseModel):
+class DiscoveryConfig(Section):
+    """Advertise this resolver's encrypted endpoints (RFC 9462 DDR / 9463 DNR).
+
+    Off by default because it needs one thing that cannot be defaulted: a name
+    clients can authenticate. `hostname` must be a name you control, certified
+    for this server (the ACME dns-01 flow here can do that from your own zone)
+    and resolving to this box. Without it clients ignore the designation, so
+    DNSGuard logs a warning rather than publishing something inert.
+    """
+    enabled: bool = False
+    hostname: str = ""                # the authentication-domain-name
+    ttl: int = 300
+    # Addresses to put in the DHCP (DNR) option, i.e. this server's LAN
+    # addresses. Empty is valid: the client then resolves `hostname` itself.
+    addresses: list[str] = Field(default_factory=list)
+
+
+class ServerConfig(Section):
     do53: Do53Config = Field(default_factory=Do53Config)
     dot: DoTConfig = Field(default_factory=DoTConfig)
     doh: DoHConfig = Field(default_factory=DoHConfig)
     doq: DoQConfig = Field(default_factory=DoQConfig)
     doh3: DoH3Config = Field(default_factory=DoH3Config)
+    discovery: DiscoveryConfig = Field(default_factory=DiscoveryConfig)
     edns_udp_size: int = 1232
     workers: int = 1            # Do53 worker processes (SO_REUSEPORT); 0 = auto (CPU count)
     # Stream (TCP/DoT) connection bounds. Without them, connections opened and
@@ -84,7 +115,7 @@ class ServerConfig(BaseModel):
     group: str | None = None    # drop to this group (defaults to the user's primary group)
 
 
-class UpstreamConfig(BaseModel):
+class UpstreamConfig(Section):
     servers: list[str] = Field(default_factory=lambda: ["1.1.1.1:53", "8.8.8.8:53"])
     strategy: Literal["sequential", "parallel", "fastest", "weighted"] = "parallel"
     timeout: float = 4.0
@@ -113,8 +144,26 @@ class UpstreamConfig(BaseModel):
     # query. Only affects `udp://` upstreams — DoT/DoH/DoQ keep one connection.
     udp_source_ports: int = 1024
     ecs: Literal["strip", "forward", "off"] = "off"
+
+    @field_validator("ecs", mode="before")
+    @classmethod
+    def _ecs_off(cls, v):
+        """Accept a bare `off`, which YAML turns into the boolean False.
+
+        YAML 1.1 reads unquoted `off`, `no` and `n` as booleans, so
+        `ecs: off` — the obvious way to write it, and what the shipped example
+        template said for a long time — produced `False` and a validation error
+        naming a type nobody wrote. The value the operator meant is not in
+        doubt, so take it.
+        """
+        return "off" if v is False else v
     verify: bool = True            # verify TLS certs of DoT/DoH/DoQ upstreams
     dnssec: bool = False           # validate DNSSEC (recursive/forward)
+    # Root trust anchors, as a path to a `root.key`-style file (IANA DS records
+    # or a BIND trust-anchors block). Empty means `<data_dir>/root.key` if that
+    # exists, and otherwise the anchors compiled into this build. Those pins are
+    # current, but a key roll should not need a new release to survive.
+    trust_anchors: str = ""
     # The AD bit is an upstream's claim that it validated DNSSEC. Relaying a
     # claim we did not make and cannot authenticate is how a plaintext-UDP
     # spoofer gets a forged answer marked "verified".
@@ -122,9 +171,17 @@ class UpstreamConfig(BaseModel):
     #   always — relay it regardless (dnsmasq's `proxy-dnssec`)
     #   never  — always clear it
     trust_ad: Literal["auto", "always", "never"] = "auto"
+    # Named upstream sets, selected per client by `clients[].upstream_group`.
+    # A group's answers are cached separately from every other group's: pointing
+    # the kids at a family-filtering resolver is pointless if the first answer
+    # any other device gets is then served to them out of one shared cache.
+    #   groups:
+    #     family: ["1.1.1.3:53", "1.0.0.3:53"]
+    #     work:   ["tls://10.0.0.1#dns.corp"]
+    groups: dict[str, list[str]] = Field(default_factory=dict)
 
 
-class CacheConfig(BaseModel):
+class CacheConfig(Section):
     enabled: bool = True
     max_entries: int = 100_000
     min_ttl: int = 0
@@ -149,7 +206,18 @@ class CacheConfig(BaseModel):
     prewarm_interval: int = 300    # seconds between prewarm sweeps
 
 
-class FilterConfig(BaseModel):
+class FilterGroupCfg(Section):
+    """A named set of lists and rules, selected by `clients[].group`."""
+    sources: list[str] = Field(default_factory=list)
+    allow: list[str] = Field(default_factory=list)
+    deny: list[str] = Field(default_factory=list)
+    # True: the group's rules sit in front of the default ones (the household
+    # blocks ads for everyone; this group also blocks social media).
+    # False: the group's rules are the whole policy for its clients.
+    inherit: bool = True
+
+
+class FilterConfig(Section):
     enabled: bool = True
     sources: list[str] = Field(default_factory=list)
     # Substrings marking a source as protective (malware/phishing/threat feeds).
@@ -163,6 +231,29 @@ class FilterConfig(BaseModel):
     block_ipv4: str = "0.0.0.0"
     block_ipv6: str = "::"
     cname_inspect: bool = True
+    # Address lists (files or URLs of IPs/CIDRs). An answer pointing into one is
+    # blocked whatever its name was — the name is disposable, the hosting is
+    # not. RPZ `rpz-ip` triggers in any configured source land in the same
+    # matcher.
+    ip_sources: list[str] = Field(default_factory=list)
+    block_answer_ips: bool = True      # apply those lists to answers
+    # What to do with the `ech` parameter in HTTPS/SVCB answers.
+    #   pass  — leave it alone (default). ECH hides the TLS server name from the
+    #           network; it does not hide the DNS question, so it takes nothing
+    #           away from the filtering done here.
+    #   strip — remove it, downgrading clients to a visible SNI. Only worth
+    #           doing when something else on this network inspects SNI, and it
+    #           is a privacy downgrade for every device behind this resolver.
+    ech: Literal["pass", "strip"] = "pass"
+    # What the filtering policy must always do, checked against every candidate
+    # rule set before it is adopted. `"bank.example must resolve"`,
+    # `"doubleclick.net must block"`, `"mail.example MX must resolve"`. A refresh
+    # that would violate one is reported and not served — see filter/contract.py.
+    assertions: list[str] = Field(default_factory=list)
+    # Named list sets: `groups: {kids: {sources: [...], inherit: true}}`. A group
+    # holds only its own rules and is layered over these ones — see
+    # filter/groups.py for why it is not a second copy of the corpus.
+    groups: dict[str, FilterGroupCfg] = Field(default_factory=dict)
     ede: bool = True                   # RFC 8914: attach the block reason to responses
     block_page: bool = False           # serve an explainer page on the block IP
     block_page_host: str = "0.0.0.0"
@@ -175,7 +266,7 @@ class FilterConfig(BaseModel):
     ctags: list[str] = Field(default_factory=list)
 
 
-class ClientCfg(BaseModel):
+class ClientCfg(Section):
     ident: str
     type: Literal["ip", "cidr", "mac", "clientid", "token"] = "ip"
     name: str = ""
@@ -186,9 +277,10 @@ class ClientCfg(BaseModel):
     parental: bool | None = None
     services: list[str] = Field(default_factory=list)
     upstream_group: str = ""
+    group: str = ""                   # filtering group from `filtering.groups`
 
 
-class DhcpScopeCfg(BaseModel):
+class DhcpScopeCfg(Section):
     network: str
     range_start: str
     range_end: str
@@ -199,24 +291,33 @@ class DhcpScopeCfg(BaseModel):
     reservations: dict[str, str] = Field(default_factory=dict)
 
 
-class DhcpConfig(BaseModel):
+class DhcpConfig(Section):
     enabled: bool = False               # ships disabled; needs --allow-dhcp too
     server_ip: str = ""
     scope: DhcpScopeCfg | None = None
+    # Publish leased hostnames as local DNS: `laptop.lan` and the matching PTR,
+    # so devices resolve by name and the query log reads as names rather than
+    # addresses. The name is client-supplied, so it is reduced to a single
+    # sanitised label inside the scope's own domain — see clients/names.py.
+    register_dns: bool = True
 
 
-class QueryLogConfig(BaseModel):
+class QueryLogConfig(Section):
     enabled: bool = True
     retention_days: int = 90
     privacy_level: int = 0       # 0 all .. 3 no logging
     db: str = "dnsguard.db"      # relative to data_dir
+    # Stream every logged query as JSON lines, for a log shipper or `jq`.
+    # A path, or "-" for stdout. Empty disables it. Rotates at 64 MB, keeping
+    # one previous generation; whatever consumes the stream owns it after that.
+    export: str = ""
 
 
-class GravityConfig(BaseModel):
+class GravityConfig(Section):
     refresh_hours: int = 24      # auto-refresh interval; 0 disables
 
 
-class ZoneCfg(BaseModel):
+class ZoneCfg(Section):
     origin: str
     file: str | None = None              # BIND zonefile path
     dnssec: bool = False                  # online-sign this zone
@@ -235,26 +336,26 @@ class ZoneCfg(BaseModel):
     tsig_key: str | None = None           # key name required for transfer/update
 
 
-class TSIGKeyCfg(BaseModel):
+class TSIGKeyCfg(Section):
     name: str                             # e.g. "xfr-key."
     secret: str                           # base64-encoded shared secret
     algorithm: str = "hmac-sha256."
 
 
-class SecondaryCfg(BaseModel):
+class SecondaryCfg(Section):
     origin: str
     primary: str                          # primary server IP
     port: int = 53
     tsig_key: str | None = None
 
 
-class LocalRecord(BaseModel):
+class LocalRecord(Section):
     name: str
     type: str = "A"
     answer: str
 
 
-class WebConfig(BaseModel):
+class WebConfig(Section):
     enabled: bool = True
     host: str = "127.0.0.1"
     port: int = 8089
@@ -264,7 +365,7 @@ class WebConfig(BaseModel):
     key: str | None = None
 
 
-class SecurityConfig(BaseModel):
+class SecurityConfig(Section):
     rate_limit: float = 0.0           # queries/sec per client; 0 disables
     rate_burst: int = 0
     rebinding_protection: bool = True
@@ -293,14 +394,72 @@ class SecurityConfig(BaseModel):
     # policy above this (filtering, parental, safe search) from being routed
     # around the moment a browser update turns DoH on by default.
     block_doh_canary: bool = True
+    # Track which devices have stopped asking this resolver anything while still
+    # present on the network — the only visible trace of an application that has
+    # switched to its own encrypted resolver. Reports; never blocks. See
+    # clients/activity.py.
+    silence_ledger: bool = True
+    # Names to resolve through every configured upstream and compare — the bank,
+    # the mail provider, anything whose answer being wrong is worse than it being
+    # slow. Reports disagreement; never picks a winner. See ops/notary.py.
+    notary: list[str] = Field(default_factory=list)
+    notary_interval: int = 3600         # seconds between rounds; 0 disables
 
 
-class LogConfig(BaseModel):
+class AcmeConfig(Section):
+    """Automatic TLS certificates over ACME dns-01 (RFC 8555).
+
+    Off by default, and it needs more than a flag: dns-01 is answered from a
+    zone this server is authoritative for, so `zones` has to contain the name
+    being certified. That is a real constraint and the reason this is not simply
+    on — but it is also what makes it work behind NAT with no inbound port 80,
+    which is the situation every deployment of this product is in.
+    """
+    enabled: bool = False
+    domains: list[str] = Field(default_factory=list)
+    email: str = ""                       # contact for expiry warnings; optional
+    directory: str = "https://acme-v02.api.letsencrypt.org/directory"
+    # Seconds to wait after publishing the challenge before asking the CA to
+    # look. Zero is right when this server answers the query itself; raise it
+    # when a secondary has to pull the zone first.
+    settle: float = 0.0
+
+
+class UpdatesConfig(Section):
+    """Whether DNSGuard looks for its own updates, and what it may do about one.
+
+    `notify` is the default on purpose: knowing an update exists is useful to
+    everyone, while installing one unattended is a decision only the operator
+    can make for their network. `auto` is opt-in, applies only inside the
+    maintenance window if one is set, and still refuses on any installation it
+    does not own (a container image, a distribution package, a source
+    checkout) — see `ops/update.py`.
+    """
+
+    mode: Literal["off", "notify", "auto"] = "notify"
+    channel: Literal["stable", "prerelease"] = "stable"
+    check_interval_hours: int = 24        # 0 disables the periodic check
+    # The release index. PyPI's JSON API states a sha256 for every artifact, so
+    # the same response that names a version also proves which bytes are it.
+    index: str = "https://pypi.org/pypi/dnsguard/json"
+    timeout: float = 15.0
+    # "HH:MM-HH:MM" local time, may wrap midnight. Empty means any time.
+    # Applies to `auto` only; an operator asking for an update gets it now.
+    window: str = ""
+    # What happens after a successful install. `manual` stages the new code and
+    # says so; the running process keeps serving the old code until something
+    # restarts it. `systemd` asks systemd to restart the unit below, which
+    # requires DNSGuard to still have the privilege to talk to it.
+    restart: Literal["manual", "systemd"] = "manual"
+    unit: str = "dnsguard"
+
+
+class LogConfig(Section):
     level: Literal["debug", "info", "warning", "error"] = "info"
     json_logs: bool = False
 
 
-class Config(BaseModel):
+class Config(Section):
     data_dir: str = "./data"
     dev: bool = False
     uvloop: bool = True
@@ -319,17 +478,68 @@ class Config(BaseModel):
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     querylog: QueryLogConfig = Field(default_factory=QueryLogConfig)
     gravity: GravityConfig = Field(default_factory=GravityConfig)
+    acme: AcmeConfig = Field(default_factory=AcmeConfig)
     web: WebConfig = Field(default_factory=WebConfig)
     log: LogConfig = Field(default_factory=LogConfig)
+    updates: UpdatesConfig = Field(default_factory=UpdatesConfig)
 
     @field_validator("data_dir")
     @classmethod
     def _abs(cls, v: str) -> str:
         return str(Path(v).expanduser())
 
+    @model_validator(mode="after")
+    def _readable_assertions(self) -> Config:
+        """Refuse an assertion that cannot be parsed, at load rather than at the
+        3am refresh it was written to guard."""
+        from .filter.contract import ContractError, parse_all
+        try:
+            parse_all(self.filtering.assertions)
+        except ContractError as e:
+            raise ValueError(str(e)) from e
+        return self
+
+    @model_validator(mode="after")
+    def _known_upstream_groups(self) -> Config:
+        """A client may only name an upstream group that exists.
+
+        Falling back to the default resolver for a misspelled group is the one
+        wrong answer available: the setting exists precisely to keep those
+        clients off the default resolver, so a typo would silently deliver the
+        opposite of what was configured.
+        """
+        known = set(self.upstream.groups or {})
+        for c in self.clients:
+            if c.upstream_group and c.upstream_group not in known:
+                raise ValueError(
+                    f"client {c.ident!r} names upstream group "
+                    f"{c.upstream_group!r}, which is not in upstream.groups "
+                    f"({', '.join(sorted(known)) or 'none configured'})")
+        groups = set(self.filtering.groups or {})
+        for c in self.clients:
+            if c.group and c.group not in groups:
+                raise ValueError(
+                    f"client {c.ident!r} names filtering group {c.group!r}, "
+                    f"which is not in filtering.groups "
+                    f"({', '.join(sorted(groups)) or 'none configured'})")
+        return self
+
     @property
     def data_path(self) -> Path:
         return Path(self.data_dir)
+
+    @classmethod
+    def load_dict(cls, data: dict) -> Config:
+        """Validate an already-parsed tree, reporting failures as ConfigError.
+
+        Same contract as `load`, for callers that already hold the mapping —
+        the console's settings save, and tests. Keeping one error type means a
+        caller does not have to know whether pydantic or YAML rejected it.
+        """
+        try:
+            return cls.model_validate(data)
+        except Exception as e:  # pydantic ValidationError -> ConfigError
+            raise ConfigError(str(e)) from e
 
     @classmethod
     def load(cls, path: str | None) -> Config:
@@ -340,8 +550,4 @@ class Config(BaseModel):
                 raise ConfigError(f"config not found: {p}")
             import yaml  # lazy; only needed when a file is given
             data = yaml.safe_load(p.read_text()) or {}
-        try:
-            cfg = cls.model_validate(data)
-        except Exception as e:  # pydantic ValidationError -> ConfigError
-            raise ConfigError(str(e)) from e
-        return cfg
+        return cls.load_dict(data)

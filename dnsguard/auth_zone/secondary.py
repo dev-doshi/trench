@@ -32,7 +32,10 @@ async def _read_tcp_message(reader: asyncio.StreamReader) -> bytes:
 #: Ceilings for one inbound transfer. A zone that legitimately needs more than
 #: this is not one this deployment can hold in memory anyway.
 MAX_XFR_RECORDS = 2_000_000
-MAX_XFR_BYTES = 512 * 1024 * 1024
+#: A transfer is accumulated in memory before it replaces the live zone, so this
+#: is a memory ceiling with the primary as the threat model. It was 512 MB —
+#: over half of the 955 MB the reference deployment has.
+MAX_XFR_BYTES = 64 * 1024 * 1024
 MAX_XFR_ENVELOPES = 100_000
 MAX_XFR_SECONDS = 900.0
 

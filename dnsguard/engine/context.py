@@ -23,11 +23,6 @@ class QueryContext:
     upstream: str = ""
     policy: object | None = None   # resolved clients.Policy (P4)
 
-    @property
-    def client_label(self) -> str:
-        p = getattr(self.policy, "name", "") if self.policy else ""
-        return p or self.client_ip
-
     # Derived once per query, not once per read. `qname` alone is read from a
     # dozen places in the pipeline, and each read used to re-render the name
     # from its wire labels.

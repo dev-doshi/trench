@@ -19,7 +19,15 @@ class Database:
         self._db: aiosqlite.Connection | None = None
 
     async def connect(self) -> None:
-        Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+        parent = Path(self.path).parent
+        parent.mkdir(parents=True, exist_ok=True)
+        # This file holds scrypt password hashes, TOTP secrets, API-token
+        # digests, the query-log salt and every name the household has looked
+        # up. It was created at the process umask — world-readable on a default
+        # 0022 — while `security/tls.py` and `api/auth.py` both take care to
+        # write their secrets 0600. Created empty and private first, so there is
+        # no window in which it exists and is readable.
+        self._precreate_private(Path(self.path))
         self._db = await aiosqlite.connect(self.path)
         self._db.row_factory = aiosqlite.Row
         for pragma in ("PRAGMA journal_mode=WAL",
@@ -28,6 +36,30 @@ class Database:
                        "PRAGMA foreign_keys=ON"):
             await self._db.execute(pragma)
         await self.apply_migrations()
+
+    @staticmethod
+    def _precreate_private(path: Path) -> None:
+        """Create the database file 0600 if it does not exist yet.
+
+        Best effort: a filesystem that cannot represent the mode (or a file
+        someone else owns) must not stop the daemon from starting, but it is
+        worth a warning because the operator's secrets are what is at stake.
+        """
+        import os
+        if path.exists():
+            try:
+                if path.stat().st_mode & 0o077:
+                    os.chmod(path, 0o600)
+            except OSError:
+                log.warning("could not tighten permissions on %s", path)
+            return
+        try:
+            os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+        except FileExistsError:
+            pass
+        except OSError:
+            log.warning("could not create %s privately; check its permissions",
+                        path)
 
     @property
     def conn(self) -> aiosqlite.Connection:
@@ -51,6 +83,30 @@ class Database:
                              (version, int(time.time()), descr))
             await db.commit()
             log.info("applied migration %d: %s", version, descr)
+
+    async def secret(self, name: str, *, nbytes: int = 32) -> bytes:
+        """A random value created once for this installation and kept in `setting`.
+
+        Two things need one, and both were getting it wrong in the same way by
+        generating it per process: API-token digests (every stored token became
+        unverifiable at the next restart) and the query-log privacy salt (level 2
+        would hash the same domain to a different value after every restart,
+        which destroys the only property hashing was supposed to preserve).
+
+        Concurrent creation is safe: the INSERT is `OR IGNORE` and the value read
+        back afterwards is whichever one landed, the same for every caller.
+        """
+        key = f"secret.{name}"
+        row = await self.fetchone("SELECT value FROM setting WHERE key=?", (key,))
+        if row is None:
+            import secrets
+            await self.execute(
+                "INSERT OR IGNORE INTO setting(key, value) VALUES(?,?)",
+                (key, secrets.token_hex(nbytes)))
+            row = await self.fetchone("SELECT value FROM setting WHERE key=?", (key,))
+        if row is None:  # pragma: no cover — the row was just written
+            raise RuntimeError(f"could not store the {name} secret")
+        return bytes.fromhex(row["value"])
 
     async def execute(self, sql: str, params: Iterable[Any] = ()) -> None:
         await self.conn.execute(sql, tuple(params))

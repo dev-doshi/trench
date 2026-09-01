@@ -18,6 +18,3 @@ class ConfigError(DNSGuardError):
 class UpstreamError(DNSGuardError):
     """All upstreams failed / timed out."""
 
-
-class ZoneError(DNSGuardError):
-    """Authoritative zone problem."""

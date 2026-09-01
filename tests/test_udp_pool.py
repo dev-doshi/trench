@@ -87,18 +87,37 @@ async def test_the_pool_actually_spreads_queries_over_its_ports():
 @pytest.mark.asyncio
 async def test_zero_means_a_fresh_socket_per_query():
     """The escape hatch has to work: 0 restores full ephemeral-port entropy for
-    anyone who would rather pay the microseconds."""
+    anyone who would rather pay the microseconds.
+
+    The claim under test is "a socket per query", not "30 distinct port
+    numbers". Nothing promises the second: the kernel is free to hand back a
+    port it reclaimed from a socket closed microseconds earlier, and it does —
+    this assertion failed about one run in three when the suite ran hot. So the
+    contract is checked against the pooled case, which is what it is the escape
+    hatch from.
+    """
     async with Echo() as srv:
+        pooled = Upstream(parse_upstream(f"127.0.0.1:{srv.port}"), timeout=2.0,
+                          udp_source_ports=1)
+        try:
+            for i in range(30):
+                await pooled.query(_query(qid=i + 1))
+        finally:
+            await pooled.close()
+        assert len(set(srv.ports)) == 1          # one pooled socket, one port
+
+        srv.ports.clear()
         up = Upstream(parse_upstream(f"127.0.0.1:{srv.port}"), timeout=2.0,
                       udp_source_ports=0)
         assert up._pool is None
         try:
             for i in range(30):
-                await up.query(_query(qid=i + 1))
+                await up.query(_query(qid=i + 101))
         finally:
             await up.close()
-        # every query came from its own socket, so every port is different
-        assert len(set(srv.ports)) == 30
+        # a fresh socket every time: the ports move around, rather than being
+        # the single fixed one the pool gives
+        assert len(set(srv.ports)) > 1
 
 
 @pytest.mark.asyncio

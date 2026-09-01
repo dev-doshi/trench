@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlsplit
 
 from aioquic.asyncio import QuicConnectionProtocol, serve
@@ -15,11 +16,19 @@ from aioquic.h3.events import DataReceived, HeadersReceived
 from aioquic.quic.configuration import QuicConfiguration
 from aioquic.quic.events import QuicEvent
 
-from ..engine import Pipeline
 from ..log import get
 from ..security.tls import ensure_cert
-from .base import resolve_wire
+from .base import Frontend, resolve_wire
 from .doh import _b64url_decode
+from .quiclimits import LimitedQuicProtocol
+from .stream import ConnectionTracker, StreamLimits
+
+if TYPE_CHECKING:
+    # Type-only. A transport is handed a pipeline; it does not need the
+    # engine package at import time, and importing it for real closes a
+    # cycle (engine -> resolver -> transport -> engine) that forces the
+    # query path to keep every module lazily imported to break it.
+    from ..engine import Pipeline
 
 log = get("doh3")
 
@@ -34,7 +43,7 @@ class _Stream:
         self.ended = False
 
 
-class DoH3Protocol(QuicConnectionProtocol):
+class DoH3Protocol(LimitedQuicProtocol, QuicConnectionProtocol):
     pipeline: Pipeline = None  # type: ignore[assignment]
     doh_path: str = "/dns-query"
 
@@ -45,6 +54,8 @@ class DoH3Protocol(QuicConnectionProtocol):
         self._tasks: set = set()   # strong refs to in-flight handlers
 
     def quic_event_received(self, event: QuicEvent) -> None:
+        if not self.note_quic_event(event):
+            return
         if self._http is None:
             self._http = H3Connection(self._quic)
         for h3event in self._http.handle_event(event):
@@ -113,13 +124,16 @@ class DoH3Protocol(QuicConnectionProtocol):
         self.transmit()
 
 
-class DoH3Server:
+class DoH3Server(Frontend):
     proto = "h3"
 
     def __init__(self, pipeline: Pipeline, host: str, port: int, path: str,
-                 cert: str | None, key: str | None, data_dir: Path):
+                 cert: str | None, key: str | None, data_dir: Path,
+                 limits: StreamLimits | None = None):
         self.pipeline = pipeline
         self.host = host
+        self.limits = limits or StreamLimits()
+        self.tracker = ConnectionTracker(self.limits)
         self.port = port
         self.path = path
         cert_path, key_path = ensure_cert(cert, key, data_dir, [host, "localhost"])
@@ -128,12 +142,13 @@ class DoH3Server:
         self._server = None
 
     async def start(self) -> None:
-        pipeline, path = self.pipeline, self.path
+        pipeline, path, tracker = self.pipeline, self.path, self.tracker
 
         def factory(*args, **kwargs):
             proto = DoH3Protocol(*args, **kwargs)
             proto.pipeline = pipeline
             proto.doh_path = path
+            proto.tracker = tracker
             return proto
 
         self._server = await serve(self.host, self.port, configuration=self._config,

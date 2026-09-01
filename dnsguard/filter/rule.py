@@ -60,6 +60,24 @@ class Rule:
         return f"{int(self.block)}|{base}|{self.dnstypes}"
 
 
+def operator_rules(allow, deny) -> list[Rule]:
+    """The operator's own allow/deny entries, as Rules.
+
+    Allow entries are `$important` so they beat an imported block rule for the
+    same name — an exception the operator wrote by hand is the whole reason a
+    subscribed list can be used aggressively.
+
+    Three callers build this list — the App, the pre-fork supervisor and
+    Gravity — and it has to be the same list in all three, or the rules a worker
+    runs depend on which of those paths compiled its engine.
+    """
+    rules = [Rule(raw=d, block=False, important=True, suffix=d.lower(),
+                  source="allowlist") for d in allow]
+    rules += [Rule(raw=d, block=True, suffix=d.lower(), source="denylist")
+              for d in deny]
+    return rules
+
+
 def parse_dnsrewrite(spec: str) -> Rewrite:
     """Parse a $dnsrewrite value. Forms:
         REFUSED | NXDOMAIN | NOERROR

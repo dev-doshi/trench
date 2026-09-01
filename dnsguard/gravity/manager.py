@@ -6,11 +6,14 @@ Last-Modified conditional fetch, per-list groups, and scheduled refresh.
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..filter import FilterEngine, compile_rules
-from ..filter.rule import Rule
+from ..filter import FilterEngine, badfilter_keys, iter_rules
+from ..filter.ipmatch import IPMatcher
+from ..filter.rpz import iter_rpz_ips
+from ..filter.rule import operator_rules
 from ..log import get
 from ..version import USER_AGENT
 
@@ -37,6 +40,21 @@ def _local_path(src: str) -> Path:
     return packaged if packaged.is_file() else p
 
 
+def cached_table_age(path) -> float | None:
+    """Seconds since the compiled block table at `path` was written, or None when
+    there is nothing to reuse.
+
+    Asked in two places — by a worker deciding whether to serve the cached table
+    while the refresh runs, and by the supervisor deciding whether to compile
+    before it forks. They log different things about the answer, but the answer
+    has to be the same one.
+    """
+    try:
+        return max(0.0, time.time() - path.stat().st_mtime)
+    except OSError:
+        return None
+
+
 @dataclass
 class SourceResult:
     src: str
@@ -55,8 +73,14 @@ class GravityReport:
 class Gravity:
     def __init__(self, sources: list[str], allow: list[str] | None = None,
                  deny: list[str] | None = None, timeout: float = 30.0, db=None,
-                 table_path=None):
+                 table_path=None, ip_sources: list[str] | None = None,
+                 groups: list | None = None):
         self.sources = sources
+        self.ip_sources = list(ip_sources or [])
+        # `filter.groups.GroupSpec` list. Each is compiled into its own small
+        # engine that is layered over the default one, never a second copy of it.
+        self.groups = list(groups or [])
+        self.group_engines: dict[str, tuple] = {}
         # Where the compiled block table is written, if anywhere. Persisting it
         # lets every worker map one copy and lets a restart skip the reparse.
         self.table_path = table_path
@@ -123,7 +147,6 @@ class Gravity:
     async def _persist(self, report: GravityReport) -> None:
         if self.db is None:
             return
-        import time
         now = int(time.time())
         for s in report.sources:
             etag, modified = self._etags.get(s.src, ("", ""))
@@ -135,47 +158,135 @@ class Gravity:
                 " status=excluded.status, error=excluded.error",
                 (s.src, now, etag, modified, s.count, "ok" if s.ok else "error", s.error))
 
-    async def build(self) -> FilterEngine:
-        report = GravityReport()
+    #: How many sources are fetched at once. Not unbounded: every body in
+    #: flight is resident at the same time, and this runs on a box whose
+    #: memory ceiling is what the whole design is arranged around. A refresh
+    #: is a background job on a 24-hour schedule; there is nothing to win by
+    #: downloading ten lists simultaneously.
+    FETCH_CONCURRENCY = 3
 
-        def label(s: str) -> str:
-            return s.rsplit("/", 1)[-1] or s
+    async def _fetch_all(self, report: GravityReport) -> list[tuple[str, str]]:
+        """Every source's text, in order, with failures recorded rather than raised."""
+        sem = asyncio.Semaphore(self.FETCH_CONCURRENCY)
 
-        async def one(src: str) -> tuple[str, list[Rule], str | None]:
-            try:
-                text = await self._fetch(src)
-                return src, compile_rules(text, label(src)), None
-            except Exception as e:  # network/file errors -> recorded, not fatal
-                return src, [], str(e)
+        async def one(src: str) -> tuple[str, str, str | None]:
+            async with sem:
+                try:
+                    return src, await self._fetch(src), None
+                except Exception as e:  # network/file errors -> recorded, not fatal
+                    return src, "", str(e)
 
-        results = await asyncio.gather(*(one(s) for s in self.sources))
-        all_rules: list[Rule] = []
-        # Consumed destructively. Holding `results` while extending `all_rules`
-        # kept every source's list alive alongside the merged copy, so the peak
-        # was twice the corpus rather than once — and when the pre-fork build
-        # fails, all four workers pay that peak simultaneously.
-        results = list(results)
-        while results:
-            src, rules, err = results.pop()
-            if err:
+        texts: list[tuple[str, str]] = []
+        for src, text, err in await asyncio.gather(*(one(s) for s in self.sources)):
+            if err is not None:
                 report.sources.append(SourceResult(src, 0, False, err))
                 report.errors.append(f"{src}: {err}")
                 log.warning("blocklist source failed %s: %s", src, err)
                 continue
-            report.sources.append(SourceResult(src, len(rules)))
-            all_rules.extend(rules)
-            rules.clear()
+            texts.append((src, text))
+        return texts
 
-        # config-level allow/deny become important allow rules / block rules
-        for d in self.allow:
-            all_rules.append(Rule(raw=d, block=False, important=True,
-                                  suffix=d.lower(), source="allowlist"))
-        for d in self.deny:
-            all_rules.append(Rule(raw=d, block=True, suffix=d.lower(), source="denylist"))
+    def _stream_rules(self, texts: list[tuple[str, str]], report: GravityReport):
+        """Yield every rule in the corpus, dropping each source's text as it goes.
 
-        report.total = len(all_rules)
+        A generator rather than a list on purpose: `FilterEngine.compile`
+        consumes it once and files each rule into its compact form immediately,
+        so the corpus never exists as 600k live `Rule` objects. Consumed
+        destructively for the same reason — holding the text after it has been
+        parsed keeps the largest single allocation alive for no reason.
+        """
+        def label(src: str) -> str:
+            return src.rsplit("/", 1)[-1] or src
+
+        while texts:
+            src, text = texts.pop()
+            count = 0
+            for rule in iter_rules(text, label(src)):
+                count += 1
+                yield rule
+            report.sources.append(SourceResult(src, count))
+            report.total += count
+        for rule in operator_rules(self.allow, self.deny):
+            report.total += 1
+            yield rule
+
+    async def _build_ip_matcher(self, texts: list[tuple[str, str]],
+                                report: GravityReport) -> IPMatcher:
+        """Prefixes from the address lists, plus `rpz-ip` triggers in the name
+        sources we have already downloaded."""
+        matcher = IPMatcher()
+        for src, text in texts:
+            label = src.rsplit("/", 1)[-1] or src
+            if ".rpz-ip" in text:
+                for cidr, source in iter_rpz_ips(text, label):
+                    matcher.add(cidr, source)
+        for src in self.ip_sources:
+            try:
+                text = await self._fetch(src)
+            except Exception as e:
+                report.sources.append(SourceResult(src, 0, False, str(e)))
+                report.errors.append(f"{src}: {e}")
+                log.warning("address list failed %s: %s", src, e)
+                continue
+            label = src.rsplit("/", 1)[-1] or src
+            report.sources.append(SourceResult(src, matcher.add_many(text, label)))
+        if matcher:
+            log.info("gravity compiled %d address prefixes", matcher.size)
+        return matcher
+
+    async def _build_groups(self, report: GravityReport) -> dict[str, tuple]:
+        """One small engine per configured group.
+
+        Fetched separately from the default corpus and compiled on its own, so
+        a group costs its own rules and nothing more. A group whose sources all
+        fail to fetch keeps no rules rather than half of them — the same
+        all-or-nothing rule the default set follows.
+        """
+        out: dict[str, tuple] = {}
+        for spec in self.groups:
+            sub = GravityReport()
+            fetcher = Gravity(list(spec.sources), spec.allow, spec.deny,
+                              timeout=self.timeout)
+            fetcher._etags = self._etags        # share HTTP validators
+            fetcher._text_cache = self._text_cache
+            texts = await fetcher._fetch_all(sub)
+            if sub.errors:
+                log.warning("group %r: %d source(s) failed (%s); group left empty",
+                            spec.name, len(sub.errors), "; ".join(sub.errors[:2]))
+                report.errors.extend(f"{spec.name}: {e}" for e in sub.errors)
+                continue
+            keys = badfilter_keys(texts)
+            engine = await asyncio.to_thread(
+                FilterEngine.compile, fetcher._stream_rules(texts, sub),
+                badfilter_keys=keys)
+            report.sources.extend(sub.sources)
+            out[spec.name] = (engine, spec.inherit)
+            log.info("group %r: %d rules (%s)", spec.name, sub.total,
+                     "layered over the default set" if spec.inherit
+                     else "used on its own")
+        return out
+
+    async def build(self) -> FilterEngine:
+        report = GravityReport()
+        texts = await self._fetch_all(report)
+        matcher = await self._build_ip_matcher(texts, report)
+        self.group_engines = await self._build_groups(report)
+        # One cheap scan first: a $badfilter in one list disables a rule in
+        # another, so the set has to be known before anything is compiled — and
+        # knowing it up front is what lets the rules themselves be streamed.
+        keys = badfilter_keys(texts)
+        # Off the event loop. Compiling a household's corpus and writing the
+        # ~24 MB shared table to an SD card is tens of seconds of synchronous
+        # work on the hardware this runs on, and it used to run inside the
+        # resolver's own loop: UDP piled up against `udp_max_inflight` and was
+        # dropped, and TCP idle timers did not fire, every time the lists
+        # refreshed. It is CPU- and IO-bound C and syscalls, so a worker thread
+        # genuinely yields.
+        engine = await asyncio.to_thread(
+            FilterEngine.compile, self._stream_rules(texts, report),
+            self.table_path, badfilter_keys=keys)
+        engine.ips = matcher
         self.report = report
-        engine = FilterEngine.compile(all_rules, self.table_path)
         await self._persist(report)
         log.info("gravity compiled: %d rules (%d block domains) from %d sources",
                  report.total, engine.size, len(self.sources))

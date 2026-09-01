@@ -253,7 +253,10 @@ class FastPath:
     @property
     def usable(self) -> bool:
         p = self.pipeline
-        if not (self.enabled and p.enabled):
+        if not (self.enabled and p.enabled) or p.paused_any:
+            # While a pause is running, verdicts are a function of the clock:
+            # anything recorded now would outlive the pause, and anything
+            # recorded before it would be replayed through it.
             return False
         if p.plugins is not None and p.plugins.active:
             return False                    # a plugin may rewrite anything
@@ -263,7 +266,13 @@ class FastPath:
         # apart, and whichever asked first would have its verdict replayed to
         # the other. The address is not in the key, so the only safe answer is
         # to stand down entirely while any such rule exists.
-        if p.filter is not None and getattr(p.filter, "has_client_rules", False):
+        # Every rule set that could decide a verdict here, not just the default
+        # one: a `$client` rule inside a *group's* list is matched on the
+        # address, and a `cidr` client maps every address in its range onto one
+        # Policy — so one tag covers them all and one address's verdict would be
+        # replayed to the rest of the range.
+        engines = [p.filter, *[g.own for g in p.group_filters.values()]]
+        if any(getattr(e, "has_client_rules", False) for e in engines if e is not None):
             return False
         # With ECS in play the answers become subnet-specific, so a recorded
         # one cannot be replayed to another client.
@@ -376,6 +385,14 @@ class FastPath:
                           action=entry.action, rcode=entry.rcode,
                           upstream=entry.upstream, elapsed_us=1,
                           reason=entry.reason)
+        if p.ledger is not None:
+            # The ledger reads *absence*: a device that is present and has asked
+            # nothing recently has changed resolver. Replay is the common path
+            # for a busy device's repeat queries, so skipping this made the
+            # busiest devices look silent — the exact inversion of the signal —
+            # and threw away a replayed lookup of an encrypted-resolver
+            # bootstrap name, which is the corroboration for a real bypass.
+            p.ledger.note(client_ip, entry.qname)
         if p.dga is not None and entry.action not in ("blocked", "block"):
             # The DGA detector learns from outcomes, not just from names: this is
             # how a random-looking name that resolves is told apart from a

@@ -49,11 +49,16 @@ def _hexish_ratio(s: str) -> float:
 
 class TunnelDetector:
     def __init__(self, *, threshold: float = 0.45, block: bool = False,
-                 window: float = 60.0, rate_limit: int = 100):
+                 window: float = 60.0, rate_limit: int = 100, workers: int = 1):
         self.threshold = threshold
         self.block = block
         self.window = window
-        self.rate_limit = rate_limit            # queries / window to one 2LD before volumetric flag
+        self.workers = max(1, int(workers))
+        # queries / window to one 2LD before the volumetric flag. Divided per
+        # worker for the same reason as DGADetector.burst_min_names: each worker
+        # only sees its share of a client's traffic, so an unscaled 100 means
+        # 100 x N in aggregate before anything notices.
+        self.rate_limit = max(2, round(rate_limit / self.workers))
         # Keyed on (client, registrable domain), both attacker-chosen. Unlike
         # DGADetector this had no ceiling at all, so one host cycling distinct
         # second-level domains retained a deque per name until the box died.

@@ -6,13 +6,19 @@ size limits, FORMERR handling, and (later) padding live in one place.
 from __future__ import annotations
 
 import abc
+from typing import TYPE_CHECKING
 
-from ..engine import Pipeline
 from ..errors import WireError
 from ..log import get
 from ..wire import Message
 from ..wire.edns import Edns
 from ..wire.rrtypes import Flags, Rcode
+
+if TYPE_CHECKING:
+    # Type-only. Imported for real, this closes a cycle — the engine reaches the
+    # resolver package, which reaches the transports, which land back here — and
+    # forces every module on the query path to stay lazily imported to break it.
+    from ..engine import Pipeline
 
 log = get("transport")
 

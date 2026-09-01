@@ -229,11 +229,15 @@ function browse(ip: string) {
       <div class="sec" v-if="groups.length">
         <div class="sec-h"><h5 class="b-cap">Groups</h5><span class="b-cap">{{ groups.length }}</span></div>
         <table class="tb">
-          <thead><tr><th>Group</th><th style="width:40%">Tags</th></tr></thead>
+          <thead><tr><th>Group</th><th>Devices</th><th style="width:30%">Rules</th></tr></thead>
           <tbody>
-            <tr v-for="g in groups" :key="g.id ?? g.name">
+            <tr v-for="g in groups" :key="g.name">
               <td class="id">{{ g.name }}</td>
-              <td>{{ g.ctags || g.tags || "—" }}</td>
+              <td>{{ g.clients?.length ? g.clients.join(", ") : "—" }}</td>
+              <td>
+                <span v-if="g.compiled">{{ nf.format(g.rules) }} own<span v-if="g.inherit">, plus the household's</span></span>
+                <span v-else class="b-warn">lists did not compile</span>
+              </td>
             </tr>
           </tbody>
         </table>

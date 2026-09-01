@@ -23,7 +23,7 @@ from dnsguard.wire.rrtypes import Rcode
 
 
 class FakeForwarder:
-    async def resolve(self, query: Message) -> Message:
+    async def resolve(self, query: Message, note=None) -> Message:
         resp = query.reply(Rcode.NOERROR)
         resp.answers.append(RR(query.question.name, Type.A, Class.IN, 60, R.A("9.9.9.9")))
         return resp

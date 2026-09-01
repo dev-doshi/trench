@@ -24,11 +24,16 @@ _STRIPES = 64
 
 
 def key64(qname: bytes, qtype: int, qclass: int, do: bool, ecs: str = "",
-          cd: bool = False) -> int:
+          cd: bool = False, view: str = "") -> int:
     # qname arrives as the lowercased wire form, so it is already a canonical
     # byte string and needs no formatting trip through str.
-    raw = b"%s|%d|%d|%d|%s|%d" % (qname, qtype, qclass, int(do), ecs.encode(),
-                                  int(cd))
+    #
+    # Every field of CacheKey has to appear here. The L2 is shared by all the
+    # workers, so a field that distinguishes two entries in a worker's own map
+    # and not in this hash lets one worker read the other's answer — which is
+    # exactly the leak the field was added to prevent.
+    raw = b"%s|%d|%d|%d|%s|%d|%s" % (qname, qtype, qclass, int(do), ecs.encode(),
+                                     int(cd), view.encode())
     return int.from_bytes(hashlib.blake2b(raw, digest_size=8).digest(), "big")
 
 

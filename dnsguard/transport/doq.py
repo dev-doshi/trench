@@ -8,20 +8,29 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from aioquic.asyncio import QuicConnectionProtocol, serve
 from aioquic.quic.configuration import QuicConfiguration
 from aioquic.quic.events import QuicEvent, StreamDataReceived
 
-from ..engine import Pipeline
 from ..log import get
 from ..security.tls import ensure_cert
-from .base import resolve_wire
+from .base import Frontend, resolve_wire
+from .quiclimits import LimitedQuicProtocol
+from .stream import ConnectionTracker, StreamLimits
+
+if TYPE_CHECKING:
+    # Type-only. A transport is handed a pipeline; it does not need the
+    # engine package at import time, and importing it for real closes a
+    # cycle (engine -> resolver -> transport -> engine) that forces the
+    # query path to keep every module lazily imported to break it.
+    from ..engine import Pipeline
 
 log = get("doq")
 
 
-class DoQProtocol(QuicConnectionProtocol):
+class DoQProtocol(LimitedQuicProtocol, QuicConnectionProtocol):
     pipeline: Pipeline = None  # type: ignore[assignment]
 
     def __init__(self, *args, **kwargs):
@@ -30,6 +39,8 @@ class DoQProtocol(QuicConnectionProtocol):
         self._tasks: set = set()   # strong refs to in-flight handlers
 
     def quic_event_received(self, event: QuicEvent) -> None:
+        if not self.note_quic_event(event):
+            return
         if isinstance(event, StreamDataReceived):
             buf = self._buffers.setdefault(event.stream_id, bytearray())
             buf += event.data
@@ -64,14 +75,20 @@ class DoQProtocol(QuicConnectionProtocol):
             log.exception("doq answer error")
 
 
-class DoQServer:
+class DoQServer(Frontend):
     proto = "quic"
 
     def __init__(self, pipeline: Pipeline, host: str, port: int,
-                 cert: str | None, key: str | None, data_dir: Path):
+                 cert: str | None, key: str | None, data_dir: Path,
+                 limits: StreamLimits | None = None):
         self.pipeline = pipeline
         self.host = host
         self.port = port
+        # The same caps the other connection-oriented frontends carry. A QUIC
+        # connection holds TLS state and a flow-control window, so "as many as
+        # peers ask for" is not a bound.
+        self.limits = limits or StreamLimits()
+        self.tracker = ConnectionTracker(self.limits)
         cert_path, key_path = ensure_cert(cert, key, data_dir, [host, "localhost"])
         self._config = QuicConfiguration(is_client=False, alpn_protocols=["doq"])
         self._config.load_cert_chain(str(cert_path), str(key_path))
@@ -80,9 +97,12 @@ class DoQServer:
     async def start(self) -> None:
         pipeline = self.pipeline
 
+        tracker = self.tracker
+
         def factory(*args, **kwargs):
             proto = DoQProtocol(*args, **kwargs)
             proto.pipeline = pipeline
+            proto.tracker = tracker
             return proto
 
         self._server = await serve(self.host, self.port, configuration=self._config,

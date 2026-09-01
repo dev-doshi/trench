@@ -190,10 +190,6 @@ class Message:
         ttls = [rr.ttl for rr in (self.answers + self.authority) if rr.rtype != Type.OPT]
         return min(ttls) if ttls else None
 
-    def all_rrs(self):
-        yield from self.answers
-        yield from self.authority
-        yield from self.additional
 
 
 def _read_rrs(r: Reader, count: int, msg: Message, owner: Message | None = None) -> list[RR]:

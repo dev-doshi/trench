@@ -2,13 +2,20 @@
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING
 
-from ..engine import Pipeline
 from ..errors import WireError
 from ..log import get
 from ..wire import Message
 from .base import Frontend, process_query
 from .stream import ConnectionTracker, StreamLimits, serve_stream
+
+if TYPE_CHECKING:
+    # Type-only. A transport is handed a pipeline; it does not need the
+    # engine package at import time, and importing it for real closes a
+    # cycle (engine -> resolver -> transport -> engine) that forces the
+    # query path to keep every module lazily imported to break it.
+    from ..engine import Pipeline
 
 log = get("do53")
 

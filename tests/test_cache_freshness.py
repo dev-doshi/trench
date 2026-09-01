@@ -54,7 +54,7 @@ class Upstream:
         self.calls = 0
         self.seen: list[Message] = []
 
-    async def resolve(self, q):
+    async def resolve(self, q, note=None):
         self.calls += 1
         self.seen.append(q)
         if self.delay:

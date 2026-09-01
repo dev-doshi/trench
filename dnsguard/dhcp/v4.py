@@ -21,6 +21,7 @@ OPT_PARAM_LIST = 55
 OPT_RENEWAL = 58
 OPT_REBIND = 59
 OPT_CLIENT_ID = 61
+OPT_DNR = 162           # RFC 9463: encrypted DNS resolvers, by name
 OPT_END = 255
 
 
@@ -68,6 +69,15 @@ class DhcpPacket:
     def hostname(self) -> str:
         v = self.options.get(OPT_HOSTNAME)
         return v.decode("latin-1") if v else ""
+
+    def requested_options(self) -> frozenset[int]:
+        """Option codes the client asked for in its parameter request list.
+
+        Answering only what was requested keeps a DHCP reply inside the packet
+        budget it has to fit in; a client that wants encrypted-DNS discovery
+        asks for option 162.
+        """
+        return frozenset(self.options.get(OPT_PARAM_LIST, b""))
 
     def server_id(self) -> str | None:
         """Option 54: which DHCP server this REQUEST is directed at."""

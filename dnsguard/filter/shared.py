@@ -41,6 +41,8 @@ import zlib
 from collections import Counter
 from pathlib import Path
 
+from ..errors import DNSGuardError
+
 _MAGIC = b"DGBT"
 _VERSION = 1
 _HEADER = struct.Struct("<4sIQQQQQQ")   # magic, version, nslots, n, blob_off,
@@ -64,7 +66,7 @@ def _next_pow2(n: int) -> int:
     return p
 
 
-class TableFormatError(Exception):
+class TableFormatError(DNSGuardError):
     """An on-disk table is unreadable — always recoverable by rebuilding."""
 
 

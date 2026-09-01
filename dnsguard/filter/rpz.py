@@ -22,6 +22,30 @@ def looks_like_rpz(text: str) -> bool:
     return ("soa" in head and ("rpz" in head or "in cname ." in head)) or "rpz-passthru" in head
 
 
+def iter_rpz_ips(text: str, source: str = ""):
+    """Yield `(cidr, source)` for every `rpz-ip` trigger in an RPZ zone.
+
+    These encode a prefix in the owner name and are how an RPZ feed says "block
+    anything that resolves into this network". The rule parser skips them —
+    they are not name rules — so before this they were silently discarded, and
+    a feed's address triggers did nothing at all.
+    """
+    from .ipmatch import rpz_ip_prefix
+    for raw in text.splitlines():
+        line = raw.split(";")[0].strip()
+        if not line or line.startswith("$"):
+            continue
+        owner = line.split()[0].rstrip(".").lower()
+        if ".rpz-ip" not in owner:
+            continue
+        # The owner may be qualified with the zone origin; the trigger is the
+        # part up to and including `rpz-ip`.
+        cut = owner.index(".rpz-ip") + len(".rpz-ip")
+        cidr = rpz_ip_prefix(owner[:cut])
+        if cidr:
+            yield cidr, source
+
+
 def parse_rpz(text: str, source: str = "") -> list[Rule]:
     rules: list[Rule] = []
     origin = ""

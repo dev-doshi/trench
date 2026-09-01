@@ -202,6 +202,30 @@ def read_name(r: Reader) -> Name:
     return Name(tuple(labels))
 
 
+def suffixes(qname: str) -> list[str]:
+    """Every parent suffix of a name, longest first, lowercased and dot-free.
+
+    `a.b.example` -> `["a.b.example", "b.example", "example"]`.
+
+    Five places walked a name's suffixes and four of them hand-rolled the same
+    `labels = name.split("."); ".".join(labels[i:])` loop — the filter engine,
+    the upstream router, the blocked-services matcher, safe browsing and the
+    silence ledger. `FilterEngine.suffixes` had already been extracted from
+    three copies *inside one file*; this is that extraction finished. Slicing
+    the string rather than joining label lists also skips a list build and a
+    join per label, which matters on the query path.
+    """
+    name = qname.rstrip(".").lower()
+    if not name:
+        return []
+    out = [name]
+    cut = name.find(".")
+    while cut != -1:
+        out.append(name[cut + 1:])
+        cut = name.find(".", cut + 1)
+    return out
+
+
 def write_name(w: Writer, name: Name, compress: bool = True) -> None:
     labels = name.labels
     # The compression table is keyed on suffixes of the lowercased wire form.

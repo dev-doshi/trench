@@ -144,7 +144,7 @@ async def test_pipeline_does_not_block_wifi_calling():
     from dnsguard.wire.rrtypes import Rcode
 
     class Fwd:
-        async def resolve(self, q):
+        async def resolve(self, q, note=None):
             resp = q.reply(Rcode.NOERROR)
             # a public address: 192.0.2.0/24 reads as private to ipaddress and
             # would be stripped by rebinding protection, masking the result

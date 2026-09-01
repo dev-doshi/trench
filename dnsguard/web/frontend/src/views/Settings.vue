@@ -30,6 +30,85 @@ const group = ref("Resolution");
 const token = ref(localStorage.getItem("dg_token") || "");
 const skin = ref(localStorage.getItem("bw_skin") || "auto");
 
+/* Access: API tokens and the second factor. Both live here rather than in the
+ * generated form above, because neither is a config value — they are records in
+ * the database, and a token is readable exactly once. */
+interface Tok { id: number; name: string; scopes: string; owner: string; created: number; last_used: number; expires: number }
+const tokens = ref<Tok[]>([]);
+const newName = ref("");
+const newScope = ref("viewer");
+const minted = ref("");            // shown once, never fetched again
+const totpOn = ref(false);
+const totpSecret = ref("");        // during enrolment only
+const totpUri = ref("");
+const totpCode = ref("");
+
+async function loadAccess() {
+  try {
+    tokens.value = (await api.get("/auth/tokens")).tokens;
+    totpOn.value = (await api.get("/auth/me")).totp;
+  } catch (e: any) {
+    store.toast("Access unavailable", e?.message || "", true);
+  }
+}
+
+async function mint() {
+  const name = newName.value.trim();
+  if (!name) return;
+  try {
+    const r = await api.post("/auth/tokens", { name, scope: newScope.value });
+    minted.value = r.token;
+    newName.value = "";
+    await loadAccess();
+  } catch (e: any) {
+    store.toast("Token not created", e?.message || "", true);
+  }
+}
+
+async function revoke(t: Tok) {
+  try {
+    await api.del(`/auth/tokens/${t.id}`);
+    if (minted.value) minted.value = "";
+    await loadAccess();
+    store.toast("Token revoked", t.name);
+  } catch (e: any) {
+    store.toast("Not revoked", e?.message || "", true);
+  }
+}
+
+async function startTotp() {
+  try {
+    const r = await api.post("/auth/totp/enrol");
+    totpSecret.value = r.secret;
+    totpUri.value = r.uri;
+  } catch (e: any) {
+    store.toast("Could not start enrolment", e?.message || "", true);
+  }
+}
+
+async function confirmTotp() {
+  try {
+    await api.post("/auth/totp/confirm", { code: totpCode.value.trim() });
+    totpSecret.value = ""; totpUri.value = ""; totpCode.value = "";
+    await loadAccess();
+    store.toast("Two-factor enabled", "keep a recovery plan: dnsguard passwd --clear-totp");
+  } catch (e: any) {
+    store.toast("That code did not match", e?.message || "", true);
+  }
+}
+
+async function disableTotp() {
+  try {
+    await api.del("/auth/totp");
+    await loadAccess();
+    store.toast("Two-factor disabled");
+  } catch (e: any) {
+    store.toast("Not disabled", e?.message || "", true);
+  }
+}
+
+const when = (t: number) => (t ? new Date(t * 1000).toLocaleDateString() : "never");
+
 const asText = (f: Field, v: any) =>
   f.type === "list" ? (Array.isArray(v) ? v.join("\n") : (v ?? "")) : v;
 
@@ -50,7 +129,7 @@ async function load() {
     store.toast("Settings unavailable", e?.message || "", true);
   } finally { loading.value = false; }
 }
-onMounted(load);
+onMounted(async () => { await load(); await loadAccess(); });
 
 const shown = computed(() => fields.value.filter((f) => f.group === group.value));
 
@@ -122,13 +201,14 @@ function saveTokenValue() {
       <button v-for="g in groups" :key="g" :class="{ on: g === group }" @click="group = g">
         {{ g }}<i v-if="dirtyIn(g)" />
       </button>
+      <button :class="{ on: group === 'access' }" @click="group = 'access'">Access</button>
       <button :class="{ on: group === 'browser' }" @click="group = 'browser'">This browser</button>
     </nav>
 
     <div class="vw-body">
       <p class="st-warn" v-if="!writable && !loading">{{ why }}</p>
 
-      <div class="st-form" v-if="group !== 'browser'">
+      <div class="st-form" v-if="group !== 'browser' && group !== 'access'">
         <label class="st-row" v-for="f in shown" :key="f.path">
           <span class="st-lbl">
             {{ f.label }}
@@ -156,6 +236,70 @@ function saveTokenValue() {
           </span>
         </label>
         <p class="st-path" v-if="configPath">Saved to <code>{{ configPath }}</code></p>
+      </div>
+
+      <div class="st-form" v-else-if="group === 'access'">
+        <label class="st-row">
+          <span class="st-lbl">
+            API tokens
+            <em>For scripts and the <code>dnsguard</code> CLI. A token is shown once.</em>
+          </span>
+          <span class="st-ctl">
+            <input type="text" v-model="newName" placeholder="what is it for"
+                   style="width:200px" @keyup.enter="mint" />
+            <select v-model="newScope">
+              <option value="viewer">viewer — read only</option>
+              <option value="editor">editor — can change rules</option>
+              <option value="admin">admin — everything</option>
+            </select>
+            <button class="btn primary" :disabled="!newName.trim()" @click="mint">create</button>
+          </span>
+        </label>
+
+        <p class="st-minted" v-if="minted">
+          Copy this now — it is not stored and cannot be shown again.
+          <code>{{ minted }}</code>
+        </p>
+
+        <table class="st-toks" v-if="tokens.length">
+          <thead>
+            <tr><th>name</th><th>scope</th><th>owner</th><th>created</th><th>last used</th><th></th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="t in tokens" :key="t.id">
+              <td>{{ t.name }}</td>
+              <td>{{ t.scopes }}</td>
+              <td>{{ t.owner }}</td>
+              <td>{{ when(t.created) }}</td>
+              <td>{{ when(t.last_used) }}</td>
+              <td><button class="btn" @click="revoke(t)">revoke</button></td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="st-none" v-else>No tokens yet.</p>
+
+        <label class="st-row">
+          <span class="st-lbl">
+            Two-factor
+            <em v-if="totpOn">On. Lost your authenticator? <code>dnsguard passwd --clear-totp</code> on the box.</em>
+            <em v-else>A code from an authenticator app, on top of the password.</em>
+          </span>
+          <span class="st-ctl">
+            <button class="btn" v-if="totpOn" @click="disableTotp">turn off</button>
+            <button class="btn" v-else-if="!totpSecret" @click="startTotp">set up</button>
+          </span>
+        </label>
+
+        <div class="st-totp" v-if="totpSecret">
+          <p>Add this secret to your authenticator, then enter the code it shows.
+             Nothing is stored until the code matches.</p>
+          <code>{{ totpSecret }}</code>
+          <span class="st-ctl">
+            <input type="text" v-model="totpCode" placeholder="000000" inputmode="numeric"
+                   style="width:100px" @keyup.enter="confirmTotp" />
+            <button class="btn primary" @click="confirmTotp">confirm</button>
+          </span>
+        </div>
       </div>
 
       <div class="st-form" v-else>

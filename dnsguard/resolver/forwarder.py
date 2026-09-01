@@ -104,9 +104,10 @@ class Forwarder:
             raise
 
     async def close(self) -> None:
-        seen = set()
-        for group in [self.router.default, *self.router.routes.values()]:
-            for up in group:
-                if id(up) not in seen:
-                    seen.add(id(up))
-                    await up.close()
+        """Drop every upstream connection this forwarder owns.
+
+        Also reached when a live settings change builds a replacement forwarder:
+        without it the old router's DoT connections and DoH sessions stay open
+        for the life of the process, one leaked set per change.
+        """
+        await self.router.close()

@@ -2,12 +2,20 @@
 from __future__ import annotations
 
 import time
+from bisect import bisect_left
 from collections import Counter, deque
 
 from .topn import TopCounter
 
 _EVENT_FIELDS = ("ts", "client", "domain", "type", "action", "rcode",
                  "upstream", "elapsed_us", "reason")
+
+#: Prometheus histogram bounds, in microseconds. Chosen for what actually
+#: separates outcomes here: a cache hit and a replayed reply land in the first
+#: two buckets, a LAN upstream in the middle, and anything past 200 ms is a
+#: recursion or a sick upstream. A mean cannot show any of that.
+LATENCY_BOUNDS_US = (100, 500, 1_000, 2_500, 5_000, 10_000, 25_000, 50_000,
+                     100_000, 250_000, 500_000, 1_000_000, 2_500_000)
 
 
 def _as_event(row: tuple) -> dict:
@@ -34,6 +42,12 @@ class Counters:
         self.tunnel = TopCounter(4096)          # tunneling/exfil-flagged domains
         self.latency_us_sum = 0
         self.latency_n = 0
+        # Cumulative histogram counts, parallel to LATENCY_BOUNDS_US, plus a
+        # final +Inf slot. Kept alongside the sample ring because the two answer
+        # different questions: the ring gives percentiles of *recent* traffic
+        # for the console, this gives a histogram over the whole process life
+        # that Prometheus can rate() and aggregate across workers.
+        self.latency_hist = [0] * (len(LATENCY_BOUNDS_US) + 1)
         # recent latency samples (ring) — enough for stable p50/p95/p99 without
         # unbounded memory; percentiles therefore reflect *recent* behaviour,
         # which is what you want when debugging a slow upstream right now
@@ -73,14 +87,25 @@ class Counters:
         if latency_us:
             b["lat_sum"] += latency_us
             b["lat_n"] += 1
+        if self.shared is not None:
+            # The chart is drawn from this series and the tiles above it from
+            # the shared totals. Keeping the series per worker made the two
+            # disagree by a factor of `nworkers`, in the same response.
+            self.shared.add_minute(minute, action, latency_us)
 
     def series(self, minutes: int = 60) -> list[dict]:
-        """Return the last `minutes` per-minute buckets (oldest first), gap-filled."""
+        """The last `minutes` per-minute buckets (oldest first), gap-filled.
+
+        Aggregated across workers when running multi-process, so this and
+        `snapshot()` describe the same traffic. They used to describe different
+        traffic — the totals every worker's, the chart one worker's — with
+        nothing to tell them apart.
+        """
         now_min = int(time.time()) // 60 * 60
         out = []
         for i in range(minutes - 1, -1, -1):
             m = now_min - i * 60
-            b = self._series.get(m)
+            b = self.shared.minute(m) if self.shared is not None else self._series.get(m)
             if b:
                 lat = round(b["lat_sum"] / b["lat_n"] / 1000, 2) if b["lat_n"] else 0
                 out.append({"t": m, "total": b["total"], "blocked": b["blocked"],
@@ -113,6 +138,7 @@ class Counters:
             self.latency_us_sum += elapsed_us
             self.latency_n += 1
             self.latency_samples.append(elapsed_us)
+            self.latency_hist[bisect_left(LATENCY_BOUNDS_US, elapsed_us)] += 1
         now = time.time()
         # A tuple, not a dict. The ring holds 500 entries and both readers turn
         # it into a list of dicts anyway, so building the dict here meant

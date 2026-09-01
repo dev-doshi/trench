@@ -86,6 +86,15 @@ def apply_update(zone: Zone, msg: Message, policy: UpdatePolicy | None = None) -
         if not policy.permits(zone, rr.name):
             return Rcode.REFUSED
 
+    # RFC 2136 §3.4.1.2: an update record carries the zone's class, or ANY/NONE
+    # to mean delete. Anything else is malformed — and it used to fall through
+    # into the add branch, so a record of a foreign class was stored and then
+    # served as IN. Checked before anything is applied, so a bad update changes
+    # nothing rather than half of the zone.
+    for rr in msg.authority:
+        if rr.rclass not in (Class.IN, Class.ANY, Class.NONE):
+            return Rcode.FORMERR
+
     if zone.soa is None:                                   # not a servable zone
         return Rcode.SERVFAIL
     deletions: list[RR] = []
@@ -126,6 +135,17 @@ def _apply_one(zone: Zone, rr: RR, deletions: list[RR], additions: list[RR]) -> 
                 if not node:
                     zone.records.pop(rr.name, None)
     elif rr.rclass == Class.NONE:                          # delete an individual RR
+        # RFC 2136 §3.4.2.4: an SOA delete is ignored, and the last apex NS must
+        # survive. The class-ANY branches above enforce both; this one did not,
+        # so an authorised updater could delete the apex SOA — which left the
+        # zone SOA-less in memory and then crashed `_bump_serial` on the way
+        # out, so no reply, no journal entry, no NOTIFY, and SERVFAIL for every
+        # update after it.
+        if rr.name == zone.origin and rr.rtype == Type.SOA:
+            return
+        if (rr.name == zone.origin and rr.rtype == Type.NS
+                and node and len(node.get(Type.NS, ())) <= 1):
+            return
         if node and rr.rtype in node:
             keep = [rd for rd in node[rr.rtype] if rd.to_text() != rr.rdata.to_text()]
             if len(keep) != len(node[rr.rtype]):

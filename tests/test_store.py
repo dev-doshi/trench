@@ -1,6 +1,7 @@
 """SQLite persistence: migrations, query log writer/search/retention/privacy."""
 from __future__ import annotations
 
+import collections
 import time
 
 import pytest
@@ -24,9 +25,11 @@ async def test_migrations_idempotent(tmp_path):
     await db.apply_migrations()  # run twice, must not error
     rows = await db.fetchall("SELECT name FROM sqlite_master WHERE type='table'")
     names = {r["name"] for r in rows}
-    assert {"adlist", "querylog", "app_user", "ts_stat", "_migrations"} <= names
+    assert {"adlist", "querylog", "app_user", "list_review", "_migrations"} <= names
+    # Migration 6 removes two tables that nothing ever read or wrote.
+    assert not ({"ts_stat", "group"} & names)
     ver = await db.fetchone("SELECT MAX(version) AS v FROM _migrations")
-    assert ver["v"] >= 4
+    assert ver["v"] >= 6
     await db.close()
 
 
@@ -57,11 +60,23 @@ async def test_querylog_privacy(tmp_path):
     await ql._flush()
     r = (await ql.search())[0]
     assert r["client_ip"] == ""
-    # ANON also hides domain
-    ql2 = QueryLog(db, privacy_level=ANON_CLIENT_DOMAIN)
-    ql2.enqueue(mkrec(qname="secret.com"))
+    # ANON hashes the client and the domain, rather than blanking them: the
+    # console and the settings help both promise "hashed", and a constant string
+    # would keep the row's full write cost while carrying nothing at all.
+    salt = b"\x11" * 32
+    ql2 = QueryLog(db, privacy_level=ANON_CLIENT_DOMAIN, salt=salt)
+    ql2.enqueue(mkrec(qname="secret.com", client="10.0.0.9", action="anon"))
+    ql2.enqueue(mkrec(qname="secret.com", client="10.0.0.9", action="anon"))
+    ql2.enqueue(mkrec(qname="other.com", client="10.0.0.9", action="anon"))
     await ql2._flush()
-    assert (await ql2.search(action="forwarded"))[0]["qname"] in ("hidden", "secret.com")
+    rows = await ql2.search(action="anon")
+    names = [r["qname"] for r in rows]
+    assert "secret.com" not in names and "10.0.0.9" not in [r["client_ip"] for r in rows]
+    # the same name still reads as the same name, so a count is still a count
+    assert sorted(collections.Counter(names).values()) == [1, 2]
+    assert all(len(n) == 32 for n in names)
+    # nothing is left that points back at the name
+    assert all(r["answers"] == "[]" for r in rows)
     # NO_LOG drops everything
     ql3 = QueryLog(db, privacy_level=NO_LOG)
     before = await ql3.count()
@@ -99,4 +114,29 @@ async def test_gravity_persists_adlist(tmp_path):
     assert engine.match("ads.example").blocked
     row = await db.fetchone("SELECT * FROM adlist WHERE url=?", (str(listfile),))
     assert row is not None and row["status"] == "ok" and row["rule_count"] == 2
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_history_groups_answer_sets_over_time(tmp_path):
+    """Passive DNS for one household, out of the log that already holds it."""
+    db = Database(tmp_path / "h.db")
+    await db.connect()
+    ql = QueryLog(db)
+    base = int(time.time() * 1_000_000)
+    for i, (answers, client) in enumerate([
+            (["1.1.1.1"], "10.0.0.5"), (["1.1.1.1"], "10.0.0.6"),
+            (["9.9.9.9"], "10.0.0.5")]):
+        rec = mkrec(qname="bank.example", client=client, ts=base + i)
+        rec.answers = answers
+        ql.enqueue(rec)
+    noise = mkrec(qname="other.example", ts=base + 9)
+    noise.answers = ["8.8.8.8"]
+    ql.enqueue(noise)
+    await ql._flush()
+
+    hist = await ql.history("bank.example")
+    assert [h["answers"] for h in hist] == [["9.9.9.9"], ["1.1.1.1"]]   # newest first
+    assert hist[1]["hits"] == 2 and hist[1]["clients"] == 2
+    assert await ql.history("never-asked.example") == []
     await db.close()

@@ -177,11 +177,6 @@ def zone_from_records(records: list[RR], origin: Name) -> Zone:
     return z
 
 
-def axfr_complete(records: list[RR]) -> bool:
-    """An AXFR is complete once we've seen the closing SOA (a second SOA RR)."""
-    soas = sum(1 for rr in records if rr.rtype == Type.SOA)
-    return soas >= 2
-
 
 def ixfr_complete(records: list[RR]) -> bool:
     """Completion check that also understands IXFR responses (RFC 1995).

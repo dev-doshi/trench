@@ -10,7 +10,7 @@ import sys
 from . import log as logmod
 from .config import Config
 from .errors import ConfigError
-from .filter.rule import Rule
+from .filter.rule import operator_rules
 from .version import __version__
 
 
@@ -51,14 +51,36 @@ def apply_overrides(cfg: Config, args: argparse.Namespace) -> None:
         cfg.allow_dhcp = True
 
 
+async def _querylog_salt(cfg: Config) -> bytes:
+    """The installation's query-log salt, read once before the fork.
+
+    Privacy level 2 replaces names with a salted digest, and the point of that
+    digest is that the same name reads the same everywhere. Each worker deriving
+    its own salt would make the same domain look like four different domains, so
+    the value has to be settled before there is more than one process.
+    """
+    from .store import Database
+    db = Database(cfg.data_path / cfg.querylog.db)
+    try:
+        await db.connect()
+        return await db.secret("querylog_salt")
+    except Exception:
+        logmod.get("main").exception("could not read the query-log salt")
+        return b""
+    finally:
+        await db.close()
+
+
 async def _amain(cfg: Config, *, primary: bool = True, worker_idx: int = 0,
                  nworkers: int = 1, shm_path: str | None = None, do53_socks=None,
                  cache_shared=None, config_path: str | None = None,
-                 prebuilt_filter=None) -> None:
+                 prebuilt_filter=None, record_ring=None,
+                 querylog_salt: bytes = b"") -> None:
     from .app import App
     app = App(cfg, primary=primary, worker_idx=worker_idx, nworkers=nworkers,
               shm_path=shm_path, do53_socks=do53_socks, cache_shared=cache_shared,
-              config_path=config_path, prebuilt_filter=prebuilt_filter)
+              config_path=config_path, prebuilt_filter=prebuilt_filter,
+              record_ring=record_ring, querylog_salt=querylog_salt)
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -85,11 +107,34 @@ async def _amain(cfg: Config, *, primary: bool = True, worker_idx: int = 0,
         loop.add_signal_handler(signal.SIGHUP, _on_hup)
     except (NotImplementedError, AttributeError):  # pragma: no cover
         pass
+    await _await_startup_or_stop(app, stop, worker_idx=worker_idx)
+
+
+async def _await_startup_or_stop(app, stop, *, worker_idx: int = 0) -> None:
+    """Run the app until it is told to stop, or until starting it fails."""
     runner = asyncio.ensure_future(app.run())
-    await stop.wait()
+    # Wait on the startup task as well as the stop signal. Nothing used to
+    # observe `runner`, so anything `App.run()` raised — a missing TLS
+    # certificate, a port already in use, the refusal to keep running as root
+    # (`_maybe_drop_privileges`) — disappeared into an unretrieved exception
+    # while the Do53 listener, bound earlier, went on answering the LAN.
+    # systemd saw a healthy process. Now the refusal refuses.
+    waiter = asyncio.ensure_future(stop.wait())
+    done, _ = await asyncio.wait({runner, waiter}, return_when=asyncio.FIRST_COMPLETED)
+    waiter.cancel()
+    failure: BaseException | None = None
+    if runner in done:
+        failure = runner.exception()
+        if failure is None:
+            # `run()` returned on its own: it is not supposed to, so treat it as
+            # a shutdown rather than sitting in a loop with nothing running.
+            logmod.get("main").warning("worker %d: startup task ended early",
+                                       worker_idx)
     await app.stop()
     runner.cancel()
     logmod.get("main").info("worker %d stopped", worker_idx)
+    if failure is not None:
+        raise failure
 
 
 def _bind_do53_sockets(cfg: Config):
@@ -129,24 +174,20 @@ def _prebuild_filter(cfg: Config):
     """
     if not cfg.filtering.sources:
         return None
-    import time
-
     from .filter import FilterEngine
     from .filter.shared import SharedBlockTable
     from .gravity import Gravity
+    from .gravity.manager import cached_table_age
     log = logmod.get("main")
     table_path = cfg.data_path / "gravity.table"
     try:
-        age = time.time() - table_path.stat().st_mtime if table_path.exists() else None
+        age = cached_table_age(table_path)
         if age is not None and age < cfg.gravity.refresh_hours * 3600:
             # Already compiled and still within its refresh interval: map it and
             # start serving now. The workers' own schedule brings it up to date.
             table = SharedBlockTable.open(table_path)
-            rules = [Rule(raw=d, block=False, important=True, suffix=d.lower(),
-                          source="allowlist") for d in cfg.filtering.allow]
-            rules += [Rule(raw=d, block=True, suffix=d.lower(), source="denylist")
-                      for d in cfg.filtering.deny]
-            engine = FilterEngine.from_table(table, rules)
+            engine = FilterEngine.from_table(table, operator_rules(cfg.filtering.allow,
+                                                                  cfg.filtering.deny))
             log.info("reusing cached block table: %d domains, %.1f h old",
                      engine.size, age / 3600)
         else:
@@ -184,20 +225,42 @@ def _run_workers(cfg: Config, nworkers: int, config_path: str | None = None) -> 
         from .cache.shared import SharedCache
         cache_shared = SharedCache.create(cfg.cache.shared_slots, cfg.cache.shared_payload)
 
+    # Do53 runs in every worker, so every worker produces query-log records;
+    # only the primary may write SQLite. This is how the others get theirs
+    # across. Without it the log — and the breakage, list-ROI and what-if
+    # reports built on it — saw one worker's share of the traffic.
+    record_ring = None
+    salt = b""
+    if cfg.querylog.enabled:
+        from .store.ringlog import RecordRing
+        record_ring = RecordRing.create(nworkers)
+        salt = asyncio.run(_querylog_salt(cfg))
+
     prebuilt = _prebuild_filter(cfg)
 
     pids = []
     for idx in range(nworkers):
         pid = os.fork()
         if pid == 0:  # child
+            code = 0
             try:
                 asyncio.run(_amain(cfg, primary=(idx == 0), worker_idx=idx,
                                    nworkers=nworkers, shm_path=shm, do53_socks=socks,
                                    cache_shared=cache_shared, config_path=config_path,
-                                   prebuilt_filter=prebuilt))
+                                   prebuilt_filter=prebuilt,
+                                   record_ring=(record_ring.for_lane(idx)
+                                                if record_ring else None),
+                                   querylog_salt=salt))
             except KeyboardInterrupt:
                 pass
-            os._exit(0)
+            except BaseException:
+                # A worker that failed to start must die, loudly and with a
+                # non-zero status. Anything else propagates out of this branch
+                # and the child carries on executing the *supervisor's* code —
+                # forking siblings of its own.
+                logmod.get("main").exception("worker %d failed", idx)
+                code = 1
+            os._exit(code)
         pids.append(pid)
 
     log = logmod.get("main")
@@ -211,6 +274,13 @@ def _run_workers(cfg: Config, nworkers: int, config_path: str | None = None) -> 
                 pass
     signal.signal(signal.SIGINT, _forward)
     signal.signal(signal.SIGTERM, _forward)
+    # SIGHUP too, and not only for symmetry. The unit file's ExecReload sends it
+    # to $MAINPID, which is this process; the handler that knows what to do with
+    # it lives in each worker. Left uninstalled, SIGHUP takes its default
+    # disposition and kills the supervisor, so `systemctl reload` tears the whole
+    # service down — on every multi-worker deployment, which is both shipped
+    # configs.
+    signal.signal(signal.SIGHUP, _forward)
     for p in pids:
         try:
             os.waitpid(p, 0)

@@ -99,6 +99,7 @@ class ClientRegistry:
                 parental=c.parental if c.parental is not None else fc.parental,
                 services=frozenset(c.services) if c.services else frozenset(fc.services),
                 upstream_group=c.upstream_group,
+                group=c.group,
             )
             clients.append(Client(c.ident, c.type, c.name, pol))
         if extra_clients:
@@ -123,6 +124,7 @@ class ClientRegistry:
             parental=bool(ov.get("parental", fc.parental)),
             services=frozenset(ov.get("services", fc.services)),
             upstream_group=ov.get("upstream_group", ""),
+            group=ov.get("group", ""),
         )
         return Client(row["ident"], row["ident_type"], row["name"] or "", pol)
 

@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from ..wire.name import suffixes as name_suffixes
 from . import Action, Decision
+from .ipmatch import IPMatcher
 from .rule import Rule
 from .shared import SharedBlockTable
 
@@ -56,10 +58,16 @@ class FilterEngine:
         #: that key a cache on something coarser than the client address have
         #: to fall back when this is set — see FastPath.usable.
         self.has_client_rules = False
+        # Prefixes to reject in an *answer*, from `filtering.ip_sources` and
+        # from RPZ `rpz-ip` triggers. Held here rather than beside the engine so
+        # that swapping the rules swaps the addresses with them: a refresh that
+        # replaced one and not the other would filter names from the new list
+        # against addresses from the old.
+        self.ips = IPMatcher()
 
     # --- compilation ---
     @staticmethod
-    def _live_rules(rules: list[Rule]):
+    def _live_rules(rules, badfilter_keys: frozenset | None = None):
         """The rules that survive $badfilter, which disables the rule carrying
         the same pattern. AdGuard matches by raw modifiers; we approximate by
         pattern identity.
@@ -67,22 +75,41 @@ class FilterEngine:
         Shared by both constructors on purpose. Applying it in `compile` only
         meant $badfilter worked there and silently did nothing in `from_table`
         — the path every non-primary worker and every restart-from-cache uses.
+
+        `badfilter_keys`, when given, is that set worked out in advance. It is
+        what lets `rules` be a one-pass iterator: a $badfilter in one list
+        disables a rule in another, so without it every rule in the corpus has
+        to be held in memory at once purely to answer a question the raw text
+        could have answered for a fraction of the cost. See
+        `filter.badfilter_keys`.
         """
-        bad_patterns = {_pattern_id(r) for r in rules if r.badfilter}
+        if badfilter_keys is None:
+            rules = list(rules)
+            badfilter_keys = frozenset(_pattern_id(r) for r in rules if r.badfilter)
         for r in rules:
             if r.badfilter:
                 continue
-            if _pattern_id(r) in bad_patterns and not r.rewrite:
+            if _pattern_id(r) in badfilter_keys and not r.rewrite:
                 continue
             yield r
 
     @classmethod
-    def compile(cls, rules: list[Rule], table_path=None) -> FilterEngine:
+    def compile(cls, rules, table_path=None, *,
+                badfilter_keys: frozenset | None = None) -> FilterEngine:
         """`table_path` persists the compiled blocklist so other processes can
-        map the same copy, and so a restart does not have to re-parse it."""
+        map the same copy, and so a restart does not have to re-parse it.
+
+        `rules` may be any iterable, and is consumed once. That matters at the
+        scale this runs at: a `Rule` is ~310 B and an aggregate corpus is ~600k
+        of them, so materialising the list first cost 187 MB — twelve times the
+        24 MB artifact it was on the way to becoming, on a box with a 700 MB
+        ceiling that had already been OOM-killed. Streaming it, and passing
+        `badfilter_keys` so nothing has to be held for a second pass, measures
+        296 MB of peak down to 153 MB.
+        """
         eng = cls()
         imported: list[tuple[str, str]] = []
-        for r in cls._live_rules(rules):
+        for r in cls._live_rules(rules, badfilter_keys):
             eng._add(r, imported)
         # Built in one shot at the end: the table is sized from the final count
         # and is immutable afterwards, which is what makes it shareable.
@@ -90,7 +117,7 @@ class FilterEngine:
         return eng
 
     @classmethod
-    def from_table(cls, table: SharedBlockTable, rules: list[Rule]) -> FilterEngine:
+    def from_table(cls, table: SharedBlockTable, rules) -> FilterEngine:
         """Reuse an already-compiled blocklist, adding only the small rule set
         that is not in it (operator rules, regex and modifier-carrying rules).
 
@@ -161,21 +188,10 @@ class FilterEngine:
         return sorted(set(deny)), sorted(set(picked(self.allow_suffix)))
 
     # --- matching ---
-    @staticmethod
-    def suffixes(name: str) -> list[str]:
-        """Every parent suffix of `name`, longest first: the candidate keys a
-        suffix rule could be filed under.
-
-        Built once per query and handed to all three walks below. They used to
-        derive it independently — three list slices and three string joins per
-        label, for a set of strings that is identical every time.
-        """
-        out = [name]
-        cut = name.find(".")
-        while cut != -1:
-            out.append(name[cut + 1:])
-            cut = name.find(".", cut + 1)
-        return out
+    #: Every parent suffix of a name, longest first: the candidate keys a suffix
+    #: rule could be filed under. Built once per query and handed to all three
+    #: walks below, which used to derive it independently.
+    suffixes = staticmethod(name_suffixes)
 
     @staticmethod
     def _suffix_hits(cands: list[str], table: dict[str, list[Rule]]) -> list[Rule]:

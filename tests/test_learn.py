@@ -89,7 +89,7 @@ class FakeForwarder:
         self.calls: list[str] = []
         self.cache = cache
 
-    async def resolve(self, q: Message) -> Message:
+    async def resolve(self, q: Message, note=None) -> Message:
         self.calls.append(f"{q.question.name.to_text()}/{q.question.rtype}")
         resp = _resp_for(q)
         if self.cache is not None:
@@ -129,7 +129,7 @@ async def test_prewarm_survives_hostile_name_and_failures():
     t.fold()
 
     class FlakyForwarder(FakeForwarder):
-        async def resolve(self, q):
+        async def resolve(self, q, note=None):
             if q.question.rtype == Type.AAAA:
                 raise OSError("upstream down")
             return await super().resolve(q)

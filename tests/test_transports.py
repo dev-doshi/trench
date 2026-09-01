@@ -12,11 +12,11 @@ import ssl
 from pathlib import Path
 
 import pytest
+from support import blocked_engine
 
 from dnsguard.cache import Cache
 from dnsguard.config import Config
 from dnsguard.engine import Pipeline
-from dnsguard.filter import SimpleEngine
 from dnsguard.stats import Counters
 from dnsguard.wire import RR, Class, Message, Question, Type
 from dnsguard.wire import rdata as R
@@ -35,14 +35,14 @@ def free_port() -> int:
 
 
 class FakeForwarder:
-    async def resolve(self, query: Message) -> Message:
+    async def resolve(self, query: Message, note=None) -> Message:
         resp = query.reply(Rcode.NOERROR)
         resp.answers.append(RR(query.question.name, Type.A, Class.IN, 60, R.A("93.184.216.34")))
         return resp
 
 
 def build_pipeline() -> Pipeline:
-    return Pipeline(filter_engine=SimpleEngine(blocked={"doubleclick.net"}),
+    return Pipeline(filter_engine=blocked_engine("doubleclick.net"),
                     cache=Cache(), forwarder=FakeForwarder(),
                     counters=Counters(), config=Config())
 

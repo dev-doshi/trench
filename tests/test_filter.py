@@ -133,3 +133,40 @@ ok.domain   CNAME rpz-passthru.
     assert e.match("bad.domain").action in (Action.BLOCK, Action.REWRITE)
     assert e.match("sink.domain").action == Action.BLOCK
     assert e.match("ok.domain").action == Action.ALLOW
+
+
+def test_badfilter_works_across_sources_when_compiled_as_a_stream():
+    """A $badfilter in one list disables a rule in another.
+
+    The corpus is compiled in one pass now — no rule is held in memory waiting
+    for a second look — so the set of disabled patterns is worked out from the
+    raw text first. If that prepass misses a source, a $badfilter silently stops
+    disabling anything, which looks exactly like it working.
+    """
+    from dnsguard.filter import badfilter_keys, iter_rules
+
+    first = "||ads.com^\n||trackers.example^"
+    second = "! a later list retracts one of them\n||ads.com^$badfilter"
+    texts = [("first", first), ("second", second)]
+
+    keys = badfilter_keys(texts)
+    rules = (r for src, text in texts for r in iter_rules(text, src))
+    e = FilterEngine.compile(rules, badfilter_keys=keys)
+
+    assert e.match("ads.com").action == Action.NONE
+    assert e.match("trackers.example").action == Action.BLOCK
+
+
+def test_compiling_from_an_iterator_matches_compiling_from_a_list():
+    lines = [f"||a{i}.example^" for i in range(50)]
+    lines += ["|exact.example|", "/^re[0-9]+\\.example$/", "||m.example^$important"]
+    text = "\n".join(lines)
+
+    from dnsguard.filter import compile_rules, iter_rules
+    listed = FilterEngine.compile(compile_rules(text, "t"))
+    streamed = FilterEngine.compile(iter_rules(text, "t"))
+
+    assert streamed.size == listed.size
+    for name in ("a7.example", "exact.example", "re42.example", "m.example",
+                 "nothing.example"):
+        assert streamed.match(name).action == listed.match(name).action, name

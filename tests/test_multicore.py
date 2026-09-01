@@ -5,11 +5,11 @@ import asyncio
 import socket as _socket
 
 import pytest
+from support import blocked_engine
 
 from dnsguard.cache import Cache
 from dnsguard.config import Config
 from dnsguard.engine import Pipeline
-from dnsguard.filter import SimpleEngine
 from dnsguard.stats import Counters
 from dnsguard.stats.shared import SharedScalars
 from dnsguard.transport.do53 import Do53Server
@@ -56,7 +56,7 @@ def test_counters_use_shared_aggregate(tmp_path):
 
 
 class _FakeFwd:
-    async def resolve(self, q):
+    async def resolve(self, q, note=None):
         r = q.reply(Rcode.NOERROR)
         r.answers.append(RR(q.question.name, Type.A, Class.IN, 60, R.A("9.9.9.9")))
         return r
@@ -69,7 +69,7 @@ async def test_do53_on_inherited_socket():
     usock.bind(("127.0.0.1", 0))
     usock.setblocking(False)
     port = usock.getsockname()[1]
-    pipe = Pipeline(filter_engine=SimpleEngine(blocked={"ads.test"}), cache=Cache(),
+    pipe = Pipeline(filter_engine=blocked_engine("ads.test"), cache=Cache(),
                     forwarder=_FakeFwd(), counters=__import__("dnsguard.stats", fromlist=["Counters"]).Counters(),
                     config=Config())
     srv = Do53Server(pipe, "127.0.0.1", port, udp=True, tcp=False, sock_udp=usock)
@@ -87,3 +87,49 @@ async def test_do53_on_inherited_socket():
         cs.close()
     finally:
         await srv.stop()
+
+
+def test_the_series_aggregates_across_workers_like_the_totals(tmp_path):
+    """The console draws the chart from `series()` and the tiles above it from
+    `snapshot()`. With the series per worker, the two disagreed by a factor of
+    `nworkers` in the same response, and nothing distinguished them."""
+    path = str(tmp_path / "series.shm")
+    SharedScalars.create(path, nworkers=3)
+    cs = [Counters(shared=SharedScalars(path, 3, i)) for i in range(3)]
+
+    for i, c in enumerate(cs):
+        for _ in range(i + 1):                       # 1, then 2, then 3
+            c.record(client="a", qname="x.test", qtype="A", action="blocked",
+                     elapsed_us=1000)
+
+    for c in cs:
+        snap = c.snapshot()
+        assert snap["total"] == 6 and snap["blocked"] == 6
+        # the most recent bucket has to carry the same six, whichever worker asks
+        latest = c.series(2)[-1]
+        assert latest["total"] == 6 and latest["blocked"] == 6
+        assert latest["latency_ms"] == 1.0
+    for c in cs:
+        c.shared.close()
+
+
+def test_a_recycled_minute_starts_from_zero(tmp_path):
+    """The ring is 180 minutes wide; three hours later the same slot comes round
+    again and must not be added to."""
+    path = str(tmp_path / "recycle.shm")
+    SharedScalars.create(path, nworkers=1)
+    sh = SharedScalars(path, 1, 0)
+    minute = 1_700_000_000 // 60 * 60
+    sh.add_minute(minute, "blocked", 500)
+    sh.add_minute(minute, "cached", 500)
+    assert sh.minute(minute) == {"total": 2, "blocked": 1, "cached": 1,
+                                 "forwarded": 0, "failed": 0,
+                                 "lat_sum": 1000, "lat_n": 2}
+
+    later = minute + 180 * 60                        # exactly one lap
+    sh.add_minute(later, "forwarded", 0)
+    assert sh.minute(later) == {"total": 1, "blocked": 0, "cached": 0,
+                                "forwarded": 1, "failed": 0,
+                                "lat_sum": 0, "lat_n": 0}
+    assert sh.minute(minute) is None                 # the old stamp is gone
+    sh.close()

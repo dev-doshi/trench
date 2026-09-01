@@ -29,7 +29,7 @@ def test_cookie_jar_roundtrip():
 class FakeForwarder:
     def __init__(self):
         self.last_ecs = None
-    async def resolve(self, query: Message) -> Message:
+    async def resolve(self, query: Message, note=None) -> Message:
         if query.edns is not None:
             self.last_ecs = query.edns.get_ecs()
         resp = query.reply(Rcode.NOERROR)

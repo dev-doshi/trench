@@ -203,7 +203,7 @@ async def test_pipeline_does_not_relay_or_cache_injected_records():
     from dnsguard.stats import Counters
 
     class Hostile:
-        async def resolve(self, q):
+        async def resolve(self, q, note=None):
             r = Message(id=q.id)
             r.set_flag(Flags.QR, True)
             r.questions = list(q.questions)

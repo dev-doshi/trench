@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..log import get
+from ..wire.name import suffixes
 
 log = get("safebrowse")
 
@@ -28,8 +29,7 @@ class SafeBrowse:
                    _read(data_dir / "safebrowse_adult.txt", _BUILTIN_ADULT))
 
     def _hit(self, qname: str, pool: set[str]) -> bool:
-        labels = qname.rstrip(".").lower().split(".")
-        return any(".".join(labels[i:]) in pool for i in range(len(labels)))
+        return any(cand in pool for cand in suffixes(qname))
 
     def check(self, qname: str, *, safe_browse: bool, parental: bool) -> str | None:
         if safe_browse and self._hit(qname, self.malware):

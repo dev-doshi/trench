@@ -44,6 +44,10 @@ class CacheKey(NamedTuple):
     # SERVFAIL. Sharing a key with CD=0 let any client poison every other
     # client's view of a name simply by asking for it with CD set.
     cd: bool = False
+    # Which named upstream set produced the answer. A client group pointed at a
+    # different resolver must not be served another group's answer for the same
+    # name — that is the whole point of pointing it somewhere else.
+    view: str = ""
 
 
 @dataclass
@@ -93,18 +97,19 @@ class Cache:
         self.enabled = enabled
         self.shared = shared          # optional SharedCache (cross-worker L2)
         # called on flush() so derived copies drop too
-        self.on_flush: Callable[[], None] | None = None
+        # Return value is ignored — FastPath.clear reports a count.
+        self.on_flush: Callable[[], object] | None = None
         self._store: OrderedDict[CacheKey, _Entry] = OrderedDict()
         self.stats = {"hits": 0, "stale_hits": 0, "misses": 0, "stores": 0,
                       "evictions": 0, "shared_hits": 0}
 
     @staticmethod
-    def key_for(msg: Message, ecs: str = "") -> CacheKey | None:
+    def key_for(msg: Message, ecs: str = "", view: str = "") -> CacheKey | None:
         q = msg.question
         if q is None:
             return None
         return CacheKey(q.name.key, q.rtype, q.rclass, msg.wants_dnssec(), ecs,
-                        msg.cd)
+                        msg.cd, view)
 
     def _clamp(self, ttl: int) -> int:
         return max(self.min_ttl, min(self.max_ttl, ttl))

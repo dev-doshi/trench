@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from ..stats import Counters
+from ..stats.counters import LATENCY_BOUNDS_US
 from ..version import __version__
 
 
@@ -9,7 +10,18 @@ def _line(name: str, value, labels: str = "") -> str:
     return f"{name}{{{labels}}} {value}" if labels else f"{name} {value}"
 
 
-def render(counters: Counters, cache, filter_size: int, fast=None) -> str:
+def _lv(value: str) -> str:
+    """A label value, escaped per the exposition format.
+
+    Upstream labels carry user-supplied text (`tls://9.9.9.9#dns.quad9.net`),
+    and one unescaped backslash or quote in there produces a scrape the whole
+    of Prometheus rejects — not just the offending line.
+    """
+    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+
+
+def render(counters: Counters, cache, filter_size: int, fast=None,
+           pipeline=None) -> str:
     snap = counters.snapshot(top=0)
     out: list[str] = []
 
@@ -49,6 +61,41 @@ def render(counters: Counters, cache, filter_size: int, fast=None) -> str:
     out.append("# TYPE dnsguard_blocklist_size gauge")
     out.append(_line("dnsguard_blocklist_size", filter_size))
 
+    out.append("# HELP dnsguard_query_rcodes_total Answers by response code")
+    out.append("# TYPE dnsguard_query_rcodes_total counter")
+    for rcode, n in counters.by_rcode.items():
+        out.append(_line("dnsguard_query_rcodes_total", n, f'rcode="{_lv(rcode)}"'))
+
+    out.append("# HELP dnsguard_upstream_answers_total Answers by upstream server")
+    out.append("# TYPE dnsguard_upstream_answers_total counter")
+    for server, n in counters.upstreams.most_common(64):
+        out.append(_line("dnsguard_upstream_answers_total", n, f'upstream="{_lv(server)}"'))
+
+    out.append("# HELP dnsguard_clients_seen Distinct clients seen since start")
+    out.append("# TYPE dnsguard_clients_seen gauge")
+    out.append(_line("dnsguard_clients_seen", len(counters.clients)))
+
+    out.append("# HELP dnsguard_detections_total Behavioural detections by kind")
+    out.append("# TYPE dnsguard_detections_total counter")
+    out.append(_line("dnsguard_detections_total", sum(counters.dga.values()), 'kind="dga"'))
+    out.append(_line("dnsguard_detections_total", sum(counters.tunnel.values()),
+                     'kind="tunnel"'))
+
+    # A histogram, not a mean. An average latency cannot show a p99 regression,
+    # which is the only latency question anyone actually asks of a resolver.
+    out.append("# HELP dnsguard_query_duration_seconds Resolve latency")
+    out.append("# TYPE dnsguard_query_duration_seconds histogram")
+    cum = 0
+    for i, bound in enumerate(LATENCY_BOUNDS_US):
+        cum += counters.latency_hist[i]
+        out.append(_line("dnsguard_query_duration_seconds_bucket", cum,
+                         f'le="{bound / 1e6:g}"'))
+    cum += counters.latency_hist[-1]
+    out.append(_line("dnsguard_query_duration_seconds_bucket", cum, 'le="+Inf"'))
+    out.append(_line("dnsguard_query_duration_seconds_sum",
+                     round(counters.latency_us_sum / 1e6, 6)))
+    out.append(_line("dnsguard_query_duration_seconds_count", cum))
+
     out.append("# HELP dnsguard_avg_latency_ms Average resolve latency (ms)")
     out.append("# TYPE dnsguard_avg_latency_ms gauge")
     out.append(_line("dnsguard_avg_latency_ms", snap["avg_latency_ms"]))
@@ -68,6 +115,14 @@ def render(counters: Counters, cache, filter_size: int, fast=None) -> str:
         out.append("# HELP dnsguard_fastpath_usable Replay currently permitted")
         out.append("# TYPE dnsguard_fastpath_usable gauge")
         out.append(_line("dnsguard_fastpath_usable", int(fast.usable)))
+
+    if pipeline is not None:
+        out.append("# HELP dnsguard_filtering_enabled Global filtering switch")
+        out.append("# TYPE dnsguard_filtering_enabled gauge")
+        out.append(_line("dnsguard_filtering_enabled", int(bool(pipeline.enabled))))
+        out.append("# HELP dnsguard_filtering_paused Filtering suspended by a timed pause")
+        out.append("# TYPE dnsguard_filtering_paused gauge")
+        out.append(_line("dnsguard_filtering_paused", int(bool(pipeline.paused_any))))
 
     out.append("# HELP dnsguard_uptime_seconds Process uptime")
     out.append("# TYPE dnsguard_uptime_seconds gauge")

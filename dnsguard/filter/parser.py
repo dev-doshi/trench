@@ -39,13 +39,40 @@ def detect_format(text: str) -> str:
     return "hosts" if hosts else "domain"
 
 
-def parse_list(text: str, source: str = "") -> list[Rule]:
-    rules: list[Rule] = []
+def iter_list(text: str, source: str = ""):
+    """Parse a list, yielding one Rule at a time.
+
+    The generator is the primary form: a large corpus is ~600k Rules and each is
+    routed into a compact representation the moment it is seen, so holding the
+    whole list first is 187 MB spent to produce a 24 MB table.
+    """
     for raw in text.splitlines():
         r = parse_line(raw, source)
         if r is not None:
-            rules.append(r)
-    return rules
+            yield r
+
+
+def parse_list(text: str, source: str = "") -> list[Rule]:
+    """The whole list at once. For callers small enough not to care — tests,
+    `dnsguard regex-test`, the what-if delta."""
+    return list(iter_list(text, source))
+
+
+def iter_badfilter(text: str, source: str = ""):
+    """Only the `$badfilter` rules in `text`.
+
+    A $badfilter in one list disables a rule in another, so the set has to be
+    known before any list is compiled. Finding them needs no parsing for the
+    99.99% of lines that cannot be one — the modifier has to appear literally —
+    which is what makes a prepass cheap enough to do instead of holding every
+    parsed rule in memory for a second look.
+    """
+    for raw in text.splitlines():
+        if "$badfilter" not in raw:
+            continue
+        r = parse_line(raw, source)
+        if r is not None and r.badfilter:
+            yield r
 
 
 def parse_line(raw: str, source: str = "") -> Rule | None:

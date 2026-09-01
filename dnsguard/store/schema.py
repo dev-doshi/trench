@@ -127,4 +127,18 @@ MIGRATIONS: list[tuple[int, str, str]] = [
     );
     CREATE INDEX IF NOT EXISTS idx_list_review_ts ON list_review(ts DESC);
     """),
+    # Two tables that were modelled and never wired to anything. `ts_stat` was
+    # written by nothing and read by nothing. The `group` table had create/list/
+    # delete endpoints behind it, but no verdict ever consulted it: a group made
+    # there could not change what any client resolved. Filtering groups are now
+    # declared in `filtering.groups` and enforced by the pipeline, so the dead
+    # copy goes rather than sitting next to the working one.
+    #
+    # `adlist.group_id` and `custom_rule.group_id` are left in place: dropping a
+    # column rewrites the table on older SQLite, and an unused column costs a
+    # few bytes where a failed migration costs the query log.
+    (6, "drop the unwired group and ts_stat tables", """
+    DROP TABLE IF EXISTS ts_stat;
+    DROP TABLE IF EXISTS "group";
+    """),
 ]

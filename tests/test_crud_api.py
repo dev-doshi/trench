@@ -91,17 +91,11 @@ async def test_group_crud(tmp_path):
     try:
         async with aiohttp.ClientSession(cookie_jar=jar) as s:
             await _login(s, base)
-            assert (await (await s.post(f"{base}/api/v1/groups",
-                    json={"name": "kids", "comment": "children"})).json())["ok"]
-            # duplicate name -> 409
-            r = await s.post(f"{base}/api/v1/groups", json={"name": "kids"})
-            assert r.status == 409
             groups = (await (await s.get(f"{base}/api/v1/groups")).json())["groups"]
-            assert any(g["name"] == "kids" for g in groups)
-            gid = next(g["id"] for g in groups if g["name"] == "kids")
-            await s.delete(f"{base}/api/v1/groups/{gid}")
-            groups = (await (await s.get(f"{base}/api/v1/groups")).json())["groups"]
-            assert not any(g["name"] == "kids" for g in groups)
+            # Groups are declared in the config and enforced by the pipeline;
+            # this endpoint reports what is in force, and creates nothing.
+            assert groups == []
+            assert (await s.post(f"{base}/api/v1/groups", json={"name": "kids"})).status == 405
     finally:
         await app.api.stop(); await app.db.close()
 
