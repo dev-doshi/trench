@@ -6,8 +6,8 @@ import time
 
 import pytest
 
-from dnsguard.store import Database, QueryLog
-from dnsguard.store.querylog import ANON_CLIENT_DOMAIN, HIDE_CLIENT, NO_LOG, QueryRecord
+from trench.store import Database, QueryLog
+from trench.store.querylog import ANON_CLIENT_DOMAIN, HIDE_CLIENT, NO_LOG, QueryRecord
 
 
 def mkrec(qname="example.com", client="10.0.0.5", action="forwarded", ts=None):
@@ -104,7 +104,7 @@ async def test_retention(tmp_path):
 
 @pytest.mark.asyncio
 async def test_gravity_persists_adlist(tmp_path):
-    from dnsguard.gravity import Gravity
+    from trench.gravity import Gravity
     db = Database(tmp_path / "g.db")
     await db.connect()
     listfile = tmp_path / "list.txt"

@@ -18,7 +18,7 @@ def free_port():
 async def test_block_page_serves():
     import aiohttp
 
-    from dnsguard.web.blockpage import BlockPageServer
+    from trench.web.blockpage import BlockPageServer
     port = free_port()
     srv = BlockPageServer("127.0.0.1", port)
     await srv.start()
@@ -26,6 +26,6 @@ async def test_block_page_serves():
         async with aiohttp.ClientSession() as s, s.get(f"http://127.0.0.1:{port}/anything") as r:
             assert r.status == 200
             body = await r.text()
-            assert "blocked" in body.lower() and "DNSGuard" in body
+            assert "blocked" in body.lower() and "Trench" in body
     finally:
         await srv.stop()

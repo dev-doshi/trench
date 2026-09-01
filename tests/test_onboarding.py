@@ -8,7 +8,7 @@ import struct
 
 import pytest
 
-from dnsguard.onboarding import apple_mobileconfig, doh_stamp, dot_stamp
+from trench.onboarding import apple_mobileconfig, doh_stamp, dot_stamp
 
 
 def _b64url_decode(s: str) -> bytes:
@@ -23,7 +23,7 @@ def _read_lp(buf, i):
 
 # --- mobileconfig ---
 def test_mobileconfig_doh_parses():
-    xml = apple_mobileconfig(display_name="DNSGuard Home", server_name="dns.home",
+    xml = apple_mobileconfig(display_name="Trench Home", server_name="dns.home",
                              doh_url="https://dns.home/dns-query",
                              server_addresses=["192.0.2.1"])
     plist = plistlib.loads(xml.encode())

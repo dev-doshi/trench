@@ -5,7 +5,7 @@ import base64
 import hashlib
 import json
 
-from dnsguard.security.acme import (
+from trench.security.acme import (
     ACMEAccount,
     b64url,
     dns01_txt,

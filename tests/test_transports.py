@@ -14,14 +14,14 @@ from pathlib import Path
 import pytest
 from support import blocked_engine
 
-from dnsguard.cache import Cache
-from dnsguard.config import Config
-from dnsguard.engine import Pipeline
-from dnsguard.stats import Counters
-from dnsguard.wire import RR, Class, Message, Question, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import Rcode
+from trench.cache import Cache
+from trench.config import Config
+from trench.engine import Pipeline
+from trench.stats import Counters
+from trench.wire import RR, Class, Message, Question, Type
+from trench.wire import rdata as R
+from trench.wire.name import Name
+from trench.wire.rrtypes import Rcode
 
 CERT_DIR = Path("./data")
 
@@ -48,7 +48,7 @@ def build_pipeline() -> Pipeline:
 
 
 def mkquery(name="example.com", rtype=Type.A, do=True):
-    from dnsguard.wire.edns import Edns
+    from trench.wire.edns import Edns
     m = Message(id=0x4242)
     m.set_flag(0x0100, True)
     m.questions.append(Question(Name.from_text(name), rtype, Class.IN))
@@ -60,7 +60,7 @@ def mkquery(name="example.com", rtype=Type.A, do=True):
 # --- DoT ---
 @pytest.mark.asyncio
 async def test_dot():
-    from dnsguard.transport.dot import DoTServer
+    from trench.transport.dot import DoTServer
     port = free_port()
     srv = DoTServer(build_pipeline(), "127.0.0.1", port, None, None, CERT_DIR)
     await srv.start()
@@ -90,7 +90,7 @@ async def test_dot():
 async def test_doh_wire_and_json():
     import aiohttp
 
-    from dnsguard.transport.doh import DoHServer
+    from trench.transport.doh import DoHServer
     port = free_port()
     srv = DoHServer(build_pipeline(), "127.0.0.1", port, "/dns-query", tls=False)
     await srv.start()
@@ -129,7 +129,7 @@ async def test_doq():
     from aioquic.quic.configuration import QuicConfiguration
     from aioquic.quic.events import StreamDataReceived
 
-    from dnsguard.transport.doq import DoQServer
+    from trench.transport.doq import DoQServer
 
     port = free_port()
     srv = DoQServer(build_pipeline(), "127.0.0.1", port, None, None, CERT_DIR)
@@ -172,7 +172,7 @@ async def test_doh3():
     from aioquic.h3.events import DataReceived, HeadersReceived
     from aioquic.quic.configuration import QuicConfiguration
 
-    from dnsguard.transport.doh3 import DoH3Server
+    from trench.transport.doh3 import DoH3Server
 
     port = free_port()
     srv = DoH3Server(build_pipeline(), "127.0.0.1", port, "/dns-query", None, None, CERT_DIR)

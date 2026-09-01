@@ -11,14 +11,14 @@ import random
 
 import pytest
 
-from dnsguard.errors import WireError
-from dnsguard.wire import RR, Class, Message, Question, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.message import HEADER_LEN
-from dnsguard.wire.name import Name, read_name
-from dnsguard.wire.rdata import parse_rdata
-from dnsguard.wire.reader import Reader
-from dnsguard.wire.rrtypes import Flags
+from trench.errors import WireError
+from trench.wire import RR, Class, Message, Question, Type
+from trench.wire import rdata as R
+from trench.wire.message import HEADER_LEN
+from trench.wire.name import Name, read_name
+from trench.wire.rdata import parse_rdata
+from trench.wire.reader import Reader
+from trench.wire.rrtypes import Flags
 
 WWW = Name.from_text("www.example.com.")
 
@@ -141,7 +141,7 @@ def test_a_response_that_already_says_tc_is_still_capped():
 def test_truncation_keeps_the_question_and_the_opt():
     m = Message(id=1, flags=Flags.QR)
     m.questions.append(Question(WWW, Type.TXT, Class.IN))
-    from dnsguard.wire.edns import Edns
+    from trench.wire.edns import Edns
     m.edns = Edns(udp_size=1232)
     for _ in range(60):
         m.answers.append(RR(WWW, Type.TXT, Class.IN, 300, R.TXT([bytes(255)])))

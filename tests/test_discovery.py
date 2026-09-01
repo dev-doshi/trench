@@ -5,11 +5,11 @@ import asyncio
 import ipaddress
 import struct
 
-from dnsguard.cache import Cache
-from dnsguard.config import Config
-from dnsguard.dhcp.scope import Scope
-from dnsguard.dhcp.server import build_reply
-from dnsguard.dhcp.v4 import (
+from trench.cache import Cache
+from trench.config import Config
+from trench.dhcp.scope import Scope
+from trench.dhcp.server import build_reply
+from trench.dhcp.v4 import (
     OPT_DNR,
     OPT_HOSTNAME,
     OPT_MSG_TYPE,
@@ -17,14 +17,14 @@ from dnsguard.dhcp.v4 import (
     DhcpPacket,
     MessageType,
 )
-from dnsguard.discovery import DDR_QNAME, Discovery, Endpoint, from_config
-from dnsguard.engine import Pipeline
-from dnsguard.filter import FilterEngine
-from dnsguard.filter.svcparams import iter_params
-from dnsguard.stats import Counters
-from dnsguard.wire import Class, Message, Question, Type
-from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import Rcode
+from trench.discovery import DDR_QNAME, Discovery, Endpoint, from_config
+from trench.engine import Pipeline
+from trench.filter import FilterEngine
+from trench.filter.svcparams import iter_params
+from trench.stats import Counters
+from trench.wire import Class, Message, Question, Type
+from trench.wire.name import Name
+from trench.wire.rrtypes import Rcode
 
 ALPN, PORT, DOHPATH = 1, 3, 7
 

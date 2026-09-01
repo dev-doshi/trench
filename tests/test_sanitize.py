@@ -13,12 +13,12 @@ from __future__ import annotations
 
 import pytest
 
-from dnsguard.resolver.sanitize import MAX_CNAME_CHAIN, sanitize
-from dnsguard.wire import Class, Message, Question
-from dnsguard.wire.message import RR
-from dnsguard.wire.name import Name
-from dnsguard.wire.rdata import CNAME, MX, NS, RRSIG, SOA, TXT, A
-from dnsguard.wire.rrtypes import Flags, Type
+from trench.resolver.sanitize import MAX_CNAME_CHAIN, sanitize
+from trench.wire import Class, Message, Question
+from trench.wire.message import RR
+from trench.wire.name import Name
+from trench.wire.rdata import CNAME, MX, NS, RRSIG, SOA, TXT, A
+from trench.wire.rrtypes import Flags, Type
 
 
 def n(text: str) -> Name:
@@ -196,11 +196,11 @@ def test_response_without_a_question_keeps_nothing():
 # --- end to end through the pipeline ---
 @pytest.mark.asyncio
 async def test_pipeline_does_not_relay_or_cache_injected_records():
-    from dnsguard.cache import Cache
-    from dnsguard.config import Config
-    from dnsguard.engine import Pipeline
-    from dnsguard.filter import FilterEngine
-    from dnsguard.stats import Counters
+    from trench.cache import Cache
+    from trench.config import Config
+    from trench.engine import Pipeline
+    from trench.filter import FilterEngine
+    from trench.stats import Counters
 
     class Hostile:
         async def resolve(self, q, note=None):

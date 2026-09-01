@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import base64
 
-from dnsguard.config import Config
-from dnsguard.resolver.dnssec.anchors import load_anchors, parse_anchors
-from dnsguard.resolver.dnssec.chain import ROOT_ANCHORS
-from dnsguard.resolver.dnssec.keys import ds_digest, key_tag
-from dnsguard.wire import rdata as R
-from dnsguard.wire.name import Name
+from trench.config import Config
+from trench.resolver.dnssec.anchors import load_anchors, parse_anchors
+from trench.resolver.dnssec.chain import ROOT_ANCHORS
+from trench.resolver.dnssec.keys import ds_digest, key_tag
+from trench.wire import rdata as R
+from trench.wire.name import Name
 
 IANA_DS = (
     ". IN DS 20326 8 2 "
@@ -59,7 +59,7 @@ def test_missing_or_empty_file_yields_nothing(tmp_path):
 
 
 def test_app_prefers_the_file_over_the_pins(tmp_path):
-    from dnsguard.app import App
+    from trench.app import App
     (tmp_path / "root.key").write_text(". IN DS 12345 8 2 " + "AA" * 32 + "\n")
     cfg = Config.load_dict({"data_dir": str(tmp_path),
                             "upstream": {"mode": "recursive", "dnssec": True}})

@@ -22,8 +22,8 @@ from datetime import datetime
 
 import pytest
 
-from dnsguard.config import Config, UpdatesConfig
-from dnsguard.ops.update import (
+from trench.config import Config, UpdatesConfig
+from trench.ops.update import (
     Install,
     Release,
     UpdateError,
@@ -78,10 +78,10 @@ def test_prerelease_detection():
 def _index(*versions: str, digest: str = "ab" * 32, yanked: set[str] | None = None) -> dict:
     yanked = yanked or set()
     return {
-        "info": {"version": versions[-1] if versions else ""},
+        "info": {"name": "trench-dns", "version": versions[-1] if versions else ""},
         "releases": {
             v: [{"packagetype": "bdist_wheel",
-                 "url": f"https://example.invalid/dnsguard-{v}-py3-none-any.whl",
+                 "url": f"https://example.invalid/trench-{v}-py3-none-any.whl",
                  "digests": {"sha256": digest},
                  "size": 1234,
                  "yanked": v in yanked}]
@@ -157,15 +157,15 @@ def test_a_malformed_window_is_refused_rather_than_guessed():
 
 # ──────────────────────────────────────────────────────────────── detection ──
 def test_a_container_install_refuses_to_rewrite_itself(monkeypatch):
-    monkeypatch.setattr("dnsguard.ops.update._in_container", lambda: True)
+    monkeypatch.setattr("trench.ops.update._in_container", lambda: True)
     install = detect_install()
     assert install.method == "container" and not install.can_apply
     assert "image" in install.reason
 
 
 def test_a_source_checkout_refuses(monkeypatch, tmp_path):
-    monkeypatch.setattr("dnsguard.ops.update._in_container", lambda: False)
-    root = tmp_path / "src" / "dnsguard"
+    monkeypatch.setattr("trench.ops.update._in_container", lambda: False)
+    root = tmp_path / "src" / "trench"
     root.mkdir(parents=True)
     (root.parent / "pyproject.toml").write_text("[project]\n")
     install = detect_install(root)
@@ -173,8 +173,8 @@ def test_a_source_checkout_refuses(monkeypatch, tmp_path):
 
 
 def test_a_distribution_package_refuses(monkeypatch, tmp_path):
-    monkeypatch.setattr("dnsguard.ops.update._in_container", lambda: False)
-    root = tmp_path / "usr" / "lib" / "python3" / "dist-packages" / "dnsguard"
+    monkeypatch.setattr("trench.ops.update._in_container", lambda: False)
+    root = tmp_path / "usr" / "lib" / "python3" / "dist-packages" / "trench"
     root.mkdir(parents=True)
     install = detect_install(root)
     assert install.method == "system" and not install.can_apply
@@ -363,19 +363,73 @@ def test_the_artifact_name_comes_from_the_index_and_is_checked():
     """pip parses a wheel's *filename* to learn what it is installing, so the
     name has to come from the index — which makes it attacker-influenced input
     used to build a path."""
-    from dnsguard.ops.update import _artifact_name
+    from trench.ops.update import _artifact_name
 
     assert _artifact_name(
-        "https://files.pythonhosted.org/x/dnsguard-2.1.0-py3-none-any.whl"
-    ) == "dnsguard-2.1.0-py3-none-any.whl"
+        "https://files.pythonhosted.org/x/trench-2.1.0-py3-none-any.whl"
+    ) == "trench-2.1.0-py3-none-any.whl"
     # Anything that is not a wheel, or has no name at all, is refused outright.
-    for hostile in ("https://x/dnsguard-2.1.0.tar.gz", "https://x/", "https://x/..%2f"):
+    for hostile in ("https://x/trench-2.1.0.tar.gz", "https://x/", "https://x/..%2f"):
         with pytest.raises(UpdateError):
             _artifact_name(hostile)
     # Traversal — plain or percent-encoded — collapses to a bare name inside the
     # staging directory rather than escaping it.
     assert _artifact_name("https://x/../../etc/cron.d/evil.whl") == "evil.whl"
     assert _artifact_name("https://x/%2e%2e%2fboot.whl") == "boot.whl"
+
+
+@pytest.mark.asyncio
+async def test_an_index_for_another_project_is_refused(tmp_path):
+    """`trench` is a real, unrelated PyPI project (a deep-learning library), so
+    one wrong character in `updates.index` points the updater at somebody
+    else's code — and every other rail would pass it, because the digest comes
+    from that same index and their wheel imports fine."""
+    impostor = {"info": {"name": "trench", "summary": "Deep learning library"},
+                "releases": {"9.9.9": [{"packagetype": "bdist_wheel",
+                                        "url": "https://x/trench-9.9.9-py3-none-any.whl",
+                                        "digests": {"sha256": "ab" * 32},
+                                        "size": 1}]}}
+    up = _updater(tmp_path, impostor, mode="auto")
+    assert await up.check() is None                    # recorded, not raised
+    assert "not 'trench-dns'" in up.status()["last_error"]
+    with pytest.raises(UpdateError, match="refusing to treat it"):
+        await up.apply()
+
+
+@pytest.mark.asyncio
+async def test_an_index_that_names_nothing_is_refused(tmp_path):
+    up = _updater(tmp_path, {"releases": {}}, mode="auto")
+    assert await up.check() is None
+    assert "unnamed project" in up.status()["last_error"]
+
+
+def test_the_distribution_name_is_compared_the_way_packaging_does():
+    from trench.ops.update import _check_index
+
+    for spelling in ("trench-dns", "Trench_DNS", "trench.dns", "TRENCH--DNS"):
+        assert _check_index({"info": {"name": spelling}, "releases": {}})
+    for wrong in ("trench", "trenchdns", "trench-dnssec"):
+        with pytest.raises(UpdateError):
+            _check_index({"info": {"name": wrong}, "releases": {}})
+
+
+@pytest.mark.asyncio
+async def test_a_staged_build_reporting_the_wrong_version_is_refused(tmp_path, monkeypatch):
+    """Importing is the weak half of the smoke test: another project's wheel
+    imports perfectly well. Reporting our version is the half it cannot fake."""
+    up = _updater(tmp_path, _index("2.0.0", "2.1.0"), mode="auto")
+    payload = b"wheel"
+    _serve(monkeypatch, payload)
+    release = Release(version="2.1.0", sha256=hashlib.sha256(payload).hexdigest(),
+                      url="https://x/trench_dns-2.1.0-py3-none-any.whl", size=len(payload))
+
+    async def _run(argv, *, timeout, what):
+        return "1.0.0\n" if "-c" in argv else ""
+
+    monkeypatch.setattr(up, "_run", _run)
+    with pytest.raises(UpdateError, match="reports version '1.0.0'"):
+        await up.apply(release)
+    assert up.status()["restart_required"] is False
 
 
 # ───────────────────────────────────────────────────────────── the real thing ──
@@ -400,7 +454,7 @@ async def test_apply_installs_a_real_wheel_and_records_the_move(tmp_path, monkey
     up.install = Install("venv", str(live), str(live_python), True)
     release = Release(version="2.1.0", url="https://example.invalid/sample_pkg-2.1.0-py3-none-any.whl",
                       sha256=hashlib.sha256(payload).hexdigest(), size=len(payload))
-    # The smoke test imports dnsguard, which this fake package is not; run it
+    # The smoke test imports trench, which this fake package is not; run it
     # against the module the wheel actually ships.
     monkeypatch.setattr(up, "_smoke_test", _smoke_the_sample.__get__(up, Updater))
 
@@ -418,7 +472,7 @@ async def test_apply_installs_a_real_wheel_and_records_the_move(tmp_path, monkey
     assert UpdateState.load(up.state_path).restart_required is True
 
 
-async def _smoke_the_sample(self, wheel, staging) -> None:
+async def _smoke_the_sample(self, wheel, staging, release) -> None:
     """The stock smoke test, pointed at the sample package's name."""
     env = staging / "venv"
     await self._run([sys.executable, "-m", "venv", "--system-site-packages", str(env)],
@@ -427,8 +481,10 @@ async def _smoke_the_sample(self, wheel, staging) -> None:
     await self._run([str(python), "-m", "pip", "install", "--no-input",
                      "--disable-pip-version-check", "--no-deps", str(wheel)],
                     timeout=600, what="install into the staging environment")
-    await self._run([str(python), "-c", "import sample_pkg"],
-                    timeout=120, what="import the staged build")
+    out = await self._run([str(python), "-c",
+                           "import sample_pkg; print(sample_pkg.__version__)"],
+                          timeout=120, what="import the staged build")
+    assert out.strip().splitlines()[-1].strip() == release.version
 
 
 def _build_wheel(where: pathlib.Path) -> pathlib.Path:
@@ -456,7 +512,7 @@ def _build_wheel(where: pathlib.Path) -> pathlib.Path:
 async def test_the_app_arms_and_disarms_the_check_from_the_config(tmp_path):
     """`updates.mode: off` must take effect without a restart — that is exactly
     the moment an operator is turning it off."""
-    from dnsguard.app import App
+    from trench.app import App
 
     cfg = Config.model_validate({"data_dir": str(tmp_path),
                                  "server": {"do53": {"enabled": False}},
@@ -479,7 +535,7 @@ async def test_the_app_arms_and_disarms_the_check_from_the_config(tmp_path):
 async def test_the_updater_refuses_to_run_on_a_sibling_worker(tmp_path):
     """Four workers checking the same index on the same timer is waste; four of
     them installing into the same virtual environment is corruption."""
-    from dnsguard.app import App
+    from trench.app import App
 
     cfg = Config.model_validate({"data_dir": str(tmp_path),
                                  "server": {"do53": {"enabled": False}},
@@ -493,7 +549,7 @@ async def test_the_updater_refuses_to_run_on_a_sibling_worker(tmp_path):
 @pytest.mark.asyncio
 async def test_the_scheduled_tick_survives_a_failing_updater(tmp_path):
     """A job that raises is a job that stops running."""
-    from dnsguard.app import App
+    from trench.app import App
 
     cfg = Config.model_validate({"data_dir": str(tmp_path),
                                  "server": {"do53": {"enabled": False}},
@@ -520,7 +576,7 @@ def test_the_state_file_is_written_atomically(tmp_path):
 
 
 def test_unknown_keys_in_a_state_file_do_not_stop_the_daemon(tmp_path):
-    """An older or newer DNSGuard wrote it; it is a cache, not a contract."""
+    """An older or newer Trench wrote it; it is a cache, not a contract."""
     path = tmp_path / "updates.json"
     path.write_text(json.dumps({"latest_version": "2.2.0", "from_the_future": 1}))
     assert UpdateState.load(path).latest_version == "2.2.0"
@@ -561,8 +617,8 @@ async def test_the_api_exposes_status_and_refuses_an_unsafe_install(tmp_path):
     stack trace when the installation cannot update itself."""
     import aiohttp
 
-    from dnsguard.api import APIServer
-    from dnsguard.app import App
+    from trench.api import APIServer
+    from trench.app import App
 
     cfg = Config.model_validate({
         "data_dir": str(tmp_path),

@@ -18,9 +18,9 @@ def free_port():
 async def test_audit_written_on_rule_change(tmp_path):
     import aiohttp
 
-    from dnsguard.api import APIServer
-    from dnsguard.app import App
-    from dnsguard.config import Config
+    from trench.api import APIServer
+    from trench.app import App
+    from trench.config import Config
     cfg = Config.model_validate({"data_dir": str(tmp_path),
                                  "server": {"do53": {"enabled": False}},
                                  "web": {"enabled": True, "admin_password": "pw"}})
@@ -48,11 +48,11 @@ async def test_audit_written_on_rule_change(tmp_path):
 async def test_the_process_records_its_own_actions(tmp_path):
     """Both of these used to name a `user` column the table does not have, so
     every write raised and was swallowed by its own except."""
-    from dnsguard.app import App
-    from dnsguard.config import Config
-    from dnsguard.filter import FilterEngine
-    from dnsguard.filter.contract import check, parse_all
-    from dnsguard.filter.parser import parse_line
+    from trench.app import App
+    from trench.config import Config
+    from trench.filter import FilterEngine
+    from trench.filter.contract import check, parse_all
+    from trench.filter.parser import parse_line
 
     app = App(Config.load_dict({"data_dir": str(tmp_path)}))
     await app.setup_storage()

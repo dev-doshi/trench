@@ -3,16 +3,16 @@ from __future__ import annotations
 
 import asyncio
 
-from dnsguard.cache import Cache
-from dnsguard.config import Config
-from dnsguard.engine import Pipeline
-from dnsguard.filter import FilterEngine
-from dnsguard.filter.tunnel import TunnelDetector
-from dnsguard.stats import Counters
-from dnsguard.wire import RR, Class, Message, Question, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import Rcode
+from trench.cache import Cache
+from trench.config import Config
+from trench.engine import Pipeline
+from trench.filter import FilterEngine
+from trench.filter.tunnel import TunnelDetector
+from trench.stats import Counters
+from trench.wire import RR, Class, Message, Question, Type
+from trench.wire import rdata as R
+from trench.wire.name import Name
+from trench.wire.rrtypes import Rcode
 
 TUN = ["a8f3b2c9d4e5f6a7b8c9d0e1f2a3b4c5a8f3b2c9.exfil.evil.com",
        "kj4h5k2j4h5k2j4h5k2j4h5k2j4h5k2j4h5k2.tunnel.example.com",

@@ -5,10 +5,10 @@ import base64
 
 import pytest
 
-from dnsguard.auth_zone.tsig import TSIGError, TSIGKey, sign_wire, verify_wire
-from dnsguard.wire import RR, Class, Message, Question, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.name import Name
+from trench.auth_zone.tsig import TSIGError, TSIGKey, sign_wire, verify_wire
+from trench.wire import RR, Class, Message, Question, Type
+from trench.wire import rdata as R
+from trench.wire.name import Name
 
 SECRET = base64.b64encode(b"0123456789abcdef0123456789abcdef").decode()
 
@@ -49,7 +49,7 @@ def test_multiple_algorithms(algo):
 
 def test_tampered_message_fails():
     key = _key()
-    from dnsguard.auth_zone.tsig import _locate_tsig
+    from trench.auth_zone.tsig import _locate_tsig
     signed, _ = sign_wire(_msg().to_wire(), key, time_signed=1000)
     tsig_start, _, _ = _locate_tsig(signed)
     bad = bytearray(signed)
@@ -93,7 +93,7 @@ def test_a_signed_message_cannot_be_replayed():
     """A valid MAC proves the sender knew the key, never that this is the first
     time they said it. On UDP the datagram can simply be sent again, spoofing
     the ACL'd source address, for the whole fudge window."""
-    from dnsguard.auth_zone.tsig import ReplayWindow, TSIGError, sign_wire, verify_wire
+    from trench.auth_zone.tsig import ReplayWindow, TSIGError, sign_wire, verify_wire
 
     key = TSIGKey(name="k.", secret=b"s" * 32, algorithm="hmac-sha256.")
     msg = Message(id=1234)
@@ -115,7 +115,7 @@ def test_key_names_match_regardless_of_case_or_trailing_dot():
     """Config may spell a key name either way. Matching only the exact
     lowercased-absolute form failed every transfer with BADKEY, and the failure
     was swallowed, so the secondary silently served a stale zone."""
-    from dnsguard.auth_zone.tsig import sign_wire, verify_wire
+    from trench.auth_zone.tsig import sign_wire, verify_wire
 
     key = TSIGKey(name="XFR-Key.", secret=b"s" * 32, algorithm="hmac-sha256.")
     msg = Message(id=7)

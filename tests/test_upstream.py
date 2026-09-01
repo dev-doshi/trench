@@ -11,16 +11,16 @@ from pathlib import Path
 import pytest
 from support import blocked_engine
 
-from dnsguard.cache import Cache
-from dnsguard.config import Config
-from dnsguard.engine import Pipeline
-from dnsguard.resolver.forwarder import Forwarder
-from dnsguard.stats import Counters
-from dnsguard.transport.upstream import Router, parse_upstream
-from dnsguard.wire import RR, Class, Message, Question, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import Rcode
+from trench.cache import Cache
+from trench.config import Config
+from trench.engine import Pipeline
+from trench.resolver.forwarder import Forwarder
+from trench.stats import Counters
+from trench.transport.upstream import Router, parse_upstream
+from trench.wire import RR, Class, Message, Question, Type
+from trench.wire import rdata as R
+from trench.wire.name import Name
+from trench.wire.rrtypes import Rcode
 
 CERT_DIR = Path("./data")
 
@@ -73,7 +73,7 @@ def mkquery(name="example.com"):
 
 @pytest.mark.asyncio
 async def test_upstream_dot():
-    from dnsguard.transport.dot import DoTServer
+    from trench.transport.dot import DoTServer
     port = free_port()
     srv = DoTServer(server_pipeline(), "127.0.0.1", port, None, None, CERT_DIR)
     await srv.start()
@@ -88,7 +88,7 @@ async def test_upstream_dot():
 
 @pytest.mark.asyncio
 async def test_upstream_doh():
-    from dnsguard.transport.doh import DoHServer
+    from trench.transport.doh import DoHServer
     port = free_port()
     srv = DoHServer(server_pipeline(), "127.0.0.1", port, "/dns-query", tls=True,
                     data_dir=CERT_DIR)
@@ -105,7 +105,7 @@ async def test_upstream_doh():
 
 @pytest.mark.asyncio
 async def test_upstream_doq():
-    from dnsguard.transport.doq import DoQServer
+    from trench.transport.doq import DoQServer
     port = free_port()
     srv = DoQServer(server_pipeline(), "127.0.0.1", port, None, None, CERT_DIR)
     await srv.start()

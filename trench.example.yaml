@@ -1,0 +1,225 @@
+# Trench configuration. All keys optional; shown values are the defaults.
+data_dir: ./data
+dev: false
+uvloop: true
+
+server:
+  do53:
+    enabled: true
+    host: 127.0.0.1      # use 0.0.0.0 to serve the whole LAN (needs root for :53)
+                         # -> if you do, set security.rate_limit below
+    port: 5354           # set 53 in production
+    udp: true
+    tcp: true
+  dot:                   # DNS-over-TLS (P1)
+    enabled: false
+    host: 0.0.0.0
+    port: 853
+    cert: null
+    key: null
+  doh:                   # DNS-over-HTTPS (P1)
+    enabled: false
+    host: 0.0.0.0
+    port: 8443
+    path: /dns-query
+    tls: false
+  doq:                   # DNS-over-QUIC (P1)
+    enabled: false
+    host: 0.0.0.0
+    port: 853
+  edns_udp_size: 1232
+  workers: 1             # Do53 worker processes for multi-core; 0 = auto (CPU count)
+  # Shed root after binding the privileged ports. Port 53 needs privilege to
+  # bind and nothing after that, so a resolver that keeps root is carrying it
+  # for no reason — including in the Docker image, which starts as root
+  # precisely so this can hand it back. Set both on any deployment that binds
+  # :53, :853 or :443.
+  user: ""               # e.g. trench
+  group: ""              # defaults to the user's primary group
+  # Advertise this server's encrypted endpoints so clients upgrade themselves:
+  # DDR (RFC 9462) answers the `_dns.resolver.arpa` query Windows 11 and Apple
+  # devices already send, and DNR (RFC 9463) puts the same thing in the DHCP
+  # lease. `hostname` must be a name you control that resolves to this box and
+  # whose certificate this server presents — clients authenticate the
+  # designation against it, and ignore one they cannot.
+  discovery:
+    enabled: false
+    hostname: ""         # e.g. dns.example.com
+    ttl: 300
+    addresses: []        # this server's LAN addresses, for the DHCP option
+
+upstream:
+  servers:               # plain, tls://, https://, quic://, [/domain/]server
+    - "1.1.1.1:53"
+    - "tls://9.9.9.9#dns.quad9.net"
+    - "https://dns.google/dns-query"
+    # - "[/internal.lan/]192.168.1.1"   # per-domain routing
+  strategy: parallel     # sequential | parallel | fastest | weighted
+  timeout: 4.0
+  mode: forward          # forward | recursive (iterative from root + QNAME-min)
+  ecs: "off"             # off | forward | strip  (quoted: bare off is a YAML boolean)
+  verify: true           # verify TLS certs of encrypted upstreams
+  dnssec: false          # validate DNSSEC
+  trust_anchors: ""      # path to a root.key (IANA DS records or a BIND
+                         # trust-anchors block). Empty uses <data_dir>/root.key
+                         # if present, else the anchors built into this release.
+  groups: {}             # named upstream sets, chosen per client:
+    # family: ["1.1.1.3:53", "1.0.0.3:53"]
+    # work:   ["tls://10.0.0.1#dns.corp"]
+    # Answers are cached per group, so one group never serves another's.
+
+cache:
+  enabled: true
+  max_entries: 100000
+  min_ttl: 0
+  max_ttl: 86400
+  negative_ttl: 900
+  serve_stale: true
+  serve_stale_max: 86400
+  prefetch: true
+  shared: true           # in multi-worker mode, share one cache across workers (mmap)
+  shared_slots: 16384    # ~ shared_slots * (22 + shared_payload) bytes of shared RAM
+  shared_payload: 1232
+
+filtering:
+  enabled: true
+  sources:
+    - data/default_blocklist.txt
+    # - https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts
+  allow: []
+  deny: []
+  block_mode: zero_ip    # zero_ip | nxdomain | refused | nodata | custom_ip
+  block_ipv4: 0.0.0.0
+  block_ipv6: "::"
+  cname_inspect: true
+  ip_sources: []         # lists of IPs/CIDRs; an answer pointing into one is
+                         # blocked whatever its name was. RPZ `rpz-ip` triggers
+                         # in any source above land in the same matcher.
+  block_answer_ips: true
+  ech: pass              # pass | strip — the `ech` parameter in HTTPS/SVCB
+                         # answers. Stripping downgrades clients to a visible
+                         # TLS server name and buys this resolver nothing.
+  assertions: []         # what the policy must always do, checked against every
+                         # refresh; a refresh that breaks one is not adopted:
+    # - "bank.example must resolve"
+    # - "doubleclick.net must block"
+  groups: {}             # per-group lists, selected by clients[].group:
+    # kids:
+    #   sources: ["https://example.org/social.txt"]
+    #   deny: ["tiktok.com"]
+    #   inherit: true    # false = this list is the whole policy for the group
+
+# --- per-client policy (identify by ip | cidr | mac | clientid | token) ---
+clients: []
+  # - {ident: 192.168.1.50, type: ip, name: kids-tablet, safe_search: true,
+  #    safe_browse: true, parental: true, services: [youtube, tiktok],
+  #    group: kids, upstream_group: family}
+  # - {ident: 192.168.1.0/24, type: cidr, name: lan, tags: [household]}
+
+# --- authoritative zones + local DNS ---
+zones: []
+  # - {origin: home.lan., file: /etc/trench/home.zone, dnssec: true}
+local_records: []
+  # - {name: nas.home.lan, type: A, answer: 192.168.1.10}
+
+# --- plugins ---
+plugins: []
+  # - dns64
+  # - {name: block_tld, options: {tlds: [zip, mov]}}
+
+# --- security hardening ---
+security:
+  # Queries/sec per client (0 = off). Off is fine while do53 is on loopback,
+  # which is how this file ships. The moment you set server.do53.host to
+  # 0.0.0.0, turn this on: an unlimited resolver reachable by anything on the
+  # network is an amplification source. 100/200 suits a home LAN. Trench
+  # warns at startup if it finds this at 0 on a non-loopback listener.
+  rate_limit: 0
+  rate_burst: 0
+  # Peers whose X-Forwarded-For header may be believed, as IPs or CIDRs.
+  # Empty (the default) means the socket address always wins. Only add the
+  # reverse proxy in front of DoH or the console: the header is written by
+  # whoever sent the request, and the identity it sets picks the per-client
+  # policy, the rate-limit bucket, the lockout counter and the ECS subnet.
+  trusted_proxies: []
+  rebinding_protection: true
+  local_suffixes: [lan, local, home.arpa, internal, localhost]
+  use_0x20: false
+  dga_detection: false   # real-time detection of algorithmically-generated (malware C2) domains
+  dga_block: false       # block flagged names (else just flag + count)
+  dga_threshold: 0.62
+  tunnel_detection: false  # detect DNS tunneling / data exfiltration (iodine, dnscat2)
+  tunnel_block: false
+  tunnel_threshold: 0.45
+  block_doh_canary: true  # NXDOMAIN use-application-dns.net so Firefox keeps respecting this server
+  silence_ledger: true    # track devices still on the network that have stopped
+                          # asking us anything — the visible trace of an app
+                          # using its own encrypted resolver. Reports; never blocks.
+  notary: []              # names resolved through every upstream and compared;
+                          # disagreement is reported, never acted on:
+    # - bank.example
+  notary_interval: 3600   # seconds between rounds; 0 disables
+
+# --- integrated DHCP (DISABLED; also needs `--allow-dhcp` to bind :67) ---
+dhcp:
+  enabled: false
+  server_ip: ""
+  scope: null
+  register_dns: true      # publish leased hostnames as <name>.<domain> + PTR
+  # scope:
+  #   network: 192.168.1.0/24
+  #   range_start: 192.168.1.100
+  #   range_end: 192.168.1.200
+  #   router: 192.168.1.1
+  #   dns: [192.168.1.1]
+  #   lease_time: 86400
+
+querylog:
+  enabled: true
+  retention_days: 90
+  privacy_level: 0       # 0 all .. 3 no logging
+  db: trench.db
+  export: ""             # also stream every query as JSON lines to this path
+                         # ("-" for stdout) for a log shipper or jq
+
+gravity:
+  refresh_hours: 24
+
+# Automatic TLS certificates over ACME dns-01. Needs `zones` to contain the name
+# being certified — this server answers the challenge from its own zone, so
+# nothing has to be reachable from the internet. See docs/security.md.
+# Updates. `notify` checks on a timer and tells you; it never installs.
+# `auto` also installs, but only where Trench owns the installation (a
+# virtual environment it can write to — never a container image, a distro
+# package or a source checkout), only outside a running blocklist build, and
+# only inside `window` if one is set. `off` disables the check entirely.
+updates:
+  mode: notify                # off | notify | auto
+  channel: stable             # stable | prerelease
+  check_interval_hours: 24    # 0 stops checking
+  index: "https://pypi.org/pypi/trench-dns/json"
+  timeout: 15.0
+  window: ""                  # "03:00-05:00" local time, may wrap midnight
+  # Installing stages new code; the running process keeps serving the old code
+  # until something restarts it. `systemd` asks systemd to restart `unit`,
+  # which needs Trench to still have the privilege to talk to it.
+  restart: manual             # manual | systemd
+  unit: trench
+
+acme:
+  enabled: false
+  domains: []
+  email: ""
+
+web:
+  enabled: true
+  host: 127.0.0.1
+  port: 8089
+  admin_password: null   # null -> autogenerated and printed once at first start
+  tls: false             # leave the console on 127.0.0.1 while this is false:
+                         # without TLS the password and API tokens are sent in
+                         # the clear
+
+log:
+  level: info
+  json_logs: false

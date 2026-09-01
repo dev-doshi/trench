@@ -9,7 +9,7 @@ import time
 import aiohttp
 import pytest
 
-from dnsguard.stats import Counters
+from trench.stats import Counters
 
 
 def _free_port():
@@ -87,8 +87,8 @@ def test_latency_percentiles_empty_and_single():
 # --- query log: filters, count, facets, purge ---
 @pytest.mark.asyncio
 async def test_querylog_filters_count_facets_purge(tmp_path):
-    from dnsguard.store import Database
-    from dnsguard.store.querylog import QueryLog
+    from trench.store import Database
+    from trench.store.querylog import QueryLog
     db = Database(tmp_path / "q.db")
     await db.connect()
     ql = QueryLog(db)
@@ -119,9 +119,9 @@ async def test_querylog_filters_count_facets_purge(tmp_path):
 
 # --- full API surface incl. websocket live stream ---
 async def _api(tmp_path):
-    from dnsguard.api import APIServer
-    from dnsguard.app import App
-    from dnsguard.config import Config
+    from trench.api import APIServer
+    from trench.app import App
+    from trench.config import Config
     cfg = Config.model_validate({"data_dir": str(tmp_path),
                                  "server": {"do53": {"enabled": False}},
                                  "querylog": {"enabled": True, "privacy_level": 0},

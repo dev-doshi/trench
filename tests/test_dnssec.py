@@ -10,11 +10,11 @@ import time
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa, utils
 
-from dnsguard.resolver.dnssec import ds_digest, key_tag, verify_rrset
-from dnsguard.resolver.dnssec.validate import _signed_data
-from dnsguard.wire import rdata as R
-from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import Class, Type
+from trench.resolver.dnssec import ds_digest, key_tag, verify_rrset
+from trench.resolver.dnssec.validate import _signed_data
+from trench.wire import rdata as R
+from trench.wire.name import Name
+from trench.wire.rrtypes import Class, Type
 
 OWNER = Name.from_text("example.com")
 RRSET = [R.A("93.184.216.34"), R.A("93.184.216.35")]
@@ -114,8 +114,8 @@ def test_key_tag_known_vector_root_ksk_2017():
     SHA-256 DS. This guards the key-tag byte-order (App. B) against regression."""
     import base64
 
-    from dnsguard.resolver.dnssec import ds_digest, key_tag
-    from dnsguard.wire.name import Name
+    from trench.resolver.dnssec import ds_digest, key_tag
+    from trench.wire.name import Name
     KSK2017_B64 = (
         "AwEAAaz/tAm8yTn4Mfeh5eyI96WSVexTBAvkMgJzkKTOiW1vkIbzxeF3"
         "+/4RgWOq7HrxRixHlFlExOLAJr5emLvN7SWXgnLh4+B5xQlNVz8Og8kvArMtNROxVQuCaSnIDdD5LKyWbRd2n9WGe2R8Pzg"

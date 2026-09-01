@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from dnsguard.cache import Cache
-from dnsguard.learn import PopularityTracker, prewarm
-from dnsguard.wire import RR, Class, Message, Question, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import Rcode
+from trench.cache import Cache
+from trench.learn import PopularityTracker, prewarm
+from trench.wire import RR, Class, Message, Question, Type
+from trench.wire import rdata as R
+from trench.wire.name import Name
+from trench.wire.rrtypes import Rcode
 
 
 # --- EWMA math ---
@@ -140,10 +140,10 @@ async def test_prewarm_survives_hostile_name_and_failures():
 
 # --- pipeline gate: blocked names are never learned ---
 def test_pipeline_notes_only_served():
-    from dnsguard.config import Config
-    from dnsguard.engine.context import QueryContext
-    from dnsguard.engine.pipeline import Pipeline
-    from dnsguard.stats import Counters
+    from trench.config import Config
+    from trench.engine.context import QueryContext
+    from trench.engine.pipeline import Pipeline
+    from trench.stats import Counters
 
     p = Pipeline(filter_engine=None, cache=Cache(), forwarder=None,
                  counters=Counters(), config=Config())

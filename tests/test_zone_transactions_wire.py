@@ -7,14 +7,14 @@ import socket
 
 import pytest
 
-from dnsguard.auth_zone import Zone, ZoneStore
-from dnsguard.auth_zone.handler import AuthHandler
-from dnsguard.auth_zone.xfr import zone_from_records
-from dnsguard.transport.do53 import Do53Server
-from dnsguard.wire import RR, Class, Message, Question, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import Flags, Opcode, Rcode
+from trench.auth_zone import Zone, ZoneStore
+from trench.auth_zone.handler import AuthHandler
+from trench.auth_zone.xfr import zone_from_records
+from trench.transport.do53 import Do53Server
+from trench.wire import RR, Class, Message, Question, Type
+from trench.wire import rdata as R
+from trench.wire.name import Name
+from trench.wire.rrtypes import Flags, Opcode, Rcode
 
 ORIGIN = Name.from_text("example.com.")
 
@@ -161,7 +161,7 @@ async def test_notify_acked_over_udp():
     small UDP packet into a full zone transfer from our own infrastructure
     (RFC 1996 §3.10).
     """
-    from dnsguard.auth_zone.secondary import SecondaryZone
+    from trench.auth_zone.secondary import SecondaryZone
 
     z = _zone()
     store = ZoneStore(); store.add(z)

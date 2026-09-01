@@ -1,15 +1,15 @@
 """Authoritative zones: lookup semantics, zonefile parsing, DNSSEC sign↔validate."""
 from __future__ import annotations
 
-from dnsguard.auth_zone import Zone, ZoneStore
-from dnsguard.auth_zone.sign import sign_zone
-from dnsguard.auth_zone.update import apply_update
-from dnsguard.auth_zone.zonefile import parse_zonefile
-from dnsguard.resolver.dnssec import verify_rrset
-from dnsguard.wire import RR, Class, Message, Question, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import Flags, Opcode, Rcode
+from trench.auth_zone import Zone, ZoneStore
+from trench.auth_zone.sign import sign_zone
+from trench.auth_zone.update import apply_update
+from trench.auth_zone.zonefile import parse_zonefile
+from trench.resolver.dnssec import verify_rrset
+from trench.wire import RR, Class, Message, Question, Type
+from trench.wire import rdata as R
+from trench.wire.name import Name
+from trench.wire.rrtypes import Flags, Opcode, Rcode
 
 ORIGIN = Name.from_text("example.com")
 
@@ -108,7 +108,7 @@ def test_dnssec_sign_validate_loop():
         checks += 1
     assert checks >= 4  # SOA, NS, A, www A, NSEC, DNSKEY...
     # DS matches the DNSKEY
-    from dnsguard.resolver.dnssec import ds_digest
+    from trench.resolver.dnssec import ds_digest
     assert result.ds.digest == ds_digest(ORIGIN, dnskey, 2)
 
 
@@ -121,7 +121,7 @@ def test_dnssec_signed_response_includes_rrsig():
 
 # ------------------------------------------------- shapes that used to break
 def _zone_with(origin_text, records):
-    from dnsguard.wire import Class  # noqa: F401
+    from trench.wire import Class  # noqa: F401
     z = Zone(Name.from_text(origin_text))
     z.add(Name.from_text(origin_text), Type.SOA,
           R.SOA(Name.from_text("ns." + origin_text),

@@ -1,10 +1,10 @@
 services:
-  dnsguard:
+  trench:
     build:
       context: ..
       dockerfile: Dockerfile
-    image: dnsguard:latest
-    container_name: dnsguard
+    image: trench:latest
+    container_name: trench
     restart: unless-stopped
     network_mode: host # required to serve LAN DNS on :53
     # Everything dropped, then the single capability binding :53 needs.
@@ -33,7 +33,7 @@ services:
       # (www.example.com), so an upstream outage marked the container
       # unhealthy even though it was answering perfectly well; it also
       # accepted any UDP packet as a reply rather than matching the query id.
-      test: ["CMD", "python3", "/usr/local/bin/dnsguard-healthcheck"]
+      test: ["CMD", "python3", "/usr/local/bin/trench-healthcheck"]
       interval: 60s
       timeout: 8s
       retries: 3
@@ -44,8 +44,8 @@ services:
       # every control in that page fail at the last step. A container that could
       # be made to rewrite this file already controls resolution, the blocklists
       # and the query log, so the flag was buying very little.
-      - ./raspi.yaml:/data/dnsguard.yaml
-      - dnsguard-data:/data
+      - ./raspi.yaml:/data/trench.yaml
+      - trench-data:/data
     environment:
       - TZ=Europe/Berlin
     logging:
@@ -53,4 +53,4 @@ services:
       options: { max-size: "10m", max-file: "3" }
 
 volumes:
-  dnsguard-data:
+  trench-data:

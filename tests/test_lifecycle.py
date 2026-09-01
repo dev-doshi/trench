@@ -5,8 +5,8 @@ import asyncio
 
 import pytest
 
-from dnsguard.config import Config
-from dnsguard.errors import DNSGuardError
+from trench.config import Config
+from trench.errors import TrenchError
 
 
 class FailingApp:
@@ -28,7 +28,7 @@ class FailingApp:
 
 async def drive(app, stop_after: float = 0.0) -> None:
     """The body of `_amain` after the App is built, in miniature."""
-    from dnsguard.__main__ import _await_startup_or_stop
+    from trench.__main__ import _await_startup_or_stop
 
     stop = asyncio.Event()
     if stop_after:
@@ -40,8 +40,8 @@ async def drive(app, stop_after: float = 0.0) -> None:
 async def test_a_startup_failure_propagates_and_still_stops_the_app():
     """The refusal to run as root has to actually refuse: bound listeners keep
     answering otherwise, and systemd sees a healthy process."""
-    app = FailingApp(DNSGuardError("refusing to run as root"))
-    with pytest.raises(DNSGuardError, match="refusing to run as root"):
+    app = FailingApp(TrenchError("refusing to run as root"))
+    with pytest.raises(TrenchError, match="refusing to run as root"):
         await drive(app)
     assert app.stopped
 

@@ -3,17 +3,17 @@ from __future__ import annotations
 
 import asyncio
 
-from dnsguard.cache import Cache
-from dnsguard.config import Config
-from dnsguard.engine import Pipeline
-from dnsguard.engine.cookies import COOKIE, CookieJar
-from dnsguard.filter import FilterEngine
-from dnsguard.stats import Counters
-from dnsguard.wire import RR, Class, Message, Question, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.edns import Edns
-from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import Rcode
+from trench.cache import Cache
+from trench.config import Config
+from trench.engine import Pipeline
+from trench.engine.cookies import COOKIE, CookieJar
+from trench.filter import FilterEngine
+from trench.stats import Counters
+from trench.wire import RR, Class, Message, Question, Type
+from trench.wire import rdata as R
+from trench.wire.edns import Edns
+from trench.wire.name import Name
+from trench.wire.rrtypes import Rcode
 
 
 def test_cookie_jar_roundtrip():
@@ -78,6 +78,6 @@ def test_ecs_strip_removes_subnet():
     pipe = Pipeline(filter_engine=FilterEngine.compile([]), cache=Cache(),
                     forwarder=fwd, counters=Counters(), config=cfg)
     q = mkquery(do=True)
-    q.edns.set_ecs(__import__("dnsguard.wire.edns", fromlist=["ECS"]).ECS.from_client("1.2.3.4"))
+    q.edns.set_ecs(__import__("trench.wire.edns", fromlist=["ECS"]).ECS.from_client("1.2.3.4"))
     asyncio.run(pipe.resolve(q, "1.2.3.4"))
     assert fwd.last_ecs is None       # ECS stripped before forwarding

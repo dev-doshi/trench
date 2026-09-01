@@ -19,18 +19,18 @@ import random
 import pytest
 from test_wire_hostile import _mutate, _seed_corpus
 
-from dnsguard.cache import Cache
-from dnsguard.config import Config
-from dnsguard.engine import Pipeline
-from dnsguard.engine.fastpath import FastPath, query_key, ttl_offsets
-from dnsguard.filter import FilterEngine, compile_rules
-from dnsguard.stats import Counters
-from dnsguard.transport.base import process_query
-from dnsguard.wire import RR, Class, Message, Question, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.edns import Edns
-from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import Rcode
+from trench.cache import Cache
+from trench.config import Config
+from trench.engine import Pipeline
+from trench.engine.fastpath import FastPath, query_key, ttl_offsets
+from trench.filter import FilterEngine, compile_rules
+from trench.stats import Counters
+from trench.transport.base import process_query
+from trench.wire import RR, Class, Message, Question, Type
+from trench.wire import rdata as R
+from trench.wire.edns import Edns
+from trench.wire.name import Name
+from trench.wire.rrtypes import Rcode
 
 
 class Upstream:
@@ -198,8 +198,8 @@ def test_a_different_question_never_hits():
 def test_two_clients_under_different_policies_are_not_confused():
     """The sharpest way to get this wrong: cache on the query alone, and a
     permitted client's answer gets replayed to a filtered one."""
-    from dnsguard.clients.model import Client, Policy
-    from dnsguard.clients.registry import ClientRegistry
+    from trench.clients.model import Client, Policy
+    from trench.clients.registry import ClientRegistry
 
     pipe = _pipe(rules="ads.example.com\n")
     pipe.clients = ClientRegistry(
@@ -260,7 +260,7 @@ def test_features_that_make_a_response_client_specific_disable_replay():
 
 # --------------------------------------- the features the live config actually has
 def _cookie_query(name: str, cookie: bytes, qid: int = 0x2222) -> bytes:
-    from dnsguard.engine.cookies import COOKIE
+    from trench.engine.cookies import COOKIE
     m = Message(id=qid)
     m.set_flag(0x0100, True)
     m.questions.append(Question(Name.from_text(name), Type.A, Class.IN))
@@ -279,7 +279,7 @@ def test_dns_cookies_are_recomputed_per_client_not_replayed():
     proof is that two clients presenting the same client cookie get different
     server cookies — and each gets the one the pipeline would have given them.
     """
-    from dnsguard.engine.cookies import COOKIE, CookieJar
+    from trench.engine.cookies import COOKIE, CookieJar
 
     pipe = _pipe()
     pipe.cookies = CookieJar()
@@ -314,7 +314,7 @@ def test_cookies_enabled_does_not_exclude_clients_that_send_none():
     """Most clients never send a DNS cookie. Requiring one anyway meant enabling
     cookies switched replay off for nearly all real traffic — the same class of
     mistake as gating on the feature itself, just quieter."""
-    from dnsguard.engine.cookies import CookieJar
+    from trench.engine.cookies import CookieJar
 
     pipe = _pipe()
     pipe.cookies = CookieJar()

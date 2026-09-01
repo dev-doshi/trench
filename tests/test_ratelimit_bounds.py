@@ -7,7 +7,7 @@ is there to prevent.
 """
 from __future__ import annotations
 
-from dnsguard.engine.ratelimit import MAX_KEYS, RateLimiter
+from trench.engine.ratelimit import MAX_KEYS, RateLimiter
 
 
 def test_table_is_capped_under_a_spoofed_source_flood():

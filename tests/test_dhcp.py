@@ -5,10 +5,10 @@ import asyncio
 
 import pytest
 
-from dnsguard.dhcp.scope import Scope
-from dnsguard.dhcp.server import DhcpServer, build_reply
-from dnsguard.dhcp.v4 import OPT_MSG_TYPE, OPT_REQUESTED_IP, DhcpPacket, MessageType, opt_ip
-from dnsguard.errors import DNSGuardError
+from trench.dhcp.scope import Scope
+from trench.dhcp.server import DhcpServer, build_reply
+from trench.dhcp.v4 import OPT_MSG_TYPE, OPT_REQUESTED_IP, DhcpPacket, MessageType, opt_ip
+from trench.errors import TrenchError
 
 MAC = bytes.fromhex("aabbccddeeff")
 
@@ -77,10 +77,10 @@ def test_guard_refuses_without_optin():
     asyncio.run(srv.start(enabled=False, allow_dhcp=True, dev=False))
     assert srv.transport is None
     # dev mode -> refuse
-    with pytest.raises(DNSGuardError):
+    with pytest.raises(TrenchError):
         asyncio.run(srv.start(enabled=True, allow_dhcp=True, dev=True))
     # enabled but no --allow-dhcp -> refuse
-    with pytest.raises(DNSGuardError):
+    with pytest.raises(TrenchError):
         asyncio.run(srv.start(enabled=True, allow_dhcp=False, dev=False))
 
 

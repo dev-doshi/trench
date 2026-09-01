@@ -4,7 +4,7 @@
     {
       "name": "console",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--prefix", "dnsguard/web/frontend"],
+      "runtimeArgs": ["run", "dev", "--prefix", "trench/web/frontend"],
       "port": 5199
     }
   ]

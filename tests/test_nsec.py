@@ -3,21 +3,21 @@ from __future__ import annotations
 
 import pytest
 
-from dnsguard.auth_zone import Zone
-from dnsguard.auth_zone.sign import sign_zone
-from dnsguard.auth_zone.sign.signer import encode_type_bitmap
-from dnsguard.resolver.dnssec import ValidationResult, Validator
-from dnsguard.resolver.dnssec.nsec import (
+from trench.auth_zone import Zone
+from trench.auth_zone.sign import sign_zone
+from trench.auth_zone.sign.signer import encode_type_bitmap
+from trench.resolver.dnssec import ValidationResult, Validator
+from trench.resolver.dnssec.nsec import (
     bitmap_has,
     name_lt,
     nsec_covers,
     nsec_nodata,
     nsec_nxdomain,
 )
-from dnsguard.wire import RR, Class, Message, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import Flags, Rcode
+from trench.wire import RR, Class, Message, Type
+from trench.wire import rdata as R
+from trench.wire.name import Name
+from trench.wire.rrtypes import Flags, Rcode
 
 ROOT = Name.from_text(".")
 

@@ -7,17 +7,17 @@ import dns.message
 import dns.rdatatype
 import pytest
 
-from dnsguard.errors import WireError
-from dnsguard.wire import RR, Class, Message, Question, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.name import Name
+from trench.errors import WireError
+from trench.wire import RR, Class, Message, Question, Type
+from trench.wire import rdata as R
+from trench.wire.name import Name
 
 
 def mkquery(name="example.com", rtype=Type.A, do=False):
     m = Message(id=0x1234)
     m.set_flag(0x0100, True)  # RD
     m.questions.append(Question(Name.from_text(name), rtype, Class.IN))
-    from dnsguard.wire.edns import Edns
+    from trench.wire.edns import Edns
     m.edns = Edns(udp_size=1232)
     m.edns.do = do
     return m

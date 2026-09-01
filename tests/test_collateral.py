@@ -11,7 +11,7 @@ import time
 
 import pytest
 
-from dnsguard.analyze import analyze_collateral
+from trench.analyze import analyze_collateral
 
 NOW = time.time()
 
@@ -166,9 +166,9 @@ def test_replays_real_pi_traffic():
 
 @pytest.mark.asyncio
 async def test_collateral_from_querylog(tmp_path):
-    from dnsguard.analyze import collateral_from_querylog
-    from dnsguard.store import Database
-    from dnsguard.store.querylog import QueryLog
+    from trench.analyze import collateral_from_querylog
+    from trench.store import Database
+    from trench.store.querylog import QueryLog
     db = Database(tmp_path / "q.db")
     await db.connect()
     ql = QueryLog(db)

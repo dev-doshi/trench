@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import pytest
 
-from dnsguard.api.auth import AuthManager
-from dnsguard.cli.main import _build_parser, _do_passwd, main
-from dnsguard.store import Database
+from trench.api.auth import AuthManager
+from trench.cli.main import _build_parser, _do_passwd, main
+from trench.store import Database
 
 
 async def run(*argv) -> int:
@@ -20,7 +20,7 @@ async def run(*argv) -> int:
 
 
 async def _db(tmp_path):
-    db = Database(tmp_path / "dnsguard.db")
+    db = Database(tmp_path / "trench.db")
     await db.connect()
     return db
 

@@ -14,9 +14,9 @@ import socket
 
 import pytest
 
-from dnsguard.transport.upstream import UdpPool, Upstream, parse_upstream
-from dnsguard.wire import Class, Message, Question, Type
-from dnsguard.wire.name import Name
+from trench.transport.upstream import UdpPool, Upstream, parse_upstream
+from trench.wire import Class, Message, Question, Type
+from trench.wire.name import Name
 
 
 class Echo:

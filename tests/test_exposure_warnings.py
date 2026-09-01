@@ -11,8 +11,8 @@ import logging
 
 import pytest
 
-from dnsguard.app import App
-from dnsguard.config import Config
+from trench.app import App
+from trench.config import Config
 
 
 def _warnings(caplog, mutate) -> str:

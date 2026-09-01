@@ -7,23 +7,23 @@ import base64
 
 import pytest
 
-from dnsguard.auth_zone import Zone
-from dnsguard.auth_zone.secondary import TransferError, axfr_in, send_notify
-from dnsguard.auth_zone.sign import sign_zone
-from dnsguard.auth_zone.store import ZoneStore
-from dnsguard.auth_zone.tsig import TSIGKey
-from dnsguard.auth_zone.update import UpdatePolicy, apply_update
-from dnsguard.auth_zone.xfr import (
+from trench.auth_zone import Zone
+from trench.auth_zone.secondary import TransferError, axfr_in, send_notify
+from trench.auth_zone.sign import sign_zone
+from trench.auth_zone.store import ZoneStore
+from trench.auth_zone.tsig import TSIGKey
+from trench.auth_zone.update import UpdatePolicy, apply_update
+from trench.auth_zone.xfr import (
     axfr_records,
     ixfr_messages,
     serial_gt,
     zone_from_records,
 )
-from dnsguard.auth_zone.xfr_service import TransferService, ZoneTransferPolicy, is_notify
-from dnsguard.wire import RR, Class, Message, Question, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import Flags, Opcode, Rcode
+from trench.auth_zone.xfr_service import TransferService, ZoneTransferPolicy, is_notify
+from trench.wire import RR, Class, Message, Question, Type
+from trench.wire import rdata as R
+from trench.wire.name import Name
+from trench.wire.rrtypes import Flags, Opcode, Rcode
 
 ORIGIN = Name.from_text("example.com.")
 SECRET = base64.b64encode(b"k" * 32).decode()

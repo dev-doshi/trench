@@ -3,19 +3,19 @@ from __future__ import annotations
 
 import asyncio
 
-from dnsguard.cache import Cache
-from dnsguard.clients.names import HostNames, reverse_name, sanitize_hostname
-from dnsguard.config import Config
-from dnsguard.dhcp.scope import Scope
-from dnsguard.dhcp.server import build_reply
-from dnsguard.dhcp.v4 import OPT_HOSTNAME, OPT_MSG_TYPE, OPT_REQUESTED_IP, DhcpPacket, MessageType
-from dnsguard.engine import Pipeline
-from dnsguard.filter import FilterEngine
-from dnsguard.stats import Counters
-from dnsguard.wire import RR, Class, Message, Question, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import Rcode
+from trench.cache import Cache
+from trench.clients.names import HostNames, reverse_name, sanitize_hostname
+from trench.config import Config
+from trench.dhcp.scope import Scope
+from trench.dhcp.server import build_reply
+from trench.dhcp.v4 import OPT_HOSTNAME, OPT_MSG_TYPE, OPT_REQUESTED_IP, DhcpPacket, MessageType
+from trench.engine import Pipeline
+from trench.filter import FilterEngine
+from trench.stats import Counters
+from trench.wire import RR, Class, Message, Question, Type
+from trench.wire import rdata as R
+from trench.wire.name import Name
+from trench.wire.rrtypes import Rcode
 
 
 def names(**kw) -> HostNames:
@@ -148,8 +148,8 @@ def test_dhcp_ack_registers_the_lease_and_an_offer_does_not():
 def test_registering_a_lease_drops_stale_replayed_answers(tmp_path):
     """`laptop.lan` asked before the lease existed was answered NXDOMAIN, and a
     recorded copy would keep being replayed for the whole negative TTL."""
-    from dnsguard.app import App
-    from dnsguard.engine.fastpath import FastPath
+    from trench.app import App
+    from trench.engine.fastpath import FastPath
 
     app = App(Config.load_dict({"data_dir": str(tmp_path)}))
     app.fast = FastPath(app.pipeline)
@@ -173,7 +173,7 @@ def test_registering_a_lease_drops_stale_replayed_answers(tmp_path):
 def test_reverse_name_and_its_inverse_agree():
     """The PTR path used to hand-roll the inverse next to this helper; they must
     not drift."""
-    from dnsguard.clients.names import address_from_reverse
+    from trench.clients.names import address_from_reverse
 
     for ip in ("192.168.1.5", "10.0.0.1", "2001:db8::1", "2001:db8:1:2::ffff"):
         assert address_from_reverse(reverse_name(ip)) == ip

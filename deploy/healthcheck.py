@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Container healthcheck: does DNSGuard still answer a query?
+"""Container healthcheck: does Trench still answer a query?
 
 Resolution is the only thing worth probing. A process that is up but has
 stopped answering is exactly the failure a healthcheck exists to catch, so
@@ -12,10 +12,10 @@ import os
 import socket
 import sys
 
-PORT = int(os.environ.get("DNSGUARD_HEALTH_PORT", "53"))
-HOST = os.environ.get("DNSGUARD_HEALTH_HOST", "127.0.0.1")
-NAME = os.environ.get("DNSGUARD_HEALTH_NAME", "health-check.dnsguard.invalid")
-TIMEOUT = float(os.environ.get("DNSGUARD_HEALTH_TIMEOUT", "4"))
+PORT = int(os.environ.get("TRENCH_HEALTH_PORT", "53"))
+HOST = os.environ.get("TRENCH_HEALTH_HOST", "127.0.0.1")
+NAME = os.environ.get("TRENCH_HEALTH_NAME", "health-check.trench.invalid")
+TIMEOUT = float(os.environ.get("TRENCH_HEALTH_TIMEOUT", "4"))
 
 # A name under .invalid can never resolve, which is the point: any rcode is a
 # pass. We are testing that the server is processing queries, not that the
@@ -46,7 +46,7 @@ def main() -> int:
                 continue                                 # not a response
             return 0
     except OSError as e:
-        print(f"dnsguard healthcheck failed: {e}", file=sys.stderr)
+        print(f"trench healthcheck failed: {e}", file=sys.stderr)
         return 1
     finally:
         sock.close()

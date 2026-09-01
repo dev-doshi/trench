@@ -7,7 +7,7 @@ a free choice of identity in four subsystems at once.
 """
 from __future__ import annotations
 
-from dnsguard.security.clientaddr import TrustedProxies, client_ip
+from trench.security.clientaddr import TrustedProxies, client_ip
 
 
 class _FakeTransport:

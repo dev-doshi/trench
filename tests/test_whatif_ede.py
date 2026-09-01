@@ -7,13 +7,13 @@ import time
 
 import pytest
 
-from dnsguard.filter import FilterEngine
-from dnsguard.filter.rule import Rule
-from dnsguard.ops.whatif import compile_delta, diff_decisions, whatif_from_querylog
-from dnsguard.wire import Class, Message, Question, Type
-from dnsguard.wire.edns import Edns
-from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import EDNSOption
+from trench.filter import FilterEngine
+from trench.filter.rule import Rule
+from trench.ops.whatif import compile_delta, diff_decisions, whatif_from_querylog
+from trench.wire import Class, Message, Question, Type
+from trench.wire.edns import Edns
+from trench.wire.name import Name
+from trench.wire.rrtypes import EDNSOption
 
 
 def _current():
@@ -63,7 +63,7 @@ def test_whatif_json_shape_and_pct():
 # --- what-if: against a real query log DB ---
 @pytest.mark.asyncio
 async def test_whatif_from_querylog(tmp_path):
-    from dnsguard.store import Database
+    from trench.store import Database
     db = Database(tmp_path / "t.db")
     await db.connect()
     try:
@@ -93,9 +93,9 @@ async def test_whatif_from_querylog(tmp_path):
 async def test_whatif_api(tmp_path):
     import aiohttp
 
-    from dnsguard.api import APIServer
-    from dnsguard.app import App
-    from dnsguard.config import Config
+    from trench.api import APIServer
+    from trench.app import App
+    from trench.config import Config
     cfg = Config.model_validate({"data_dir": str(tmp_path),
                                  "server": {"do53": {"enabled": False}},
                                  "filtering": {"deny": ["ads.example"]},
@@ -121,7 +121,7 @@ async def test_whatif_api(tmp_path):
             assert data["newly_blocked_count"] == 1
             assert data["newly_blocked"][0]["qname"] == "tv-telemetry.example"
             # live filter untouched: nothing was applied
-            from dnsguard.filter import Action
+            from trench.filter import Action
             assert app.filter.match("tv-telemetry.example").action != Action.BLOCK
     finally:
         await app.api.stop(); await app.db.close()
@@ -129,10 +129,10 @@ async def test_whatif_api(tmp_path):
 
 # --- RFC 8914 EDE on blocked responses ---
 def _pipeline(ede=True):
-    from dnsguard.cache import Cache
-    from dnsguard.config import Config
-    from dnsguard.engine.pipeline import Pipeline
-    from dnsguard.stats import Counters
+    from trench.cache import Cache
+    from trench.config import Config
+    from trench.engine.pipeline import Pipeline
+    from trench.stats import Counters
     cfg = Config.model_validate({"filtering": {"ede": ede}})
     return Pipeline(filter_engine=_current(), cache=Cache(), forwarder=None,
                     counters=Counters(), config=cfg)

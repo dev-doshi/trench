@@ -9,16 +9,16 @@ from __future__ import annotations
 
 import asyncio
 
-from dnsguard.cache import Cache
-from dnsguard.clients import Client, ClientRegistry, Policy
-from dnsguard.config import Config
-from dnsguard.engine import Pipeline
-from dnsguard.filter import FilterEngine
-from dnsguard.stats import Counters
-from dnsguard.wire import RR, Class, Message, Question, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import Rcode
+from trench.cache import Cache
+from trench.clients import Client, ClientRegistry, Policy
+from trench.config import Config
+from trench.engine import Pipeline
+from trench.filter import FilterEngine
+from trench.stats import Counters
+from trench.wire import RR, Class, Message, Question, Type
+from trench.wire import rdata as R
+from trench.wire.name import Name
+from trench.wire.rrtypes import Rcode
 
 
 # --- Bug 2: ClientID must reach the policy engine ---
@@ -37,7 +37,7 @@ def mkquery(name="www.youtube.com"):
 
 
 def test_clientid_threaded_to_policy():
-    from dnsguard.filter.services import Services
+    from trench.filter.services import Services
     reg = ClientRegistry([
         Client("phone-token", "clientid", "kid-phone",
                Policy(name="kid", services=frozenset({"youtube"}))),

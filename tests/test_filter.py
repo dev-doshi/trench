@@ -1,14 +1,14 @@
 """Filtering engine: parser dialects, matcher precedence, rewrite, CNAME-cloak, RPZ."""
 from __future__ import annotations
 
-from dnsguard.filter import Action, FilterEngine
-from dnsguard.filter.cnamecloak import inspect
-from dnsguard.filter.parser import detect_format, parse_line
-from dnsguard.filter.rpz import parse_rpz
-from dnsguard.wire import RR, Class, Message, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import Rcode
+from trench.filter import Action, FilterEngine
+from trench.filter.cnamecloak import inspect
+from trench.filter.parser import detect_format, parse_line
+from trench.filter.rpz import parse_rpz
+from trench.wire import RR, Class, Message, Type
+from trench.wire import rdata as R
+from trench.wire.name import Name
+from trench.wire.rrtypes import Rcode
 
 
 def eng(*lines: str) -> FilterEngine:
@@ -143,7 +143,7 @@ def test_badfilter_works_across_sources_when_compiled_as_a_stream():
     raw text first. If that prepass misses a source, a $badfilter silently stops
     disabling anything, which looks exactly like it working.
     """
-    from dnsguard.filter import badfilter_keys, iter_rules
+    from trench.filter import badfilter_keys, iter_rules
 
     first = "||ads.com^\n||trackers.example^"
     second = "! a later list retracts one of them\n||ads.com^$badfilter"
@@ -162,7 +162,7 @@ def test_compiling_from_an_iterator_matches_compiling_from_a_list():
     lines += ["|exact.example|", "/^re[0-9]+\\.example$/", "||m.example^$important"]
     text = "\n".join(lines)
 
-    from dnsguard.filter import compile_rules, iter_rules
+    from trench.filter import compile_rules, iter_rules
     listed = FilterEngine.compile(compile_rules(text, "t"))
     streamed = FilterEngine.compile(iter_rules(text, "t"))
 

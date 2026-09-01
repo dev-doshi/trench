@@ -10,11 +10,11 @@ import asyncio
 
 import pytest
 
-from dnsguard.transport.upstream import Upstream, UpstreamSpec
-from dnsguard.wire import RR, Class, Message, Question, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import Rcode
+from trench.transport.upstream import Upstream, UpstreamSpec
+from trench.wire import RR, Class, Message, Question, Type
+from trench.wire import rdata as R
+from trench.wire.name import Name
+from trench.wire.rrtypes import Rcode
 
 
 class FakeTcpDns:

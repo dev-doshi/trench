@@ -19,7 +19,7 @@ import struct
 
 import pytest
 
-from dnsguard.transport.stream import (
+from trench.transport.stream import (
     ConnectionTracker,
     StreamLimits,
     serve_stream,
@@ -322,7 +322,7 @@ async def test_a_failing_query_does_not_kill_the_connection():
 async def test_udp_drops_datagrams_once_saturated():
     """Rate limiting lives inside the pipeline, so without a bound here a flood
     pays for a task and a parse before anything can refuse it."""
-    from dnsguard.transport.do53 import _UDPProtocol
+    from trench.transport.do53 import _UDPProtocol
 
     release = asyncio.Event()
     handled = []
@@ -351,7 +351,7 @@ async def test_udp_drops_datagrams_once_saturated():
 
 @pytest.mark.asyncio
 async def test_udp_inflight_is_released_even_when_a_query_fails():
-    from dnsguard.transport.do53 import _UDPProtocol
+    from trench.transport.do53 import _UDPProtocol
 
     class Broken:
         async def resolve(self, *a, **k):
@@ -387,8 +387,8 @@ def test_the_quic_frontends_admit_and_release_through_the_tracker():
     frontend."""
     from aioquic.quic import events
 
-    from dnsguard.transport.quiclimits import LimitedQuicProtocol
-    from dnsguard.transport.stream import ConnectionTracker, StreamLimits
+    from trench.transport.quiclimits import LimitedQuicProtocol
+    from trench.transport.stream import ConnectionTracker, StreamLimits
 
     class Fake(LimitedQuicProtocol):
         def __init__(self, tracker, peer):

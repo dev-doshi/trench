@@ -8,7 +8,7 @@ import os
 
 import pytest
 
-from dnsguard.security.privdrop import PrivDropError, drop_privileges, resolve_ids
+from trench.security.privdrop import PrivDropError, drop_privileges, resolve_ids
 
 
 def test_no_target_is_noop():

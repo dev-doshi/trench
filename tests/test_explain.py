@@ -3,16 +3,16 @@ from __future__ import annotations
 
 import asyncio
 
-from dnsguard.clients.activity import QUIET_AFTER, Ledger
-from dnsguard.clients.names import HostNames
-from dnsguard.config import Config
-from dnsguard.filter import FilterEngine
-from dnsguard.filter.contract import parse_all
-from dnsguard.filter.parser import parse_line
-from dnsguard.ops.explain import explain
-from dnsguard.wire import RR, Class, Message, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.rrtypes import Rcode
+from trench.clients.activity import QUIET_AFTER, Ledger
+from trench.clients.names import HostNames
+from trench.config import Config
+from trench.filter import FilterEngine
+from trench.filter.contract import parse_all
+from trench.filter.parser import parse_line
+from trench.ops.explain import explain
+from trench.wire import RR, Class, Message, Type
+from trench.wire import rdata as R
+from trench.wire.rrtypes import Rcode
 
 
 class Fwd:
@@ -30,7 +30,7 @@ class Fwd:
 
 
 def make_app(tmp_path, rules=(), clients=(), forwarder=None):
-    from dnsguard.app import App
+    from trench.app import App
     cfg = Config.load_dict({"data_dir": str(tmp_path), "clients": list(clients)})
     app = App(cfg)
     engine = FilterEngine.compile([parse_line(r, "testlist") for r in rules])
@@ -121,7 +121,7 @@ def test_live_resolution_reports_a_normal_answer(tmp_path):
 
 
 def test_a_failing_contract_assertion_is_attached(tmp_path):
-    from dnsguard.filter.contract import check
+    from trench.filter.contract import check
     app = make_app(tmp_path, rules=["||bank.example^"])
     app.contract_failures = check(app.filter, parse_all(["bank.example must resolve"]))
     report = run(app, "bank.example")

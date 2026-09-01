@@ -3,16 +3,16 @@ from __future__ import annotations
 
 import asyncio
 
-from dnsguard.cache import Cache
-from dnsguard.clients.activity import QUIET_AFTER, Ledger
-from dnsguard.config import Config
-from dnsguard.engine import Pipeline
-from dnsguard.filter import FilterEngine
-from dnsguard.stats import Counters
-from dnsguard.wire import RR, Class, Message, Question, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import Rcode
+from trench.cache import Cache
+from trench.clients.activity import QUIET_AFTER, Ledger
+from trench.config import Config
+from trench.engine import Pipeline
+from trench.filter import FilterEngine
+from trench.stats import Counters
+from trench.wire import RR, Class, Message, Question, Type
+from trench.wire import rdata as R
+from trench.wire.name import Name
+from trench.wire.rrtypes import Rcode
 
 NOW = 1_700_000_000.0
 
@@ -113,7 +113,7 @@ def test_pipeline_feeds_the_ledger():
 def test_replayed_queries_still_reach_the_ledger():
     """Replay is where a busy device's repeat queries go. Skipping the ledger
     there made the busiest devices look silent — the inverse of the signal."""
-    from dnsguard.engine.fastpath import FastPath, WireAnswer
+    from trench.engine.fastpath import FastPath, WireAnswer
 
     pipe = Pipeline(filter_engine=FilterEngine.compile([]), cache=Cache(enabled=False),
                     forwarder=Fwd(), counters=Counters(), config=Config())

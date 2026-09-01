@@ -3,17 +3,17 @@ from __future__ import annotations
 
 import asyncio
 
-from dnsguard.cache import Cache
-from dnsguard.clients import Client, ClientRegistry, Policy
-from dnsguard.config import Config
-from dnsguard.engine import Pipeline
-from dnsguard.filter import FilterEngine
-from dnsguard.filter.parser import parse_line
-from dnsguard.stats import Counters
-from dnsguard.wire import RR, Class, Message, Question, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import Rcode
+from trench.cache import Cache
+from trench.clients import Client, ClientRegistry, Policy
+from trench.config import Config
+from trench.engine import Pipeline
+from trench.filter import FilterEngine
+from trench.filter.parser import parse_line
+from trench.stats import Counters
+from trench.wire import RR, Class, Message, Question, Type
+from trench.wire import rdata as R
+from trench.wire.name import Name
+from trench.wire.rrtypes import Rcode
 
 
 class Fwd:
@@ -73,7 +73,7 @@ def test_client_pause_is_scoped_to_that_client():
 def test_replay_stands_down_while_paused():
     """A recorded reply outlives the pause it was recorded in, so nothing may
     be recorded or replayed while one is running."""
-    from dnsguard.engine.fastpath import FastPath
+    from trench.engine.fastpath import FastPath
     pipe = build()
     pipe.fast = FastPath(pipe)
     assert pipe.fast.usable

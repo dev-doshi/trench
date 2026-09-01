@@ -5,17 +5,17 @@ import asyncio
 
 import pytest
 
-from dnsguard.cache import Cache
-from dnsguard.clients import Client, ClientRegistry, Policy
-from dnsguard.config import Config
-from dnsguard.engine import Pipeline
-from dnsguard.errors import ConfigError
-from dnsguard.filter import FilterEngine
-from dnsguard.stats import Counters
-from dnsguard.wire import RR, Class, Message, Question, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import Rcode
+from trench.cache import Cache
+from trench.clients import Client, ClientRegistry, Policy
+from trench.config import Config
+from trench.engine import Pipeline
+from trench.errors import ConfigError
+from trench.filter import FilterEngine
+from trench.stats import Counters
+from trench.wire import RR, Class, Message, Question, Type
+from trench.wire import rdata as R
+from trench.wire.name import Name
+from trench.wire.rrtypes import Rcode
 
 
 class Fixed:

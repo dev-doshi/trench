@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from dnsguard.ops.migrate_import import import_adguard, import_pihole
+from trench.ops.migrate_import import import_adguard, import_pihole
 
 
 def test_import_pihole(tmp_path):

@@ -19,14 +19,14 @@ import pytest
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec, utils
 
-from dnsguard.auth_zone import Zone
-from dnsguard.auth_zone.sign import sign_zone
-from dnsguard.resolver.dnssec import ValidationResult, Validator
-from dnsguard.resolver.dnssec.validate import _signed_data
-from dnsguard.wire import RR, Class, Message, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import Flags, Rcode
+from trench.auth_zone import Zone
+from trench.auth_zone.sign import sign_zone
+from trench.resolver.dnssec import ValidationResult, Validator
+from trench.resolver.dnssec.validate import _signed_data
+from trench.wire import RR, Class, Message, Type
+from trench.wire import rdata as R
+from trench.wire.name import Name
+from trench.wire.rrtypes import Flags, Rcode
 
 ROOT = Name.from_text(".")
 TEST = Name.from_text("test.")
@@ -389,7 +389,7 @@ async def test_a_pile_of_junk_signatures_costs_bounded_cpu():
     public-key operations on demand. Here the signatures are individually
     plausible — right signer, right key tag — and all wrong.
     """
-    import dnsguard.resolver.dnssec.chain as chain
+    import trench.resolver.dnssec.chain as chain
 
     w = World()
     rdatas = w.zones["example.test."].records[GOOD][Type.A]
@@ -417,7 +417,7 @@ async def test_a_pile_of_junk_signatures_costs_bounded_cpu():
 async def test_excessive_nsec3_iterations_are_refused_not_computed():
     """RFC 9276 §3.2. The iteration count is the zone's choice and the hashing
     is ours to pay for, so a hostile count is a reason to stop."""
-    from dnsguard.resolver.dnssec.nsec import Nsec3Set
+    from trench.resolver.dnssec.nsec import Nsec3Set
 
     rd = R.NSEC3(hash_algorithm=1, flags=0, iterations=5000, salt=b"",
                  next_hashed=b"\x00" * 20, type_bitmap=b"")
@@ -427,7 +427,7 @@ async def test_excessive_nsec3_iterations_are_refused_not_computed():
 
 @pytest.mark.asyncio
 async def test_nsec3_records_with_mixed_parameters_prove_nothing():
-    from dnsguard.resolver.dnssec.nsec import Nsec3Set
+    from trench.resolver.dnssec.nsec import Nsec3Set
 
     a = R.NSEC3(hash_algorithm=1, flags=0, iterations=0, salt=b"\x01",
                 next_hashed=b"\x00" * 20, type_bitmap=b"")
@@ -445,7 +445,7 @@ async def test_a_key_without_the_zone_flag_cannot_sign_zone_data():
     genuinely inside the KSK-signed DNSKEY RRset — everything about it checks
     out except that its ZONE bit is clear, which means it is not a key for
     signing zone data and its signatures must not count."""
-    from dnsguard.resolver.dnssec.keys import key_tag
+    from trench.resolver.dnssec.keys import key_tag
 
     w = World(nonzone_key=True)
     forged = [R.A("6.6.6.6")]
@@ -462,8 +462,8 @@ def test_an_apex_nsec_never_proves_anything_about_a_ds():
     the same forgery is also stopped by the signer check, which is why it has
     to be tested here to be tested at all.
     """
-    from dnsguard.auth_zone.sign.signer import encode_type_bitmap
-    from dnsguard.resolver.dnssec.nsec import nsec_ds_denial
+    from trench.auth_zone.sign.signer import encode_type_bitmap
+    from trench.resolver.dnssec.nsec import nsec_ds_denial
 
     child = Name.from_text("example.test.")
     parent_side = R.NSEC(next_name=Name.from_text("evil.test."),
@@ -489,7 +489,7 @@ def test_nsec3_hashing_matches_the_rfc_5155_vectors():
     looks like a hash, our own signer produced the same one, and not a single
     real NSEC3 zone could be validated.
     """
-    from dnsguard.resolver.dnssec.nsec import nsec3_b32, nsec3_hash
+    from trench.resolver.dnssec.nsec import nsec3_b32, nsec3_hash
 
     salt = bytes.fromhex("aabbccdd")
     expected = {
@@ -531,7 +531,7 @@ def test_a_ds_query_is_never_followed_into_the_child():
     example.com. Following it hands the question to the only party that gains
     from answering no, so the referral is refused for DS and DS alone.
     """
-    from dnsguard.resolver.recursive import Recursive
+    from trench.resolver.recursive import Recursive
 
     com = Name.from_text("com.")
     child = Name.from_text("example.com.")
@@ -592,7 +592,7 @@ def _nsec3_chain(zone_text: str, present: list[str], *, opt_out: bool = False,
     names in it are *matched*. That is what a real zone publishes, so a proof
     built from this chain is one the zone genuinely signed.
     """
-    from dnsguard.resolver.dnssec.nsec import Nsec3Set, nsec3_b32, nsec3_hash
+    from trench.resolver.dnssec.nsec import Nsec3Set, nsec3_b32, nsec3_hash
 
     zone = Name.from_text(zone_text)
     raw = sorted(nsec3_hash(Name.from_text(n), b"", 0) for n in present)
@@ -610,7 +610,7 @@ def test_opt_out_nsec3_cannot_prove_a_name_is_absent():
     """RFC 5155 §6. Opt-out says only that no *signed* name is in the gap, so
     an unsigned delegation may sit there. Without this rule an opt-out TLD's
     own genuine chain proves NXDOMAIN for domains that plainly exist."""
-    from dnsguard.resolver.dnssec.nsec import nsec3_nxdomain
+    from trench.resolver.dnssec.nsec import nsec3_nxdomain
 
     victim = Name.from_text("victim.example.test.")
     signed = _nsec3_chain("example.test.", ["example.test."], opt_out=False)
@@ -625,8 +625,8 @@ def test_parent_side_delegation_nsec_cannot_deny_the_childs_own_types():
     """An NSEC owned by the child but published by the *parent* carries NS and
     no SOA. It describes the cut, not the child's contents — and it is public,
     so accepting it denies any type at the apex of any delegated zone."""
-    from dnsguard.auth_zone.sign.signer import encode_type_bitmap
-    from dnsguard.resolver.dnssec.nsec import nsec_nodata
+    from trench.auth_zone.sign.signer import encode_type_bitmap
+    from trench.resolver.dnssec.nsec import nsec_nodata
 
     child = Name.from_text("child.example.test.")
     delegation = R.NSEC(next_name=Name.from_text("z.example.test."),

@@ -1,11 +1,11 @@
 """Saving the cache across a restart, and restoring it."""
 from __future__ import annotations
 
-from dnsguard.cache import Cache
-from dnsguard.wire import RR, Class, Message, Question, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import Rcode
+from trench.cache import Cache
+from trench.wire import RR, Class, Message, Question, Type
+from trench.wire import rdata as R
+from trench.wire.name import Name
+from trench.wire.rrtypes import Rcode
 
 
 def _answer(name="example.com", ip="1.2.3.4", ttl=300):

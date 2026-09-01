@@ -14,7 +14,7 @@ import string
 
 import pytest
 
-from dnsguard.filter.shared import SharedBlockTable
+from trench.filter.shared import SharedBlockTable
 
 
 def rand_domains(n: int, seed: int = 1) -> list[str]:
@@ -138,9 +138,9 @@ def test_child_removals_do_not_leak_into_the_parent():
 async def test_app_reuses_the_prefork_engine(tmp_path):
     """A worker handed a pre-built engine must not re-fetch the lists — that
     duplicated download-and-parse is most of a small board's startup time."""
-    from dnsguard.app import App
-    from dnsguard.config import Config
-    from dnsguard.filter import FilterEngine, compile_rules
+    from trench.app import App
+    from trench.config import Config
+    from trench.filter import FilterEngine, compile_rules
 
     listfile = tmp_path / "list.txt"
     listfile.write_text("||ads.example^\n")
@@ -170,7 +170,7 @@ def test_table_survives_the_process_that_built_it(tmp_path):
     import sys
     import textwrap
     script = textwrap.dedent(f"""
-        from dnsguard.filter.shared import SharedBlockTable
+        from trench.filter.shared import SharedBlockTable
         t = SharedBlockTable.open({str(path)!r})
         print(len(t), t.get({doms[0]!r}), t.get("definitely-absent.example"))
     """)
@@ -207,7 +207,7 @@ def test_no_partial_table_is_ever_visible(tmp_path):
 
 
 def test_corrupt_table_is_rejected_not_misread(tmp_path):
-    from dnsguard.filter.shared import TableFormatError
+    from trench.filter.shared import TableFormatError
     path = tmp_path / "gravity.table"
     SharedBlockTable.build([(d, "src") for d in rand_domains(1000)], path)
 
@@ -237,7 +237,7 @@ def test_source_counts_survive_a_round_trip(tmp_path):
 
 # --- App integration: instant start, refresh handover ---
 def _cfg(tmp_path, listfile, **over):
-    from dnsguard.config import Config
+    from trench.config import Config
     base = {"data_dir": str(tmp_path), "server": {"do53": {"enabled": False}},
             "filtering": {"sources": [str(listfile)]}}
     base.update(over)
@@ -248,7 +248,7 @@ def _cfg(tmp_path, listfile, **over):
 async def test_startup_serves_from_the_cached_table_without_reparsing(tmp_path):
     """Restarting a resolver must not mean a minute of unanswered queries while
     600k domains are re-read."""
-    from dnsguard.app import App
+    from trench.app import App
     listfile = tmp_path / "list.txt"
     listfile.write_text("||ads.example^\n")
 
@@ -270,7 +270,7 @@ async def test_startup_serves_from_the_cached_table_without_reparsing(tmp_path):
 async def test_worker_adopts_a_rebuild_from_another_worker(tmp_path):
     """One worker compiles, the rest map the result — one download and one
     compiled copy per machine instead of N of each."""
-    from dnsguard.app import App
+    from trench.app import App
     listfile = tmp_path / "list.txt"
     listfile.write_text("||first.example^\n")
 
@@ -294,7 +294,7 @@ async def test_worker_adopts_a_rebuild_from_another_worker(tmp_path):
 async def test_follower_never_compiles_its_own_copy(tmp_path):
     """A follower calling refresh must not fetch and compile — that is the
     duplicated work this design exists to remove."""
-    from dnsguard.app import App
+    from trench.app import App
     listfile = tmp_path / "list.txt"
     listfile.write_text("||ads.example^\n")
     follower = App(_cfg(tmp_path, listfile), primary=False, worker_idx=1, nworkers=2)
@@ -313,7 +313,7 @@ async def test_follower_never_compiles_its_own_copy(tmp_path):
 async def test_operator_rules_still_apply_after_adopting_a_table(tmp_path):
     """Adopting a table replaces the imported domains only; a locally allowed
     domain must not come back blocked."""
-    from dnsguard.app import App
+    from trench.app import App
     listfile = tmp_path / "list.txt"
     listfile.write_text("||ads.example^\n||keepme.example^\n")
     cfg = _cfg(tmp_path, listfile,

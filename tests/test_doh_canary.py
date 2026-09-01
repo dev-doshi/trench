@@ -11,15 +11,15 @@ from __future__ import annotations
 
 import asyncio
 
-from dnsguard.cache import Cache
-from dnsguard.config import Config
-from dnsguard.engine import Pipeline
-from dnsguard.filter import FilterEngine
-from dnsguard.stats import Counters
-from dnsguard.wire import RR, Class, Message, Question, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import Rcode
+from trench.cache import Cache
+from trench.config import Config
+from trench.engine import Pipeline
+from trench.filter import FilterEngine
+from trench.stats import Counters
+from trench.wire import RR, Class, Message, Question, Type
+from trench.wire import rdata as R
+from trench.wire.name import Name
+from trench.wire.rrtypes import Rcode
 
 
 class FakeForwarder:
@@ -81,8 +81,8 @@ def test_canary_is_refused_before_client_specific_policy():
     """The whole point: a client whose policy allows everything (no filtering,
     no parental controls) still gets the canary refused, because this is not a
     blocklist decision — it is keeping every *other* policy enforceable."""
-    from dnsguard.clients.model import Client, Policy
-    from dnsguard.clients.registry import ClientRegistry
+    from trench.clients.model import Client, Policy
+    from trench.clients.registry import ClientRegistry
 
     pipe = _pipe()
     pipe.clients = ClientRegistry(

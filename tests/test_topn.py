@@ -12,8 +12,8 @@ pruned, and later became popular starts counting again from zero.
 """
 from __future__ import annotations
 
-from dnsguard.stats import Counters
-from dnsguard.stats.topn import TopCounter
+from trench.stats import Counters
+from trench.stats.topn import TopCounter
 
 
 def test_counts_are_exact_while_under_the_cap():

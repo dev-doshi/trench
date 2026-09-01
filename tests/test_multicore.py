@@ -7,16 +7,16 @@ import socket as _socket
 import pytest
 from support import blocked_engine
 
-from dnsguard.cache import Cache
-from dnsguard.config import Config
-from dnsguard.engine import Pipeline
-from dnsguard.stats import Counters
-from dnsguard.stats.shared import SharedScalars
-from dnsguard.transport.do53 import Do53Server
-from dnsguard.wire import RR, Class, Message, Question, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import Rcode
+from trench.cache import Cache
+from trench.config import Config
+from trench.engine import Pipeline
+from trench.stats import Counters
+from trench.stats.shared import SharedScalars
+from trench.transport.do53 import Do53Server
+from trench.wire import RR, Class, Message, Question, Type
+from trench.wire import rdata as R
+from trench.wire.name import Name
+from trench.wire.rrtypes import Rcode
 
 
 def test_shared_scalars_sum_across_workers(tmp_path):
@@ -70,7 +70,7 @@ async def test_do53_on_inherited_socket():
     usock.setblocking(False)
     port = usock.getsockname()[1]
     pipe = Pipeline(filter_engine=blocked_engine("ads.test"), cache=Cache(),
-                    forwarder=_FakeFwd(), counters=__import__("dnsguard.stats", fromlist=["Counters"]).Counters(),
+                    forwarder=_FakeFwd(), counters=__import__("trench.stats", fromlist=["Counters"]).Counters(),
                     config=Config())
     srv = Do53Server(pipe, "127.0.0.1", port, udp=True, tcp=False, sock_udp=usock)
     await srv.start()

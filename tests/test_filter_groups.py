@@ -3,18 +3,18 @@ from __future__ import annotations
 
 import asyncio
 
-from dnsguard.cache import Cache
-from dnsguard.clients import Client, ClientRegistry, Policy
-from dnsguard.config import Config
-from dnsguard.engine import Pipeline
-from dnsguard.filter import Action, FilterEngine
-from dnsguard.filter.groups import LayeredFilter
-from dnsguard.filter.parser import parse_line
-from dnsguard.stats import Counters
-from dnsguard.wire import RR, Class, Message, Question, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import Rcode
+from trench.cache import Cache
+from trench.clients import Client, ClientRegistry, Policy
+from trench.config import Config
+from trench.engine import Pipeline
+from trench.filter import Action, FilterEngine
+from trench.filter.groups import LayeredFilter
+from trench.filter.parser import parse_line
+from trench.stats import Counters
+from trench.wire import RR, Class, Message, Question, Type
+from trench.wire import rdata as R
+from trench.wire.name import Name
+from trench.wire.rrtypes import Rcode
 
 
 def eng(*lines: str) -> FilterEngine:
@@ -114,7 +114,7 @@ def test_an_uncompiled_group_falls_back_to_the_household_rules():
 def test_config_ties_clients_to_declared_groups_only():
     import pytest
 
-    from dnsguard.errors import ConfigError
+    from trench.errors import ConfigError
     cfg = Config.load_dict({
         "filtering": {"groups": {"kids": {"deny": ["social.example"]}}},
         "clients": [{"ident": "10.0.0.5", "group": "kids"}],
@@ -125,8 +125,8 @@ def test_config_ties_clients_to_declared_groups_only():
 
 
 def test_gravity_compiles_group_sources(tmp_path):
-    from dnsguard.filter.groups import GroupSpec
-    from dnsguard.gravity import Gravity
+    from trench.filter.groups import GroupSpec
+    from trench.gravity import Gravity
 
     (tmp_path / "house.txt").write_text("||ads.example^\n")
     (tmp_path / "kids.txt").write_text("||social.example^\n")
@@ -141,8 +141,8 @@ def test_gravity_compiles_group_sources(tmp_path):
 
 
 def test_a_group_whose_sources_fail_is_left_empty_not_half_loaded(tmp_path):
-    from dnsguard.filter.groups import GroupSpec
-    from dnsguard.gravity import Gravity
+    from trench.filter.groups import GroupSpec
+    from trench.gravity import Gravity
 
     (tmp_path / "house.txt").write_text("||ads.example^\n")
     grav = Gravity([str(tmp_path / "house.txt")],
@@ -156,7 +156,7 @@ def test_replay_stands_down_when_a_group_carries_client_rules():
     """A `$client` rule is matched on the address, and a cidr client maps a whole
     range onto one Policy — so one policy tag covers every address in it, and a
     verdict for one would be replayed to the rest."""
-    from dnsguard.engine.fastpath import FastPath
+    from trench.engine.fastpath import FastPath
 
     pipe = build()
     pipe.fast = FastPath(pipe)

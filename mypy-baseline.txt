@@ -1,123 +1,115 @@
 # Known mypy findings, recorded by scripts/mypy_gate.py.
 # New findings fail CI; this file may only ever shrink.
-# 120 finding(s).
-dnsguard/analyze/lists.py	union-attr	Item "None" of "Any | None" has no attribute "nbytes"
-dnsguard/analyze/lists.py	union-attr	Item "None" of "Any | None" has no attribute "nbytes"
-dnsguard/api/auth.py	index	Value of type "Row | None" is not indexable
-dnsguard/api/auth.py	index	Value of type "Row | None" is not indexable
-dnsguard/api/auth.py	index	Value of type "Row | None" is not indexable
-dnsguard/api/server.py	arg-type	Argument 1 to "append" of "list" has incompatible type "str"; expected "int"
-dnsguard/api/server.py	arg-type	Argument 1 to "append" of "list" has incompatible type "str"; expected "int"
-dnsguard/api/server.py	arg-type	Argument 1 to "append" of "list" has incompatible type "str"; expected "int"
-dnsguard/api/server.py	return-value	Incompatible return value type (got "FileResponse", expected "Response")
-dnsguard/app.py	assignment	Incompatible types in assignment (expression has type "Callable[[], int]", variable has type "Callable[[], None] | None")
-dnsguard/app.py	assignment	Incompatible types in assignment (expression has type "DoH3Server", variable has type "Do53Server")
-dnsguard/app.py	assignment	Incompatible types in assignment (expression has type "DoHServer", variable has type "Do53Server")
-dnsguard/app.py	assignment	Incompatible types in assignment (expression has type "DoQServer", variable has type "Do53Server")
-dnsguard/app.py	assignment	Incompatible types in assignment (expression has type "DoTServer", variable has type "Do53Server")
-dnsguard/app.py	assignment	Incompatible types in assignment (expression has type "Forwarder", variable has type "RecursiveForwarder")
-dnsguard/auth_zone/handler.py	union-attr	Item "None" of "Question | None" has no attribute "name"
-dnsguard/auth_zone/handler.py	union-attr	Item "None" of "Question | None" has no attribute "name"
-dnsguard/auth_zone/handler.py	union-attr	Item "None" of "Question | None" has no attribute "name"
-dnsguard/auth_zone/secondary.py	union-attr	Item "None" of "SOA | None" has no attribute "serial"
-dnsguard/auth_zone/secondary.py	var-annotated	Need type annotation for "records" (hint: "records: list[<type>] = ...")
-dnsguard/auth_zone/sign/signer.py	assignment	Incompatible types in assignment (expression has type "Any | EllipticCurvePrivateKey", variable has type "None")
-dnsguard/auth_zone/tsig.py	return-value	Incompatible return value type (got "tuple[int | None, TSIG, Name | None]", expected "tuple[int, TSIG, Name]")
-dnsguard/auth_zone/update.py	union-attr	Item "None" of "SOA | None" has no attribute "serial"
-dnsguard/auth_zone/update.py	union-attr	Item "None" of "SOA | None" has no attribute "serial"
-dnsguard/auth_zone/update.py	union-attr	Item "None" of "SOA | None" has no attribute "serial"
-dnsguard/auth_zone/xfr.py	arg-type	Argument 5 to "RR" has incompatible type "SOA | None"; expected "Rdata"
-dnsguard/auth_zone/xfr.py	assignment	Incompatible types in assignment (expression has type "Rdata", target has type "RRSIG")
-dnsguard/auth_zone/xfr.py	attr-defined	"Rdata" has no attribute "serial"
-dnsguard/auth_zone/xfr.py	attr-defined	"Rdata" has no attribute "serial"
-dnsguard/auth_zone/xfr.py	attr-defined	"Rdata" has no attribute "serial"
-dnsguard/auth_zone/xfr.py	attr-defined	"Rdata" has no attribute "serial"
-dnsguard/auth_zone/xfr.py	attr-defined	"Rdata" has no attribute "serial"
-dnsguard/auth_zone/xfr.py	attr-defined	"Rdata" has no attribute "serial"
-dnsguard/auth_zone/xfr.py	attr-defined	"Rdata" has no attribute "type_covered"
-dnsguard/auth_zone/xfr.py	misc	Generator has incompatible item type "int"; expected "bool"
-dnsguard/auth_zone/xfr.py	union-attr	Item "None" of "SOA | None" has no attribute "expire"
-dnsguard/auth_zone/xfr.py	union-attr	Item "None" of "SOA | None" has no attribute "minimum"
-dnsguard/auth_zone/xfr.py	union-attr	Item "None" of "SOA | None" has no attribute "mname"
-dnsguard/auth_zone/xfr.py	union-attr	Item "None" of "SOA | None" has no attribute "refresh"
-dnsguard/auth_zone/xfr.py	union-attr	Item "None" of "SOA | None" has no attribute "retry"
-dnsguard/auth_zone/xfr.py	union-attr	Item "None" of "SOA | None" has no attribute "rname"
-dnsguard/auth_zone/xfr_service.py	attr-defined	"Rdata" has no attribute "serial"
-dnsguard/auth_zone/xfr_service.py	union-attr	Item "None" of "Question | None" has no attribute "name"
-dnsguard/auth_zone/xfr_service.py	union-attr	Item "None" of "Question | None" has no attribute "name"
-dnsguard/auth_zone/xfr_service.py	union-attr	Item "None" of "Question | None" has no attribute "rtype"
-dnsguard/cache/shared.py	attr-defined	"object" has no attribute "__enter__"
-dnsguard/cache/shared.py	attr-defined	"object" has no attribute "__enter__"
-dnsguard/cache/shared.py	attr-defined	"object" has no attribute "__enter__"
-dnsguard/cache/shared.py	attr-defined	"object" has no attribute "__exit__"
-dnsguard/cache/shared.py	attr-defined	"object" has no attribute "__exit__"
-dnsguard/cache/shared.py	attr-defined	"object" has no attribute "__exit__"
-dnsguard/cli/main.py	operator	Unsupported operand types for in ("int" and "Iterator[Rcode]")
-dnsguard/dhcp/server.py	assignment	Incompatible types in assignment (expression has type "DatagramTransport", variable has type "None")
-dnsguard/engine/pipeline.py	assignment	Incompatible types in assignment (expression has type "TunnelResult", variable has type "DGAResult")
-dnsguard/engine/pipeline.py	attr-defined	"object" has no attribute "reason"
-dnsguard/engine/pipeline.py	attr-defined	"object" has no attribute "rule"
-dnsguard/engine/pipeline.py	attr-defined	"object" has no attribute "source"
-dnsguard/engine/pipeline.py	operator	Unsupported operand types for in ("int | Any" and "tuple[Type, Type]")
-dnsguard/engine/pipeline.py	union-attr	Item "None" of "Any | None" has no attribute "dga_block"
-dnsguard/engine/pipeline.py	union-attr	Item "None" of "Any | None" has no attribute "dga_threshold"
-dnsguard/engine/pipeline.py	union-attr	Item "None" of "Any | None" has no attribute "tunnel_block"
-dnsguard/engine/pipeline.py	union-attr	Item "None" of "Any | None" has no attribute "tunnel_threshold"
-dnsguard/engine/pipeline.py	union-attr	Item "None" of "Question | None" has no attribute "name"
-dnsguard/engine/pipeline.py	union-attr	Item "None" of "Question | None" has no attribute "rtype"
-dnsguard/engine/pipeline.py	union-attr	Item "None" of "Question | None" has no attribute "rtype"
-dnsguard/engine/pipeline.py	union-attr	Item "None" of "Question | None" has no attribute "rtype"
-dnsguard/engine/rebinding.py	attr-defined	"Rdata" has no attribute "address"
-dnsguard/engine/responses.py	union-attr	Item "None" of "Question | None" has no attribute "name"
-dnsguard/engine/zerox20.py	union-attr	Item "None" of "Question | None" has no attribute "name"
-dnsguard/engine/zerox20.py	union-attr	Item "None" of "Question | None" has no attribute "name"
-dnsguard/engine/zerox20.py	union-attr	Item "None" of "Question | None" has no attribute "rclass"
-dnsguard/engine/zerox20.py	union-attr	Item "None" of "Question | None" has no attribute "rtype"
-dnsguard/filter/cnamecloak.py	attr-defined	"Rdata" has no attribute "name"
-dnsguard/ops/whatif.py	assignment	Incompatible default for argument "allow" (default has type "tuple[()]", argument has type "list[str]")
-dnsguard/ops/whatif.py	assignment	Incompatible default for argument "deny" (default has type "tuple[()]", argument has type "list[str]")
-dnsguard/resolver/dnssec/chain.py	assignment	Incompatible types in assignment (expression has type "tuple[str, Name, None]", variable has type "tuple[str, Name, list[DNSKEY]]")
-dnsguard/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "hash_algorithm"
-dnsguard/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "hash_algorithm"
-dnsguard/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "iterations"
-dnsguard/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "iterations"
-dnsguard/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "iterations"
-dnsguard/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "next_hashed"
-dnsguard/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "next_name"
-dnsguard/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "next_name"
-dnsguard/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "next_name"
-dnsguard/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "next_name"
-dnsguard/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "salt"
-dnsguard/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "salt"
-dnsguard/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "type_bitmap"
-dnsguard/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "type_bitmap"
-dnsguard/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "type_bitmap"
-dnsguard/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "type_bitmap"
-dnsguard/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "type_bitmap"
-dnsguard/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "type_bitmap"
-dnsguard/resolver/recursive.py	arg-type	Argument 3 to "put_cut" of "InfraCache" has incompatible type "dict[str, tuple[str, ...]]"; expected "dict[Name, tuple[str, ...]]"
-dnsguard/resolver/recursive.py	arg-type	Argument 4 to "validate" of "Validator" has incompatible type "list[Rdata]"; expected "list[RRSIG]"
-dnsguard/resolver/recursive.py	assignment	Incompatible types in assignment (expression has type "int", variable has type "Type")
-dnsguard/resolver/recursive.py	attr-defined	"Rdata" has no attribute "address"
-dnsguard/resolver/recursive.py	attr-defined	"Rdata" has no attribute "name"
-dnsguard/resolver/recursive.py	attr-defined	"Rdata" has no attribute "name"
-dnsguard/resolver/recursive.py	attr-defined	"Rdata" has no attribute "name"
-dnsguard/resolver/recursive.py	attr-defined	"Rdata" has no attribute "name"
-dnsguard/resolver/recursive.py	attr-defined	"Rdata" has no attribute "type_covered"
-dnsguard/resolver/recursive.py	misc	Key expression in dictionary comprehension has incompatible type "Name"; expected type "str"
-dnsguard/resolver/recursive.py	union-attr	Item "None" of "Validator | None" has no attribute "validate"
-dnsguard/resolver/recursive.py	union-attr	Item "None" of "Validator | None" has no attribute "validate_denial"
-dnsguard/security/acme.py	assignment	Incompatible types in assignment (expression has type "dict[Any, Any]", target has type "str")
-dnsguard/security/acme.py	assignment	Incompatible types in assignment (expression has type "list[str]", target has type "bool")
-dnsguard/store/db.py	return-value	Incompatible return value type (got "Iterable[Row]", expected "list[Row]")
-dnsguard/transport/base.py	assignment	Incompatible types in assignment (expression has type "Message | None", variable has type "Message")
-dnsguard/transport/doh3.py	assignment	Incompatible types in assignment (expression has type "QuicServer", variable has type "None")
-dnsguard/transport/doq.py	assignment	Incompatible types in assignment (expression has type "QuicServer", variable has type "None")
-dnsguard/transport/upstream.py	arg-type	Argument "ssl" to "TCPConnector" has incompatible type "bool | None"; expected "bool | Fingerprint | SSLContext"
-dnsguard/transport/upstream.py	assignment	Incompatible types in assignment (expression has type "ClientSession", variable has type "None")
-dnsguard/transport/upstream.py	assignment	Incompatible types in assignment (expression has type "str", variable has type "int")
-dnsguard/transport/upstream.py	attr-defined	"None" has no attribute "post"
-dnsguard/transport/upstream.py	attr-defined	"QuicConnectionProtocol" has no attribute "fut"
-dnsguard/wire/name.py	call-overload	No overload variant of "get" of "dict" matches argument type "bytes"
-dnsguard/wire/name.py	index	Invalid index type "bytes" for "dict[tuple[bytes, ...], int]"; expected type "tuple[bytes, ...]"
-dnsguard/wire/rdata.py	attr-defined	"type" has no attribute "parse"
+# 112 finding(s).
+trench/analyze/lists.py	union-attr	Item "None" of "Any | None" has no attribute "nbytes"
+trench/analyze/lists.py	union-attr	Item "None" of "Any | None" has no attribute "nbytes"
+trench/api/auth.py	index	Value of type "Row | None" is not indexable
+trench/api/server.py	arg-type	Argument 1 to "append" of "list" has incompatible type "str"; expected "int"
+trench/api/server.py	arg-type	Argument 1 to "append" of "list" has incompatible type "str"; expected "int"
+trench/api/server.py	arg-type	Argument 1 to "append" of "list" has incompatible type "str"; expected "int"
+trench/api/server.py	return-value	Incompatible return value type (got "FileResponse", expected "Response")
+trench/auth_zone/handler.py	union-attr	Item "None" of "Question | None" has no attribute "name"
+trench/auth_zone/handler.py	union-attr	Item "None" of "Question | None" has no attribute "name"
+trench/auth_zone/handler.py	union-attr	Item "None" of "Question | None" has no attribute "name"
+trench/auth_zone/secondary.py	union-attr	Item "None" of "SOA | None" has no attribute "serial"
+trench/auth_zone/secondary.py	var-annotated	Need type annotation for "records" (hint: "records: list[<type>] = ...")
+trench/auth_zone/sign/signer.py	assignment	Incompatible types in assignment (expression has type "Any | EllipticCurvePrivateKey", variable has type "None")
+trench/auth_zone/tsig.py	return-value	Incompatible return value type (got "tuple[int | None, TSIG, Name | None]", expected "tuple[int, TSIG, Name]")
+trench/auth_zone/update.py	union-attr	Item "None" of "SOA | None" has no attribute "serial"
+trench/auth_zone/update.py	union-attr	Item "None" of "SOA | None" has no attribute "serial"
+trench/auth_zone/update.py	union-attr	Item "None" of "SOA | None" has no attribute "serial"
+trench/auth_zone/xfr.py	arg-type	Argument 5 to "RR" has incompatible type "SOA | None"; expected "Rdata"
+trench/auth_zone/xfr.py	assignment	Incompatible types in assignment (expression has type "Rdata", target has type "RRSIG")
+trench/auth_zone/xfr.py	attr-defined	"Rdata" has no attribute "serial"
+trench/auth_zone/xfr.py	attr-defined	"Rdata" has no attribute "serial"
+trench/auth_zone/xfr.py	attr-defined	"Rdata" has no attribute "serial"
+trench/auth_zone/xfr.py	attr-defined	"Rdata" has no attribute "serial"
+trench/auth_zone/xfr.py	attr-defined	"Rdata" has no attribute "serial"
+trench/auth_zone/xfr.py	attr-defined	"Rdata" has no attribute "serial"
+trench/auth_zone/xfr.py	attr-defined	"Rdata" has no attribute "type_covered"
+trench/auth_zone/xfr.py	misc	Generator has incompatible item type "int"; expected "bool"
+trench/auth_zone/xfr.py	union-attr	Item "None" of "SOA | None" has no attribute "expire"
+trench/auth_zone/xfr.py	union-attr	Item "None" of "SOA | None" has no attribute "minimum"
+trench/auth_zone/xfr.py	union-attr	Item "None" of "SOA | None" has no attribute "mname"
+trench/auth_zone/xfr.py	union-attr	Item "None" of "SOA | None" has no attribute "refresh"
+trench/auth_zone/xfr.py	union-attr	Item "None" of "SOA | None" has no attribute "retry"
+trench/auth_zone/xfr.py	union-attr	Item "None" of "SOA | None" has no attribute "rname"
+trench/auth_zone/xfr_service.py	attr-defined	"Rdata" has no attribute "serial"
+trench/auth_zone/xfr_service.py	union-attr	Item "None" of "Question | None" has no attribute "name"
+trench/auth_zone/xfr_service.py	union-attr	Item "None" of "Question | None" has no attribute "name"
+trench/auth_zone/xfr_service.py	union-attr	Item "None" of "Question | None" has no attribute "rtype"
+trench/cache/shared.py	attr-defined	"object" has no attribute "__enter__"
+trench/cache/shared.py	attr-defined	"object" has no attribute "__enter__"
+trench/cache/shared.py	attr-defined	"object" has no attribute "__enter__"
+trench/cache/shared.py	attr-defined	"object" has no attribute "__exit__"
+trench/cache/shared.py	attr-defined	"object" has no attribute "__exit__"
+trench/cache/shared.py	attr-defined	"object" has no attribute "__exit__"
+trench/cli/main.py	operator	Unsupported operand types for in ("int" and "Iterator[Rcode]")
+trench/dhcp/server.py	assignment	Incompatible types in assignment (expression has type "DatagramTransport", variable has type "None")
+trench/engine/pipeline.py	assignment	Incompatible types in assignment (expression has type "TunnelResult", variable has type "DGAResult")
+trench/engine/pipeline.py	attr-defined	"object" has no attribute "reason"
+trench/engine/pipeline.py	attr-defined	"object" has no attribute "rule"
+trench/engine/pipeline.py	attr-defined	"object" has no attribute "source"
+trench/engine/pipeline.py	operator	Unsupported operand types for in ("int | Any" and "tuple[Type, Type]")
+trench/engine/pipeline.py	union-attr	Item "None" of "Any | None" has no attribute "dga_block"
+trench/engine/pipeline.py	union-attr	Item "None" of "Any | None" has no attribute "dga_threshold"
+trench/engine/pipeline.py	union-attr	Item "None" of "Any | None" has no attribute "tunnel_block"
+trench/engine/pipeline.py	union-attr	Item "None" of "Any | None" has no attribute "tunnel_threshold"
+trench/engine/pipeline.py	union-attr	Item "None" of "Question | None" has no attribute "name"
+trench/engine/pipeline.py	union-attr	Item "None" of "Question | None" has no attribute "rtype"
+trench/engine/pipeline.py	union-attr	Item "None" of "Question | None" has no attribute "rtype"
+trench/engine/pipeline.py	union-attr	Item "None" of "Question | None" has no attribute "rtype"
+trench/engine/rebinding.py	attr-defined	"Rdata" has no attribute "address"
+trench/engine/responses.py	union-attr	Item "None" of "Question | None" has no attribute "name"
+trench/engine/zerox20.py	union-attr	Item "None" of "Question | None" has no attribute "name"
+trench/engine/zerox20.py	union-attr	Item "None" of "Question | None" has no attribute "name"
+trench/engine/zerox20.py	union-attr	Item "None" of "Question | None" has no attribute "rclass"
+trench/engine/zerox20.py	union-attr	Item "None" of "Question | None" has no attribute "rtype"
+trench/filter/cnamecloak.py	attr-defined	"Rdata" has no attribute "name"
+trench/ops/whatif.py	assignment	Incompatible default for argument "allow" (default has type "tuple[()]", argument has type "list[str]")
+trench/ops/whatif.py	assignment	Incompatible default for argument "deny" (default has type "tuple[()]", argument has type "list[str]")
+trench/resolver/dnssec/chain.py	assignment	Incompatible types in assignment (expression has type "tuple[str, Name, None]", variable has type "tuple[str, Name, list[DNSKEY]]")
+trench/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "hash_algorithm"
+trench/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "hash_algorithm"
+trench/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "iterations"
+trench/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "iterations"
+trench/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "iterations"
+trench/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "next_hashed"
+trench/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "next_name"
+trench/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "next_name"
+trench/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "next_name"
+trench/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "next_name"
+trench/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "salt"
+trench/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "salt"
+trench/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "type_bitmap"
+trench/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "type_bitmap"
+trench/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "type_bitmap"
+trench/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "type_bitmap"
+trench/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "type_bitmap"
+trench/resolver/dnssec/nsec.py	attr-defined	"object" has no attribute "type_bitmap"
+trench/resolver/recursive.py	arg-type	Argument 3 to "put_cut" of "InfraCache" has incompatible type "dict[str, tuple[str, ...]]"; expected "dict[Name, tuple[str, ...]]"
+trench/resolver/recursive.py	arg-type	Argument 4 to "validate" of "Validator" has incompatible type "list[Rdata]"; expected "list[RRSIG]"
+trench/resolver/recursive.py	assignment	Incompatible types in assignment (expression has type "int", variable has type "Type")
+trench/resolver/recursive.py	attr-defined	"Rdata" has no attribute "address"
+trench/resolver/recursive.py	attr-defined	"Rdata" has no attribute "name"
+trench/resolver/recursive.py	attr-defined	"Rdata" has no attribute "name"
+trench/resolver/recursive.py	attr-defined	"Rdata" has no attribute "name"
+trench/resolver/recursive.py	attr-defined	"Rdata" has no attribute "name"
+trench/resolver/recursive.py	attr-defined	"Rdata" has no attribute "type_covered"
+trench/resolver/recursive.py	misc	Key expression in dictionary comprehension has incompatible type "Name"; expected type "str"
+trench/resolver/recursive.py	union-attr	Item "None" of "Validator | None" has no attribute "validate"
+trench/resolver/recursive.py	union-attr	Item "None" of "Validator | None" has no attribute "validate_denial"
+trench/security/acme.py	assignment	Incompatible types in assignment (expression has type "dict[Any, Any]", target has type "str")
+trench/security/acme.py	assignment	Incompatible types in assignment (expression has type "list[str]", target has type "bool")
+trench/store/db.py	return-value	Incompatible return value type (got "Iterable[Row]", expected "list[Row]")
+trench/transport/base.py	assignment	Incompatible types in assignment (expression has type "Message | None", variable has type "Message")
+trench/transport/doh3.py	assignment	Incompatible types in assignment (expression has type "QuicServer", variable has type "None")
+trench/transport/doq.py	assignment	Incompatible types in assignment (expression has type "QuicServer", variable has type "None")
+trench/transport/upstream.py	arg-type	Argument "ssl" to "TCPConnector" has incompatible type "bool | None"; expected "bool | Fingerprint | SSLContext"
+trench/transport/upstream.py	assignment	Incompatible types in assignment (expression has type "ClientSession", variable has type "None")
+trench/transport/upstream.py	assignment	Incompatible types in assignment (expression has type "str", variable has type "int")
+trench/transport/upstream.py	attr-defined	"None" has no attribute "post"
+trench/transport/upstream.py	attr-defined	"QuicConnectionProtocol" has no attribute "fut"
+trench/wire/name.py	call-overload	No overload variant of "get" of "dict" matches argument type "bytes"
+trench/wire/name.py	index	Invalid index type "bytes" for "dict[tuple[bytes, ...], int]"; expected type "tuple[bytes, ...]"
+trench/wire/rdata.py	attr-defined	"type" has no attribute "parse"

@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from dnsguard.app import App
-from dnsguard.config import Config
+from trench.app import App
+from trench.config import Config
 
 
 def _app(tmp_path, sources):
@@ -37,7 +37,7 @@ async def test_offline_pass_does_not_reach_the_network(tmp_path, monkeypatch):
     async def explode(*a, **k):
         raise AssertionError("startup fetched before the listener was bound")
 
-    monkeypatch.setattr("dnsguard.gravity.manager.Gravity.build", explode)
+    monkeypatch.setattr("trench.gravity.manager.Gravity.build", explode)
     assert await app.load_blocklists(allow_fetch=False) is True
 
 

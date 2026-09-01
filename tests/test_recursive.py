@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import pytest
 
-from dnsguard.resolver.recursive import Recursive
-from dnsguard.wire import RR, Class, Message, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import Flags
+from trench.resolver.recursive import Recursive
+from trench.wire import RR, Class, Message, Type
+from trench.wire import rdata as R
+from trench.wire.name import Name
+from trench.wire.rrtypes import Flags
 
 ROOT_IP, COM_IP, AUTH_IP = "10.0.0.1", "10.0.0.2", "10.0.0.3"
 

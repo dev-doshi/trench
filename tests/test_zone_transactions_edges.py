@@ -8,19 +8,19 @@ import base64
 
 import pytest
 
-from dnsguard.auth_zone import Zone
-from dnsguard.auth_zone.secondary import SecondaryZone
-from dnsguard.auth_zone.sign import sign_zone
-from dnsguard.auth_zone.store import ZoneStore
-from dnsguard.auth_zone.tsig import TSIGKey, sign_wire, verify_wire
-from dnsguard.auth_zone.update import apply_update
-from dnsguard.auth_zone.xfr import apply_ixfr, axfr_records, ixfr_complete, ixfr_messages
-from dnsguard.auth_zone.xfr_service import TransferService, ZoneTransferPolicy
-from dnsguard.resolver.dnssec.keys import key_tag
-from dnsguard.wire import RR, Class, Message, Question, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import Flags, Opcode, Rcode
+from trench.auth_zone import Zone
+from trench.auth_zone.secondary import SecondaryZone
+from trench.auth_zone.sign import sign_zone
+from trench.auth_zone.store import ZoneStore
+from trench.auth_zone.tsig import TSIGKey, sign_wire, verify_wire
+from trench.auth_zone.update import apply_update
+from trench.auth_zone.xfr import apply_ixfr, axfr_records, ixfr_complete, ixfr_messages
+from trench.auth_zone.xfr_service import TransferService, ZoneTransferPolicy
+from trench.resolver.dnssec.keys import key_tag
+from trench.wire import RR, Class, Message, Question, Type
+from trench.wire import rdata as R
+from trench.wire.name import Name
+from trench.wire.rrtypes import Flags, Opcode, Rcode
 
 ORIGIN = Name.from_text("example.com.")
 SECRET = base64.b64encode(b"j" * 32).decode()
@@ -198,7 +198,7 @@ def test_resign_nsec3_no_stale_hashed_names():
 
 
 def test_apex_bitmap_includes_cds():
-    from dnsguard.resolver.dnssec.nsec import bitmap_has
+    from trench.resolver.dnssec.nsec import bitmap_has
     z = _zone(1)
     sign_zone(z)
     nsec = z.records[ORIGIN][Type.NSEC][0]
@@ -209,7 +209,7 @@ def test_apex_bitmap_includes_cds():
 
 # --- fix 6: signed UPDATE gets a signed response ---
 def test_update_response_is_tsig_signed():
-    from dnsguard.auth_zone.handler import AuthHandler
+    from trench.auth_zone.handler import AuthHandler
     z = _zone(1)
     store = ZoneStore(); store.add(z)
     key = TSIGKey.from_base64("upd.", SECRET)

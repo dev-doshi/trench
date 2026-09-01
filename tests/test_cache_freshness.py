@@ -20,17 +20,17 @@ import asyncio
 
 import pytest
 
-from dnsguard.cache import Cache
-from dnsguard.config import Config
-from dnsguard.engine import Pipeline
-from dnsguard.filter import FilterEngine
-from dnsguard.stats import Counters
-from dnsguard.wire import Class, Message, Question
-from dnsguard.wire.edns import Edns
-from dnsguard.wire.message import RR
-from dnsguard.wire.name import Name
-from dnsguard.wire.rdata import A
-from dnsguard.wire.rrtypes import EDNSOption, Flags, Rcode, Type
+from trench.cache import Cache
+from trench.config import Config
+from trench.engine import Pipeline
+from trench.filter import FilterEngine
+from trench.stats import Counters
+from trench.wire import Class, Message, Question
+from trench.wire.edns import Edns
+from trench.wire.message import RR
+from trench.wire.name import Name
+from trench.wire.rdata import A
+from trench.wire.rrtypes import EDNSOption, Flags, Rcode, Type
 
 
 def n(text: str) -> Name:
@@ -122,7 +122,7 @@ async def test_stale_is_served_when_the_upstream_fails():
 
 @pytest.mark.asyncio
 async def test_no_stale_copy_means_servfail_not_a_lie():
-    from dnsguard.wire.rrtypes import Rcode
+    from trench.wire.rrtypes import Rcode
     p = build(Upstream(fail=True))
     resp = await p.resolve(query(), "10.0.0.1")
     assert resp.rcode == Rcode.SERVFAIL and not resp.answers
@@ -159,7 +159,7 @@ async def test_serve_stale_off_means_no_stale_answer():
     await p.resolve(query(), "10.0.0.1")
     await asyncio.sleep(1.05)
     up.fail = True
-    from dnsguard.wire.rrtypes import Rcode
+    from trench.wire.rrtypes import Rcode
     assert (await p.resolve(query(), "10.0.0.1")).rcode == Rcode.SERVFAIL
 
 
@@ -197,7 +197,7 @@ async def test_different_questions_are_not_coalesced():
 
 @pytest.mark.asyncio
 async def test_a_failing_leader_does_not_hang_its_followers():
-    from dnsguard.wire.rrtypes import Rcode
+    from trench.wire.rrtypes import Rcode
     up = Upstream(delay=0.05, fail=True)
     p = build(up)
     resps = await asyncio.gather(*[p.resolve(query(), f"10.0.0.{i}")
@@ -341,7 +341,7 @@ async def test_background_prewarm_goes_through_the_same_checks():
 async def test_the_answering_upstream_is_recorded():
     """`ctx.upstream` feeds the query log, the per-upstream stats panel and the
     unsolicited-record warning. Nothing was ever assigning it."""
-    from dnsguard.resolver.forwarder import Forwarder
+    from trench.resolver.forwarder import Forwarder
 
     fwd = Forwarder(["udp://192.0.2.1", "udp://192.0.2.2"], strategy="sequential")
     seen = []
@@ -386,7 +386,7 @@ async def test_the_upstream_reaches_the_operators_stats():
 @pytest.mark.asyncio
 async def test_a_parallel_race_credits_the_upstream_that_won():
     """A loser finishing after the winner has been picked must not take credit."""
-    from dnsguard.resolver.forwarder import Forwarder
+    from trench.resolver.forwarder import Forwarder
 
     class Fake:
         def __init__(self, label, delay): self.label, self.delay = label, delay

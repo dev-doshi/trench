@@ -11,8 +11,8 @@ import time
 
 import pytest
 
-from dnsguard.analyze import review_update
-from dnsguard.filter import FilterEngine, compile_rules
+from trench.analyze import review_update
+from trench.filter import FilterEngine, compile_rules
 
 
 def eng(text: str, source: str = "hagezi") -> FilterEngine:
@@ -157,9 +157,9 @@ def test_summary_states_the_numbers_a_human_needs():
 
 @pytest.mark.asyncio
 async def test_review_from_querylog_aggregates_real_rows(tmp_path):
-    from dnsguard.analyze import review_from_querylog
-    from dnsguard.store import Database
-    from dnsguard.store.querylog import QueryLog
+    from trench.analyze import review_from_querylog
+    from trench.store import Database
+    from trench.store.querylog import QueryLog
     db = Database(tmp_path / "q.db")
     await db.connect()
     ql = QueryLog(db)
@@ -189,8 +189,8 @@ async def test_review_from_querylog_aggregates_real_rows(tmp_path):
 async def test_refresh_records_a_review(tmp_path):
     """End to end: a refresh must leave behind a readable record of what it
     changed, without the operator having asked for one."""
-    from dnsguard.app import App
-    from dnsguard.config import Config
+    from trench.app import App
+    from trench.config import Config
 
     listfile = tmp_path / "list.txt"
     listfile.write_text("||ads.example^\n")

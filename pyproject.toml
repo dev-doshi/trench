@@ -3,16 +3,19 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "dnsguard"
-# Read from dnsguard/version.py so the package, the CLI's --version and the
-# User-Agent DNSGuard puts on the wire can never disagree.
+# `trench` is taken on PyPI, so the distribution carries a suffix. It is the
+# only place the project is not simply called Trench: the import package,
+# both commands, the service and the image are all `trench`.
+name = "trench-dns"
+# Read from trench/version.py so the package, the CLI's --version and the
+# User-Agent Trench puts on the wire can never disagree.
 dynamic = ["version"]
 description = "Self-hosted DNS sinkhole, validating recursive resolver, and authoritative server"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
-authors = [{ name = "DNSGuard contributors" }]
+authors = [{ name = "Trench contributors" }]
 keywords = ["dns", "adblock", "sinkhole", "resolver", "dnssec", "doh", "dot", "doq", "pihole"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
@@ -57,31 +60,36 @@ docs = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/dev-doshi/dnsguard"
-Documentation = "https://dev-doshi.github.io/dnsguard/"
-Source = "https://github.com/dev-doshi/dnsguard"
-Issues = "https://github.com/dev-doshi/dnsguard/issues"
-Changelog = "https://github.com/dev-doshi/dnsguard/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/dev-doshi/trench"
+Documentation = "https://dev-doshi.github.io/trench/"
+Source = "https://github.com/dev-doshi/trench"
+Issues = "https://github.com/dev-doshi/trench/issues"
+Changelog = "https://github.com/dev-doshi/trench/blob/main/CHANGELOG.md"
 
 [project.scripts]
-dnsguard = "dnsguard.cli.main:main"
-dnsguardd = "dnsguard.__main__:main"
+trench = "trench.cli.main:main"
+trenchd = "trench.__main__:main"
 
 [tool.setuptools.dynamic]
-version = { attr = "dnsguard.version.__version__" }
+version = { attr = "trench.version.__version__" }
 
 [tool.setuptools.packages.find]
-include = ["dnsguard*"]
+include = ["trench*"]
 
 # The seed blocklist lives inside the package, not at the repo root: a
-# `../data` glob cannot be honoured by a wheel, so an installed DNSGuard had
+# `../data` glob cannot be honoured by a wheel, so an installed Trench had
 # no copy of it at all.
 [tool.setuptools.package-data]
-dnsguard = ["data/*.txt", "web/dist/**/*"]
+trench = ["data/*.txt", "web/dist/**/*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# The tests import `trench` from the checkout rather than from an installed
+# wheel, so a bare `pytest` in a fresh clone has to be able to find it. Without
+# this every test file fails to collect and the first thing a new contributor
+# sees is 80-odd import errors.
+pythonpath = ["."]
 filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.ruff]
@@ -94,7 +102,7 @@ ignore = ["E501", "B008", "SIM105", "E702", "SIM905"]
 
 [tool.ruff.lint.per-file-ignores]
 # The dev harness inserts the repo root on sys.path so it can be run from any
-# working directory; its dnsguard imports have to come after that.
+# working directory; its trench imports have to come after that.
 "scripts/uidev.py" = ["E402"]
 
 [tool.mypy]

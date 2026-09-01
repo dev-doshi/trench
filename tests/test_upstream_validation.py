@@ -19,12 +19,12 @@ import socket
 
 import pytest
 
-from dnsguard.errors import UpstreamError
-from dnsguard.transport.upstream import Upstream, parse_upstream
-from dnsguard.wire import Class, Message, Question
-from dnsguard.wire.name import Name
-from dnsguard.wire.rdata import A
-from dnsguard.wire.rrtypes import Flags, Type
+from trench.errors import UpstreamError
+from trench.transport.upstream import Upstream, parse_upstream
+from trench.wire import Class, Message, Question
+from trench.wire.name import Name
+from trench.wire.rdata import A
+from trench.wire.rrtypes import Flags, Type
 
 
 def query(name="example.com.", rtype=Type.A) -> Message:
@@ -44,7 +44,7 @@ def answer(for_msg: Message, *, msg_id=None, name=None, rtype=None,
     if with_question:
         r.questions.append(Question(nm, rt, Class.IN))
     if rt == Type.A:
-        from dnsguard.wire.message import RR
+        from trench.wire.message import RR
         r.answers.append(RR(nm, Type.A, Class.IN, 300, A(ip)))
     return r.to_wire()
 

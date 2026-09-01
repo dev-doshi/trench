@@ -17,10 +17,10 @@ import socket
 import aiohttp
 import pytest
 
-from dnsguard.api import APIServer
-from dnsguard.app import App
-from dnsguard.config import Config
-from dnsguard.security import totp
+from trench.api import APIServer
+from trench.app import App
+from trench.config import Config
+from trench.security import totp
 
 
 def _free_port() -> int:
@@ -68,7 +68,7 @@ async def test_a_minted_token_authenticates_a_scripted_client(tmp_path):
             raw = body["token"]
             assert raw and len(raw) > 20
 
-        # A fresh session with no cookie: exactly what `dnsguard status` is.
+        # A fresh session with no cookie: exactly what `trench status` is.
         async with _session() as s:
             r = await s.get(f"{base}/api/v1/system")
             assert r.status == 401                       # no credentials at all
@@ -208,10 +208,10 @@ async def test_confirm_without_enrolling_is_refused(tmp_path):
 
 @pytest.mark.asyncio
 async def test_a_lost_authenticator_is_recoverable_offline(tmp_path):
-    """`dnsguard passwd --clear-totp`. The console is what you cannot reach, so
+    """`trench passwd --clear-totp`. The console is what you cannot reach, so
     the recovery path cannot go through it — and resetting only the password
     left the second factor standing, which is not a recovery at all."""
-    from dnsguard.cli.main import main as cli_main
+    from trench.cli.main import main as cli_main
 
     app, base = await _app_with_api(tmp_path)
     try:

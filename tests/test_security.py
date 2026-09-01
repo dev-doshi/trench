@@ -1,7 +1,7 @@
 """Password hashing + TOTP."""
 from __future__ import annotations
 
-from dnsguard.security import hashutil, totp
+from trench.security import hashutil, totp
 
 
 def test_password_hash_roundtrip():

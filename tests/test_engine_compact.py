@@ -3,10 +3,10 @@ behave exactly like the Rule-backed path (precedence, specificity, removal).
 """
 from __future__ import annotations
 
-from dnsguard.filter import Action, FilterEngine, compile_rules
-from dnsguard.filter.engine import _is_plain
-from dnsguard.filter.rule import Rule
-from dnsguard.wire.rrtypes import Type
+from trench.filter import Action, FilterEngine, compile_rules
+from trench.filter.engine import _is_plain
+from trench.filter.rule import Rule
+from trench.wire.rrtypes import Type
 
 
 def eng(text: str, source: str = "list") -> FilterEngine:

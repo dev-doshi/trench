@@ -1,0 +1,204 @@
+{
+  "title": "Trench",
+  "uid": "trench",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "job",
+        "label": "Job",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "query": "label_values(trench_queries_total, job)",
+        "refresh": 1,
+        "includeAll": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Queries / sec",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "expr": "sum(rate(trench_queries_total{job=\"$job\"}[5m]))", "legendFormat": "qps" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps", "decimals": 1 }, "overrides": [] }
+    },
+    {
+      "type": "stat",
+      "title": "Blocked",
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "sum(rate(trench_blocked_total{job=\"$job\"}[5m])) / clamp_min(sum(rate(trench_queries_total{job=\"$job\"}[5m])), 0.001)",
+          "legendFormat": "share"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "decimals": 1 }, "overrides": [] }
+    },
+    {
+      "type": "stat",
+      "title": "p99 latency",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(trench_query_duration_seconds_bucket{job=\"$job\"}[5m])))",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s", "decimals": 3 }, "overrides": [] }
+    },
+    {
+      "type": "stat",
+      "title": "Cache entries",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [{ "expr": "sum(trench_cache_size{job=\"$job\"})", "legendFormat": "entries" }],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+    },
+    {
+      "type": "stat",
+      "title": "Filtering",
+      "description": "0 while switched off or inside a timed pause — the first thing to check when \"it stopped blocking\".",
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "min(trench_filtering_enabled{job=\"$job\"}) * (1 - max(trench_filtering_paused{job=\"$job\"}))",
+          "legendFormat": "on"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "OFF", "color": "red", "index": 0 } } },
+            { "type": "value", "options": { "1": { "text": "ON", "color": "green", "index": 1 } } }
+          ]
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Clients seen",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [{ "expr": "max(trench_clients_seen{job=\"$job\"})", "legendFormat": "clients" }],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "Queries by outcome",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "sum by (action) (rate(trench_query_actions_total{job=\"$job\"}[5m]))",
+          "legendFormat": "{{action}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "fillOpacity": 12, "stacking": { "mode": "normal" } } },
+        "overrides": []
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Latency distribution",
+      "description": "p50 / p95 / p99 from the histogram, so a slow upstream is visible as a tail rather than hidden in a mean.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(trench_query_duration_seconds_bucket{job=\"$job\"}[5m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(trench_query_duration_seconds_bucket{job=\"$job\"}[5m])))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(trench_query_duration_seconds_bucket{job=\"$job\"}[5m])))",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "Answers by upstream",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "sum by (upstream) (rate(trench_upstream_answers_total{job=\"$job\"}[5m]))",
+          "legendFormat": "{{upstream}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "Response codes",
+      "description": "A rising SERVFAIL rate is either DNSSEC or an upstream, and this is where that shows first.",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "sum by (rcode) (rate(trench_query_rcodes_total{job=\"$job\"}[5m]))",
+          "legendFormat": "{{rcode}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "Cache events",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 12 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "sum by (event) (rate(trench_cache_events_total{job=\"$job\"}[5m]))",
+          "legendFormat": "{{event}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "Behavioural detections",
+      "description": "DGA and tunnelling flags. Flagged is not blocked — see security.dga_block / tunnel_block.",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 20 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "sum by (kind) (rate(trench_detections_total{job=\"$job\"}[15m]))",
+          "legendFormat": "{{kind}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] }
+    },
+    {
+      "type": "timeseries",
+      "title": "Replay (fast path)",
+      "description": "Replay ratio is the one number that says whether the wire-resident table is doing anything.",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 20 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "sum(rate(trench_fastpath_total{job=\"$job\",event=\"hit\"}[5m])) / clamp_min(sum(rate(trench_queries_total{job=\"$job\"}[5m])), 0.001)",
+          "legendFormat": "share of queries replayed"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "max": 1, "min": 0 }, "overrides": [] }
+    }
+  ]
+}

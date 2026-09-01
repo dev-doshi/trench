@@ -14,14 +14,14 @@ import base64
 
 import pytest
 
-from dnsguard.auth_zone import Zone, ZoneStore
-from dnsguard.auth_zone.handler import AuthHandler
-from dnsguard.auth_zone.secondary import SecondaryZone
-from dnsguard.auth_zone.tsig import TSIGError, TSIGKey, sign_wire, verify_wire
-from dnsguard.wire import RR, Class, Message, Question, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import Flags, Opcode, Rcode
+from trench.auth_zone import Zone, ZoneStore
+from trench.auth_zone.handler import AuthHandler
+from trench.auth_zone.secondary import SecondaryZone
+from trench.auth_zone.tsig import TSIGError, TSIGKey, sign_wire, verify_wire
+from trench.wire import RR, Class, Message, Question, Type
+from trench.wire import rdata as R
+from trench.wire.name import Name
+from trench.wire.rrtypes import Flags, Opcode, Rcode
 
 ORIGIN = Name.from_text("example.com")
 SECRET = base64.b64encode(b"0123456789abcdef0123456789abcdef").decode()

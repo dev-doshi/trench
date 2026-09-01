@@ -1,1 +1,0 @@
-"""dnsguard CLI."""

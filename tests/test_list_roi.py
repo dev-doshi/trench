@@ -9,9 +9,9 @@ import time
 
 import pytest
 
-from dnsguard.analyze import list_effectiveness
-from dnsguard.filter import FilterEngine, compile_rules
-from dnsguard.filter.rule import Rule
+from trench.analyze import list_effectiveness
+from trench.filter import FilterEngine, compile_rules
+from trench.filter.rule import Rule
 
 
 def engine_with(**per_source: int) -> FilterEngine:
@@ -109,9 +109,9 @@ def test_empty_engine_and_no_traffic():
 
 @pytest.mark.asyncio
 async def test_lists_from_querylog(tmp_path):
-    from dnsguard.analyze import lists_from_querylog
-    from dnsguard.store import Database
-    from dnsguard.store.querylog import QueryLog
+    from trench.analyze import lists_from_querylog
+    from trench.store import Database
+    from trench.store.querylog import QueryLog
     db = Database(tmp_path / "q.db")
     await db.connect()
     ql = QueryLog(db)

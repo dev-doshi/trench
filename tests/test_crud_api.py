@@ -6,9 +6,9 @@ import socket
 import aiohttp
 import pytest
 
-from dnsguard.api import APIServer
-from dnsguard.app import App
-from dnsguard.config import Config
+from trench.api import APIServer
+from trench.app import App
+from trench.config import Config
 
 
 def _free_port():

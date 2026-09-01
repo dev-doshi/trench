@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from dnsguard.filter.dga import DGADetector
+from trench.filter.dga import DGADetector
 
 # Real names observed being blocked on a live deployment by the old scorer.
 REAL_INFRASTRUCTURE = [
@@ -126,22 +126,22 @@ def test_client_state_is_bounded():
     d = det(burst_min_names=2)
     for i in range(5000):
         d.note_outcome(f"aa1q9x2v7n{i}.biz", f"10.1.{i // 256}.{i % 256}", "NXDOMAIN")
-    from dnsguard.filter.dga import BURST_MAX_CLIENTS
+    from trench.filter.dga import BURST_MAX_CLIENTS
     assert len(d._failed) <= BURST_MAX_CLIENTS
 
 
 # --- end-to-end through the pipeline ---
 @pytest.mark.asyncio
 async def test_pipeline_does_not_block_wifi_calling():
-    from dnsguard.cache import Cache
-    from dnsguard.config import Config
-    from dnsguard.engine.pipeline import Pipeline
-    from dnsguard.filter import FilterEngine
-    from dnsguard.stats import Counters
-    from dnsguard.wire import RR, Class, Message, Question, Type
-    from dnsguard.wire import rdata as R
-    from dnsguard.wire.name import Name
-    from dnsguard.wire.rrtypes import Rcode
+    from trench.cache import Cache
+    from trench.config import Config
+    from trench.engine.pipeline import Pipeline
+    from trench.filter import FilterEngine
+    from trench.stats import Counters
+    from trench.wire import RR, Class, Message, Question, Type
+    from trench.wire import rdata as R
+    from trench.wire.name import Name
+    from trench.wire.rrtypes import Rcode
 
     class Fwd:
         async def resolve(self, q, note=None):

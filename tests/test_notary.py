@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import asyncio
 
-from dnsguard.ops.notary import Notary, network_of
-from dnsguard.wire import RR, Class, Message, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.rrtypes import Rcode
+from trench.ops.notary import Notary, network_of
+from trench.wire import RR, Class, Message, Type
+from trench.wire import rdata as R
+from trench.wire.rrtypes import Rcode
 
 
 class FakeUpstream:

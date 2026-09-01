@@ -5,18 +5,18 @@ import asyncio
 
 import pytest
 
-from dnsguard.config import Config
-from dnsguard.errors import ConfigError
-from dnsguard.filter import FilterEngine
-from dnsguard.filter.contract import (
+from trench.config import Config
+from trench.errors import ConfigError
+from trench.filter import FilterEngine
+from trench.filter.contract import (
     ContractError,
     check,
     parse_all,
     parse_assertion,
     summarise,
 )
-from dnsguard.filter.parser import parse_line
-from dnsguard.wire.rrtypes import Type
+from trench.filter.parser import parse_line
+from trench.wire.rrtypes import Type
 
 
 def engine(*lines: str) -> FilterEngine:
@@ -96,7 +96,7 @@ class FakeGravity:
 
 
 def make_app(tmp_path, assertions: list[str]):
-    from dnsguard.app import App
+    from trench.app import App
     cfg = Config.load_dict({"data_dir": str(tmp_path),
                             "filtering": {"assertions": assertions,
                                           "sources": ["data/default_blocklist.txt"]}})

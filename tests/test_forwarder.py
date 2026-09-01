@@ -5,11 +5,11 @@ import asyncio
 
 import pytest
 
-from dnsguard.resolver.forwarder import Forwarder, parse_server
-from dnsguard.wire import RR, Class, Message, Question, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import Flags, Rcode
+from trench.resolver.forwarder import Forwarder, parse_server
+from trench.wire import RR, Class, Message, Question, Type
+from trench.wire import rdata as R
+from trench.wire.name import Name
+from trench.wire.rrtypes import Flags, Rcode
 
 
 def test_parse_server():

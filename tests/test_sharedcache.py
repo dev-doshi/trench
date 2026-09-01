@@ -1,12 +1,12 @@
 """Cross-worker shared cache: backend basics + L1/L2 sharing between instances."""
 from __future__ import annotations
 
-from dnsguard.cache import Cache
-from dnsguard.cache.shared import SharedCache, key64
-from dnsguard.wire import RR, Class, Message, Question, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.name import Name, wire_key
-from dnsguard.wire.rrtypes import Rcode
+from trench.cache import Cache
+from trench.cache.shared import SharedCache, key64
+from trench.wire import RR, Class, Message, Question, Type
+from trench.wire import rdata as R
+from trench.wire.name import Name, wire_key
+from trench.wire.rrtypes import Rcode
 
 
 def test_key64_stable_and_distinct():

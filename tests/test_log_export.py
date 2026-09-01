@@ -6,9 +6,9 @@ import json
 import pytest
 from test_store import mkrec
 
-from dnsguard.store import Database, QueryLog
-from dnsguard.store.export import ExportDisabled, JsonLinesExport
-from dnsguard.store.querylog import _COLUMNS
+from trench.store import Database, QueryLog
+from trench.store.export import ExportDisabled, JsonLinesExport
+from trench.store.querylog import _COLUMNS
 
 
 def export_to(tmp_path, **kw) -> JsonLinesExport:

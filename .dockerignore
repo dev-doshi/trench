@@ -23,9 +23,9 @@ htmlcov/
 .venv/
 venv/
 
-# Frontend sources: the image consumes the prebuilt dnsguard/web/dist only,
+# Frontend sources: the image consumes the prebuilt trench/web/dist only,
 # so no Node toolchain and no node_modules are needed at build time.
-dnsguard/web/frontend/
+trench/web/frontend/
 
 # Runtime state and secrets
 data/*.db
@@ -39,8 +39,8 @@ data/certs/
 *.p12
 *.pfx
 
-# Local config — the image reads /data/dnsguard.yaml from a mount.
-dnsguard.yaml
+# Local config — the image reads /data/trench.yaml from a mount.
+trench.yaml
 config.json
 
 # Not needed in the image

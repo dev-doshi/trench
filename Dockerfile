@@ -1,4 +1,4 @@
-# DNSGuard — multi-arch image. The admin SPA is prebuilt into dnsguard/web/dist,
+# Trench — multi-arch image. The admin SPA is prebuilt into trench/web/dist,
 # so no Node toolchain is needed at build time.
 #
 # Pinned to a specific Debian release, not bare `slim`: `python:3.12-slim`
@@ -24,30 +24,30 @@ WORKDIR /app
 # leftover build/lib silently ships the stub's version.py instead of the real
 # one, and the image dies on `from ..version import USER_AGENT`.
 COPY pyproject.toml README.md LICENSE ./
-RUN mkdir -p dnsguard \
-    && printf '__version__ = "0.0.0"\n' > dnsguard/version.py \
-    && printf '' > dnsguard/__init__.py \
+RUN mkdir -p trench \
+    && printf '__version__ = "0.0.0"\n' > trench/version.py \
+    && printf '' > trench/__init__.py \
     && pip install --no-cache-dir . \
-    && pip uninstall -y dnsguard \
-    && rm -rf dnsguard build dnsguard.egg-info
+    && pip uninstall -y trench \
+    && rm -rf trench build trench.egg-info
 
 # Application code: only this thin layer rebuilds when sources change.
-COPY dnsguard ./dnsguard
+COPY trench ./trench
 RUN pip install --no-cache-dir --no-deps .
 
-COPY deploy/healthcheck.py /usr/local/bin/dnsguard-healthcheck
+COPY deploy/healthcheck.py /usr/local/bin/trench-healthcheck
 
-# An unprivileged account for DNSGuard to drop into. The container still
+# An unprivileged account for Trench to drop into. The container still
 # starts as root because :53 and :853 are privileged ports; set `server.user`
-# in the config and DNSGuard sheds root itself once every listener is bound.
+# in the config and Trench sheds root itself once every listener is bound.
 # /data must be writable both before and after the privilege drop, and
 # without relying on root's CAP_DAC_OVERRIDE — a hardened deployment drops it.
-# root:dnsguard 2775 gives root the owner bits and the dropped-to account the
+# root:trench 2775 gives root the owner bits and the dropped-to account the
 # group bits; the setgid bit keeps files created either side of the drop in
 # the group, so the other identity can still read them.
-RUN useradd --no-create-home --shell /usr/sbin/nologin --uid 1000 dnsguard \
+RUN useradd --no-create-home --shell /usr/sbin/nologin --uid 1000 trench \
     && mkdir -p /data \
-    && chown root:dnsguard /data \
+    && chown root:trench /data \
     && chmod 2775 /data
 
 # Runtime
@@ -58,17 +58,17 @@ VOLUME ["/data"]
 # answering is the failure worth catching. It queries a .invalid name, so an
 # upstream outage cannot turn into a restart loop.
 HEALTHCHECK --interval=60s --timeout=8s --start-period=120s --retries=3 \
-    CMD ["python3", "/usr/local/bin/dnsguard-healthcheck"]
+    CMD ["python3", "/usr/local/bin/trench-healthcheck"]
 
 ARG VERSION=2.0.0
 ARG REVISION=unknown
-LABEL org.opencontainers.image.title="DNSGuard" \
+LABEL org.opencontainers.image.title="Trench" \
       org.opencontainers.image.description="Self-hosted DNS sinkhole, validating recursive resolver, and authoritative server" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}" \
       org.opencontainers.image.licenses="MIT" \
-      org.opencontainers.image.source="https://github.com/dev-doshi/dnsguard" \
-      org.opencontainers.image.documentation="https://dev-doshi.github.io/dnsguard/"
+      org.opencontainers.image.source="https://github.com/dev-doshi/trench" \
+      org.opencontainers.image.documentation="https://dev-doshi.github.io/trench/"
 
-ENTRYPOINT ["dnsguardd"]
-CMD ["--config", "/data/dnsguard.yaml"]
+ENTRYPOINT ["trenchd"]
+CMD ["--config", "/data/trench.yaml"]

@@ -17,9 +17,9 @@ import pathlib
 import pytest
 import yaml
 
-from dnsguard.api import settings as st
-from dnsguard.app import App
-from dnsguard.config import Config
+from trench.api import settings as st
+from trench.app import App
+from trench.config import Config
 
 
 def _write(path: pathlib.Path, tree: dict) -> None:
@@ -37,7 +37,7 @@ async def _app(tmp_path, tree: dict | None = None):
             base[key].update(value)
         else:
             base[key] = value
-    path = tmp_path / "dnsguard.yaml"
+    path = tmp_path / "trench.yaml"
     _write(path, base)
     return App(Config.load(str(path)), config_path=str(path)), path
 
@@ -197,14 +197,14 @@ async def test_the_log_level_follows_the_setting(tmp_path):
     import logging
     app, path = await _app(tmp_path)
     await _save(app, path, {"log.level": "debug"})
-    assert logging.getLogger("dnsguard").level == logging.DEBUG
+    assert logging.getLogger("trench").level == logging.DEBUG
     await _save(app, path, {"log.level": "info"})
-    assert logging.getLogger("dnsguard").level == logging.INFO
+    assert logging.getLogger("trench").level == logging.INFO
 
 
 @pytest.mark.asyncio
 async def test_trusted_proxies_are_re_parsed_in_place(tmp_path):
-    from dnsguard.security.clientaddr import TrustedProxies
+    from trench.security.clientaddr import TrustedProxies
     app, path = await _app(tmp_path)
 
     # The object is shared with the aiohttp app key, which cannot be reassigned
@@ -278,9 +278,9 @@ def test_every_shipped_config_loads():
 
     import yaml
     root = pathlib.Path(__file__).resolve().parent.parent
-    for name in ("dnsguard.example.yaml", "dnsguard.yaml", "deploy/raspi.yaml"):
+    for name in ("trench.example.yaml", "trench.yaml", "deploy/raspi.yaml"):
         path = root / name
-        if not path.exists():          # dnsguard.yaml is a local, gitignored file
+        if not path.exists():          # trench.yaml is a local, gitignored file
             continue
         Config.model_validate(yaml.safe_load(path.read_text()))
 
@@ -295,7 +295,7 @@ def test_an_unknown_setting_is_refused_rather_than_dropped(tmp_path):
     absent, with the protection the operator configured silently off."""
     import yaml
 
-    from dnsguard.errors import ConfigError
+    from trench.errors import ConfigError
     path = tmp_path / "c.yaml"
     path.write_text(yaml.safe_dump({"server": {"rate_limit": 150}}))
     with pytest.raises(ConfigError, match="rate_limit"):

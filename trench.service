@@ -1,0 +1,42 @@
+[Unit]
+Description=Trench DNS server
+Documentation=https://github.com/dev-doshi/trench
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/trenchd --config /etc/trench/trench.yaml
+Restart=on-failure
+RestartSec=2
+# SIGHUP re-reads the config and refreshes the lists without dropping
+# in-flight queries or rebinding sockets.
+ExecReload=/bin/kill -HUP $MAINPID
+# Bind :53/:853 without running as full root
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+User=trench
+Group=trench
+StateDirectory=trench
+# --- sandboxing ---
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+ReadWritePaths=/var/lib/trench /etc/trench
+# A ceiling so an unbounded-growth bug restarts this unit instead of letting the
+# kernel OOM-killer choose a victim elsewhere on the host. Raise it on a larger
+# box; the compiled blocklist is what sets the floor.
+MemoryMax=700M
+MemoryAccounting=true
+
+[Install]
+WantedBy=multi-user.target

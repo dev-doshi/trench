@@ -5,15 +5,15 @@ import asyncio
 
 from support import blocked_engine
 
-from dnsguard.cache import Cache
-from dnsguard.config import Config
-from dnsguard.engine import Pipeline
-from dnsguard.filter import Action
-from dnsguard.stats import Counters
-from dnsguard.wire import RR, Class, Message, Question, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import Rcode
+from trench.cache import Cache
+from trench.config import Config
+from trench.engine import Pipeline
+from trench.filter import Action
+from trench.stats import Counters
+from trench.wire import RR, Class, Message, Question, Type
+from trench.wire import rdata as R
+from trench.wire.name import Name
+from trench.wire.rrtypes import Rcode
 
 
 def mkquery(name="example.com", rtype=Type.A, txid=1):
@@ -42,7 +42,7 @@ def test_engine_precedence():
 
 # --- cache ---
 def test_cache_ttl_and_expiry(monkeypatch):
-    import dnsguard.cache.cache as cmod
+    import trench.cache.cache as cmod
     t = [1000.0]
     monkeypatch.setattr(cmod.time, "monotonic", lambda: t[0])
     c = Cache(serve_stale=False)
@@ -60,7 +60,7 @@ def test_cache_ttl_and_expiry(monkeypatch):
 def test_cache_serve_stale(monkeypatch):
     """Stale data is a fallback the caller must ask for, not a normal hit —
     otherwise an expired entry is answered from and never refreshed."""
-    import dnsguard.cache.cache as cmod
+    import trench.cache.cache as cmod
     t = [1000.0]
     monkeypatch.setattr(cmod.time, "monotonic", lambda: t[0])
     c = Cache(serve_stale=True, serve_stale_max=3600)

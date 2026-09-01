@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 
-from dnsguard.cli.main import main
+from trench.cli.main import main
 
 
 def test_keygen_tsig(capsys):

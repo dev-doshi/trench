@@ -15,13 +15,13 @@ import aiohttp
 import pytest
 from aiohttp import web
 
-from dnsguard.auth_zone import Zone, ZoneStore
-from dnsguard.config import Config
-from dnsguard.security.acme import ACMEAccount, ACMEClient, dns01_txt
-from dnsguard.security.certs import AcmeManager
-from dnsguard.wire import rdata as R
-from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import Type
+from trench.auth_zone import Zone, ZoneStore
+from trench.config import Config
+from trench.security.acme import ACMEAccount, ACMEClient, dns01_txt
+from trench.security.certs import AcmeManager
+from trench.wire import rdata as R
+from trench.wire.name import Name
+from trench.wire.rrtypes import Type
 
 CERT_PEM = ("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n")
 
@@ -240,7 +240,7 @@ async def test_an_authorization_that_never_settles_times_out():
 # ------------------------------------------------------- the manager around it
 
 def _zones_for(origin: str) -> ZoneStore:
-    from dnsguard.wire.rrtypes import Type as T
+    from trench.wire.rrtypes import Type as T
     store = ZoneStore()
     z = Zone(Name.from_text(origin))
     z.add(Name.from_text(origin), int(T.SOA),

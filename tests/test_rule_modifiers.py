@@ -13,8 +13,8 @@ from __future__ import annotations
 
 import pytest
 
-from dnsguard.filter import Action, FilterEngine, compile_rules
-from dnsguard.wire.rrtypes import Type
+from trench.filter import Action, FilterEngine, compile_rules
+from trench.wire.rrtypes import Type
 
 
 def eng(text: str) -> FilterEngine:
@@ -128,7 +128,7 @@ def test_ctag_exclusion():
 def test_exclusion_rules_are_not_treated_as_plain(rule):
     """Modifier-free rules take a compact path that drops modifiers. A rule
     carrying only an *exclusion* must not be mistaken for one of them."""
-    from dnsguard.filter.engine import _is_plain
+    from trench.filter.engine import _is_plain
     compiled = compile_rules(rule, "list")
     assert compiled and not _is_plain(compiled[0])
     e = FilterEngine.compile(compiled)
@@ -141,12 +141,12 @@ def test_exclusion_rules_are_not_treated_as_plain(rule):
 async def test_pipeline_passes_client_identity_to_the_matcher():
     """The matcher supported $client all along; the pipeline never told it who
     was asking, so every such rule was inert end to end."""
-    from dnsguard.cache import Cache
-    from dnsguard.config import Config
-    from dnsguard.engine import Pipeline
-    from dnsguard.stats import Counters
-    from dnsguard.wire import Class, Message, Question
-    from dnsguard.wire.name import Name
+    from trench.cache import Cache
+    from trench.config import Config
+    from trench.engine import Pipeline
+    from trench.stats import Counters
+    from trench.wire import Class, Message, Question
+    from trench.wire.name import Name
 
     cfg = Config.model_validate({"filtering": {"enabled": True}})
 

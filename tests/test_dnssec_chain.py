@@ -8,13 +8,13 @@ from __future__ import annotations
 
 import pytest
 
-from dnsguard.auth_zone import Zone
-from dnsguard.auth_zone.sign import sign_zone
-from dnsguard.resolver.dnssec import ValidationResult, Validator
-from dnsguard.wire import RR, Class, Message, Type
-from dnsguard.wire import rdata as R
-from dnsguard.wire.name import Name
-from dnsguard.wire.rrtypes import Flags
+from trench.auth_zone import Zone
+from trench.auth_zone.sign import sign_zone
+from trench.resolver.dnssec import ValidationResult, Validator
+from trench.wire import RR, Class, Message, Type
+from trench.wire import rdata as R
+from trench.wire.name import Name
+from trench.wire.rrtypes import Flags
 
 ROOT = Name.from_text(".")
 TEST = Name.from_text("test.")
@@ -118,7 +118,7 @@ async def test_missing_signatures_under_a_published_ds_are_bogus():
 # --- recursive resolver wired to validate against the mock anchor ---
 @pytest.mark.asyncio
 async def test_recursive_sets_ad_when_secure():
-    from dnsguard.resolver.recursive import Recursive
+    from trench.resolver.recursive import Recursive
     zones, anchors = build_hierarchy()
 
     async def transport(ip, query):
@@ -141,7 +141,7 @@ async def test_recursive_sets_ad_when_secure():
 
 @pytest.mark.asyncio
 async def test_recursive_servfail_on_bogus():
-    from dnsguard.resolver.recursive import Recursive
+    from trench.resolver.recursive import Recursive
     zones, anchors = build_hierarchy()
     # corrupt the leaf A RRSIG so validation must fail
     leaf = zones["example.test."]
@@ -160,5 +160,5 @@ async def test_recursive_servfail_on_bogus():
     rec = Recursive(transport, root_hints=["10.0.0.1"], qmin=False,
                     validate=True, anchors=anchors)
     resp = await rec.resolve("example.test", Type.A)
-    from dnsguard.wire.rrtypes import Rcode
+    from trench.wire.rrtypes import Rcode
     assert resp.rcode == Rcode.SERVFAIL and not resp.answers

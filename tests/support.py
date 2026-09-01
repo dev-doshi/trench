@@ -9,7 +9,7 @@ engine that actually serves queries, from the rule text an operator would write.
 """
 from __future__ import annotations
 
-from dnsguard.filter import FilterEngine, iter_rules
+from trench.filter import FilterEngine, iter_rules
 
 
 def blocked_engine(*domains: str, allow: tuple[str, ...] = ()) -> FilterEngine:

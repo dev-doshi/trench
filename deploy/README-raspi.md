@@ -1,9 +1,9 @@
 # Raspberry Pi deployment
 
-Live at `/opt/dnsguard/deploy` on the Pi. Console: `http://<pi>:8089`.
+Live at `/opt/trench/deploy` on the Pi. Console: `http://<pi>:8089`.
 
 ```bash
-cd /opt/dnsguard/deploy
+cd /opt/trench/deploy
 docker compose -f docker-compose.raspi.yml up -d      # start / apply config
 docker compose -f docker-compose.raspi.yml logs -f    # follow logs
 docker compose -f docker-compose.raspi.yml restart
@@ -58,7 +58,7 @@ To enable the safety net (**requires a reboot**), append to the single line in
 cgroup_enable=memory cgroup_memory=1
 ```
 
-Then `reboot`. Afterwards `docker inspect dnsguard --format '{{.HostConfig.Memory}}'`
+Then `reboot`. Afterwards `docker inspect trench --format '{{.HostConfig.Memory}}'`
 should report `734003200` instead of `0`. Until then, memory safety rests on the
 sizing above rather than on enforcement.
 
@@ -79,8 +79,8 @@ cp /root/resolv.conf.bak /etc/resolv.conf
 ## Rollback
 
 ```bash
-docker tag dnsguard:rollback-20260726-185224 dnsguard:latest
-cd /opt/dnsguard/deploy && docker compose -f docker-compose.raspi.yml up -d
+docker tag trench:rollback-20260726-185224 trench:latest
+cd /opt/trench/deploy && docker compose -f docker-compose.raspi.yml up -d
 ```
-Previous config: `/root/dnsguard-backups/dnsguard.yaml.*`; previous tree:
-`/opt/dnsguard.old-20260726`.
+Previous config: `/root/trench-backups/trench.yaml.*`; previous tree:
+`/opt/trench.old-20260726`.

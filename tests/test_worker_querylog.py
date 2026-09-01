@@ -12,9 +12,9 @@ import json
 
 import pytest
 
-from dnsguard.store import Database, QueryLog
-from dnsguard.store.querylog import ANON_CLIENT_DOMAIN, QueryRecord
-from dnsguard.store.ringlog import RecordRing
+from trench.store import Database, QueryLog
+from trench.store.querylog import ANON_CLIENT_DOMAIN, QueryRecord
+from trench.store.ringlog import RecordRing
 
 
 def mkrec(qname="example.com", client="10.0.0.5", action="forwarded"):
@@ -111,5 +111,5 @@ async def test_privacy_is_applied_before_anything_crosses_the_boundary(tmp_path)
     assert "secret.test" not in published and "10.0.0.9" not in published
 
     # and the primary, hashing with the same salt, agrees on what it is
-    from dnsguard.security.hashutil import hash_identifier
+    from trench.security.hashutil import hash_identifier
     assert hash_identifier("secret.test", salt) in published

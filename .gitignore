@@ -4,7 +4,7 @@ __pycache__/
 *.so
 .Python
 # Anchored to the repo root: `dist/` unanchored would also swallow the
-# committed admin SPA at dnsguard/web/dist.
+# committed admin SPA at trench/web/dist.
 /build/
 /dist/
 *.egg-info/
@@ -39,6 +39,15 @@ node_modules/
 data/*.shm
 # compiled block table, rebuilt from the sources on every refresh
 data/*.table
+# `cache.persist` and `cache.prewarm` write these, and both are a list of the
+# names this household actually resolved — the same private data as the query
+# log, in a file whose extension does not announce it. Neither exists until an
+# operator turns those settings on, which is exactly when a stray `git add -A`
+# in a checkout would sweep one in.
+data/cache.json
+data/popularity.json
+# the one-time admin password written on first start (mode 0600)
+data/initial-admin-password
 data/certs/
 *.db
 *.db-wal
@@ -52,9 +61,9 @@ data/certs/
 *.pfx
 
 # ── Local configuration ─────────────────────────────────────────────────────
-# dnsguard.example.yaml is the documented template that ships. A real
-# dnsguard.yaml describes somebody's actual network and stays local.
-/dnsguard.yaml
+# trench.example.yaml is the documented template that ships. A real
+# trench.yaml describes somebody's actual network and stays local.
+/trench.yaml
 /config.json
 *.local.yaml
 *.local.yml
