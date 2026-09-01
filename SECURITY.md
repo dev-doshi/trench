@@ -1,6 +1,6 @@
 # Security Policy
 
-DNSGuard sits in the resolution path for every device on a network and, when
+Trench sits in the resolution path for every device on a network and, when
 the admin console is enabled, holds credentials for it. Bugs here are worth
 reporting carefully.
 
@@ -24,7 +24,7 @@ profile.
 
 Please include:
 
-- affected version (`dnsguard --version`) and how DNSGuard is deployed
+- affected version (`trench --version`) and how Trench is deployed
   (Docker, systemd, source);
 - the relevant part of the configuration, with secrets removed;
 - a description of the impact, and a reproduction — a packet capture, a
@@ -54,24 +54,24 @@ In scope, and treated as security issues:
   the admin console, including privilege escalation between roles and token
   handling;
 - TSIG, zone-transfer, dynamic-update and NOTIFY authentication flaws;
-- amplification or reflection made possible by DNSGuard's own defaults;
+- amplification or reflection made possible by Trench's own defaults;
 - leaks of query-log data or credential material to unauthorized parties;
 - privilege-drop, sandbox or container-escape failures.
 
 Out of scope:
 
 - an operator deliberately exposing port 53 to the internet as an open
-  resolver — DNSGuard ships bound to loopback and warns at startup when it
+  resolver — Trench ships bound to loopback and warns at startup when it
   finds a network-facing listener with rate limiting off, but it cannot stop
   a configuration that overrides both;
 - missing hardening on a deployment where the admin console has been bound to
   a public interface without TLS;
 - blocklist content — false positives and false negatives belong to the list
-  maintainers, not to DNSGuard (see the collateral-damage report in the
+  maintainers, not to Trench (see the collateral-damage report in the
   console for a way to spot them);
 - denial of service that needs privileged network position and floods
-  DNSGuard the same way it would flood any resolver;
-- vulnerabilities in dependencies with no DNSGuard-specific exploit path;
+  Trench the same way it would flood any resolver;
+- vulnerabilities in dependencies with no Trench-specific exploit path;
   report those upstream, and open a normal issue here to bump the pin.
 
 ## Hardening notes for operators

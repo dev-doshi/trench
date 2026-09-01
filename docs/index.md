@@ -1,10 +1,10 @@
-# DNSGuard
+# Trench
 
 A self-hosted DNS server in pure-Python asyncio: ad/tracker sinkhole,
 validating recursive resolver, authoritative server with online DNSSEC signing, and
 opt-in DHCP — a superset of PiHole, AdGuard Home, and Technitium.
 
-See the [README](https://github.com/dev-doshi/dnsguard) for the feature matrix.
+See the [README](https://github.com/dev-doshi/trench) for the feature matrix.
 This site covers installation, deployment, configuration, security and the
 API.
 
@@ -14,8 +14,8 @@ New here? Start with [Installation](installation.md), then
 ## Quick start
 
 ```bash
-pip install dnsguard
-python -m dnsguard --dns-port 5354 --upstream 1.1.1.1:53 --source data/default_blocklist.txt
+pip install trench
+python -m trench --dns-port 5354 --upstream 1.1.1.1:53 --source data/default_blocklist.txt
 dig @127.0.0.1 -p 5354 doubleclick.net    # 0.0.0.0
 ```
 

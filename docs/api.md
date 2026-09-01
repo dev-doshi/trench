@@ -5,7 +5,11 @@ document is served at `/api/v1/openapi.json`.
 
 ## Authentication
 
-Log in to obtain a session cookie, or use an API token as a Bearer header:
+Log in to obtain a session cookie, or use an API token as a Bearer header.
+Tokens are created in the console under **Settings → Access** (or via
+`POST /api/v1/auth/tokens`, admin only) and are shown exactly once — only a
+keyed digest is stored. A token's scope caps its owner's role, so an admin
+can issue a read-only token without creating a second account:
 
 ```bash
 curl -c jar -X POST http://host:8089/api/v1/auth/login \

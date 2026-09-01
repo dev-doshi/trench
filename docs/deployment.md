@@ -2,22 +2,22 @@
 
 ## systemd
 
-The repository ships `dnsguard.service`. It binds the privileged ports with
+The repository ships `trench.service`. It binds the privileged ports with
 `CAP_NET_BIND_SERVICE` rather than running as root, and applies a restrictive
 sandbox (`ProtectSystem=strict`, `PrivateDevices`, `RestrictAddressFamilies`,
 `NoNewPrivileges`).
 
 ```bash
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin dnsguard
-sudo mkdir -p /etc/dnsguard
-sudo cp dnsguard.example.yaml /etc/dnsguard/dnsguard.yaml
-sudo cp dnsguard.service /etc/systemd/system/
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin trench
+sudo mkdir -p /etc/trench
+sudo cp trench.example.yaml /etc/trench/trench.yaml
+sudo cp trench.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now dnsguard
-journalctl -u dnsguard -f
+sudo systemctl enable --now trench
+journalctl -u trench -f
 ```
 
-State lives in `/var/lib/dnsguard` (`StateDirectory=`), which is one of only
+State lives in `/var/lib/trench` (`StateDirectory=`), which is one of only
 two paths the unit can write to.
 
 ### Freeing port 53
@@ -35,7 +35,7 @@ If you disable `systemd-resolved`, replace `/etc/resolv.conf` with a real one
 ## Docker Compose
 
 ```bash
-cp dnsguard.example.yaml dnsguard.yaml
+cp trench.example.yaml trench.yaml
 docker compose up -d
 docker compose logs -f
 ```
@@ -43,7 +43,7 @@ docker compose logs -f
 The image carries its own healthcheck, which sends a real query over loopback
 and requires a well-formed reply. It queries a name under `.invalid`, so an
 upstream outage cannot turn into a restart loop — it reports on whether
-DNSGuard is answering, not on whether the internet is up.
+Trench is answering, not on whether the internet is up.
 
 ## Raspberry Pi
 
@@ -74,7 +74,7 @@ sized for the board.
 
 The list set is the main thing that decides the memory ceiling. HaGeZi's
 `ultimate.txt` plus `tif.medium.txt` is roughly 750k rules and comfortable on
-a 2 GB Pi; the full `tif.txt` alone is around 1.7M and is not. If DNSGuard is
+a 2 GB Pi; the full `tif.txt` alone is around 1.7M and is not. If Trench is
 being OOM-killed, cut lists before anything else.
 
 ## Multiple workers
@@ -92,8 +92,8 @@ shared across processes, so the console still reports whole-server numbers.
 ## Backups
 
 ```bash
-dnsguard backup /path/to/dnsguard-$(date +%F).tar.gz
-dnsguard restore /path/to/dnsguard-2026-08-19.tar.gz
+trench backup /path/to/trench-$(date +%F).tar.gz
+trench restore /path/to/trench-2026-08-19.tar.gz
 ```
 
 The archive covers the data directory: the query-log database, users and API

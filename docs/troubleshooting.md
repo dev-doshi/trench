@@ -21,22 +21,22 @@ resolution for itself.
 
 Binding port 53 also needs privilege. Run under the shipped systemd unit
 (which grants `CAP_NET_BIND_SERVICE` without root), or start as root with
-`server.user` set so DNSGuard drops straight after binding.
+`server.user` set so Trench drops straight after binding.
 
 ## Everything resolves but nothing is blocked
 
 Check what actually compiled:
 
 ```
-INFO dnsguard.app: blocked domains: 0
+INFO trench.app: blocked domains: 0
 ```
 
 Zero means no list loaded. Either `filtering.sources` is empty, or the fetches
-failed — the log names each source and its error. `dnsguard update` forces a
+failed — the log names each source and its error. `trench update` forces a
 refresh; a local path is resolved relative to the working directory, falling
 back to the copy shipped inside the package.
 
-Also confirm the client is actually using DNSGuard. Browsers with DoH enabled
+Also confirm the client is actually using Trench. Browsers with DoH enabled
 bypass system DNS entirely, and phones roam onto cellular:
 
 ```bash
@@ -46,7 +46,7 @@ dig @127.0.0.1 -p 5354 doubleclick.net     # expect 0.0.0.0
 ## A site is broken and it is our fault
 
 ```bash
-dnsguard regex-test '||example.com^' www.example.com
+trench regex-test '||example.com^' www.example.com
 ```
 
 The console's collateral-damage view lists names that recently started failing
@@ -73,7 +73,7 @@ upstream:
 
 means a badly signed zone is a failure rather than a warning — which is the
 point, but some zones really are broken. The log names the zone and the reason.
-Confirm with a validator you trust before assuming it is DNSGuard.
+Confirm with a validator you trust before assuming it is Trench.
 
 ## The Pi locks up, or the container keeps restarting
 
@@ -86,21 +86,31 @@ cannot pick victims elsewhere on the host, and cut lists: HaGeZi `ultimate` +
 ## Locked out of the console
 
 ```bash
-dnsguard passwd            # offline, on the box
+trench passwd            # offline, on the box
 ```
 
-The first-start password is printed once, to the log. If TOTP is the problem,
-`dnsguard passwd` resets the account's credentials.
+The first-start password is written once to `initial-admin-password` in the data
+directory, mode 0600, and the log records the path rather than the password —
+under systemd and Docker the log *is* stdout, so printing it there would put it
+in the journal. Read it, then delete the file.
+
+If two-factor is the problem, add `--clear-totp`: a password reset on its own
+leaves the second factor in place, so the reset appears to work and the next
+login still fails.
+
+```bash
+trench passwd admin --clear-totp
+```
 
 ## The container reports unhealthy
 
 The healthcheck sends a real query over loopback and requires a well-formed
 reply. It queries a `.invalid` name, so an upstream outage does not fail it —
-unhealthy means DNSGuard itself has stopped answering.
+unhealthy means Trench itself has stopped answering.
 
 ```bash
-docker logs dnsguard
-docker exec dnsguard python3 /usr/local/bin/dnsguard-healthcheck; echo $?
+docker logs trench
+docker exec trench python3 /usr/local/bin/trench-healthcheck; echo $?
 ```
 
 ## Slower than expected

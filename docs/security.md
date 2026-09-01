@@ -1,10 +1,10 @@
 # Security
 
-DNSGuard sits in the resolution path for every device on the network. This
+Trench sits in the resolution path for every device on the network. This
 page is about the settings that decide how much that exposes.
 
 To report a vulnerability, see
-[SECURITY.md](https://github.com/dev-doshi/dnsguard/blob/main/SECURITY.md).
+[SECURITY.md](https://github.com/dev-doshi/trench/blob/main/SECURITY.md).
 Please do not open a public issue for one.
 
 ## What the defaults assume
@@ -14,14 +14,14 @@ on `127.0.0.1:8089`, rate limiting off, no privilege drop. That is safe
 because nothing can reach it. Every real deployment changes `host`, and the
 settings that should change with it live elsewhere in the file.
 
-DNSGuard checks for that gap at startup and warns:
+Trench checks for that gap at startup and warns:
 
 ```
-WARN dnsguard.app: do53 is listening on 0.0.0.0 with security.rate_limit
+WARN trench.app: do53 is listening on 0.0.0.0 with security.rate_limit
      disabled: anything that can reach this port can use it for amplification.
-WARN dnsguard.app: running as root with server.user unset: DNSGuard will keep
+WARN trench.app: running as root with server.user unset: Trench will keep
      full privileges after binding.
-WARN dnsguard.app: admin console is listening on 0.0.0.0 without TLS: the
+WARN trench.app: admin console is listening on 0.0.0.0 without TLS: the
      password and every API token cross the network in the clear.
 ```
 
@@ -63,7 +63,7 @@ range wider than that hands the same free choice to everything inside it.
 
 ## Never expose port 53 to the internet
 
-DNSGuard is a resolver for a network you control. A recursive resolver open to
+Trench is a resolver for a network you control. A recursive resolver open to
 the internet will be found and abused within hours, rate limit or not. If you
 need DNS from outside, use an encrypted transport with authentication in front
 of it, or a VPN.
@@ -77,8 +77,8 @@ token cross the network in cleartext.
 web:
   host: 127.0.0.1      # or a management interface
   tls: true
-  cert: /etc/dnsguard/console.crt
-  key: /etc/dnsguard/console.key
+  cert: /etc/trench/console.crt
+  key: /etc/trench/console.key
 ```
 
 The console has RBAC (`viewer` / `editor` / `admin`), API tokens, optional
@@ -86,15 +86,59 @@ TOTP two-factor, and login lockout after repeated failures. `/metrics`,
 `/healthz` and the login endpoint are public by design — keep the port itself
 off untrusted networks.
 
+Both are managed under **Settings → Access**. A token is shown once and stored
+only as a keyed digest, under a key held in the database, so tokens keep working
+across restarts and a copy of the database alone yields nothing precomputable.
+A token's scope caps its owner's role: an admin can issue a `viewer` token
+without creating a second account.
+
+Enrolling a second factor asks for one matching code before anything is stored —
+an unverified secret is a lockout on the next login. If the authenticator is
+lost, recovery is `trench passwd <user> --clear-totp`, offline on the box,
+because write access to the database is the only proof of ownership left at
+that point.
+
+## Automatic TLS certificates
+
+Encrypted transports (DoT, DoH, DoQ) and the console over HTTPS need a
+certificate. Without one they self-sign, which every client then has to be told
+to trust. `acme:` obtains a real one over ACME dns-01 (RFC 8555):
+
+```yaml
+zones:
+  - origin: example.org.
+    file: /etc/trench/example.org.zone
+
+acme:
+  enabled: true
+  domains: [dns.example.org]
+  email: ops@example.org          # optional; the CA warns you before expiry
+```
+
+dns-01 rather than http-01, because Trench is already an authoritative DNS
+server: it publishes `_acme-challenge` in its own zone, so nothing has to be
+reachable from the internet, port 80 stays closed, and wildcards are possible.
+
+The constraint that comes with that is real: **the name being certified must sit
+in a zone this server is authoritative for.** If it does not, Trench says so
+once at start-up and does nothing else — it will not retry a setup that cannot
+work. An explicitly configured `cert`/`key` pair always takes precedence, so
+pointing a listener at your own certificate keeps working.
+
+Renewal is checked twice a day and runs 30 days before expiry, in the primary
+worker only. The account key, certificate and private key live in the data
+directory as `acme-account.key`, `acme.crt` and `acme.key`; the two keys are
+written mode 0600 and replaced atomically.
+
 ## Dropping privileges
 
 ```yaml
 server:
-  user: dnsguard
-  group: dnsguard
+  user: trench
+  group: trench
 ```
 
-DNSGuard binds the privileged ports first, then drops. The drop is verified
+Trench binds the privileged ports first, then drops. The drop is verified
 rather than assumed: it re-checks that root cannot be regained, and refuses to
 run if the saved-set-uid survived. Under systemd the shipped unit avoids root
 altogether with `AmbientCapabilities=CAP_NET_BIND_SERVICE`.

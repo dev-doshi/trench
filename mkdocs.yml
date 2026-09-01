@@ -1,6 +1,6 @@
-site_name: DNSGuard
+site_name: Trench
 site_description: Self-hosted DNS sinkhole, validating recursive resolver, and authoritative server
-repo_url: https://github.com/dev-doshi/dnsguard
+repo_url: https://github.com/dev-doshi/trench
 edit_uri: edit/main/docs/
 theme:
   name: material

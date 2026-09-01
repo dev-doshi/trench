@@ -1,20 +1,20 @@
-# Contributing to DNSGuard
+# Contributing to Trench
 
 ## Getting set up
 
 ```bash
-git clone https://github.com/dev-doshi/dnsguard
-cd dnsguard
+git clone https://github.com/dev-doshi/trench
+cd trench
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 pytest -q
 ```
 
-Python 3.11 or newer. The admin console is prebuilt into `dnsguard/web/dist`,
+Python 3.11 or newer. The admin console is prebuilt into `trench/web/dist`,
 so no Node toolchain is needed unless you are changing the console itself:
 
 ```bash
-cd dnsguard/web/frontend
+cd trench/web/frontend
 npm ci
 npm run build          # writes ../dist, which is committed
 ```
@@ -22,7 +22,7 @@ npm run build          # writes ../dist, which is committed
 ## Before you open a pull request
 
 ```bash
-ruff check dnsguard/ tests/ scripts/ deploy/
+ruff check trench/ tests/ scripts/ deploy/
 python3 scripts/mypy_gate.py
 pytest -q
 ```
@@ -35,9 +35,9 @@ can be revisited.
 ## What a good change looks like
 
 - **Tests come with it.** A bug fix needs a test that fails without it. The
-  suite is the reason this project can be changed at all — 578 tests over the
-  wire parser, the resolver, DNSSEC, the filter engine, the transports and the
-  API.
+  suite is the reason this project can be changed at all — around 800 tests
+  over the wire parser, the resolver, DNSSEC, the filter engine, the
+  transports, the DHCP server and the API.
 - **Protocol claims cite the RFC.** If a change alters what goes on the wire,
   name the RFC and section in the code comment, not just the PR.
 - **Comments explain why, not what.** The existing code does this; match it.
@@ -52,14 +52,14 @@ Changes to these get read closely, and should keep their existing tests
 passing without modification unless the PR explains why the old expectation
 was wrong:
 
-- `dnsguard/wire/` — parses hostile input; see `tests/test_wire_hostile.py`
+- `trench/wire/` — parses hostile input; see `tests/test_wire_hostile.py`
   and `scripts/fuzz_wire.py`.
-- `dnsguard/resolver/dnssec/` — a permissive bug here silently voids
+- `trench/resolver/dnssec/` — a permissive bug here silently voids
   validation for every name.
-- `dnsguard/auth_zone/tsig.py`, `update.py`, `xfr_service.py` — transaction
+- `trench/auth_zone/tsig.py`, `update.py`, `xfr_service.py` — transaction
   authentication.
-- `dnsguard/api/auth.py` — roles, tokens, TOTP, lockout.
-- `dnsguard/engine/fastpath.py` — replays recorded response bytes; anything it
+- `trench/api/auth.py` — roles, tokens, TOTP, lockout.
+- `trench/engine/fastpath.py` — replays recorded response bytes; anything it
   skips must be something the recorded answer already accounted for.
 
 Never send a vulnerability in as a pull request. See [SECURITY.md](SECURITY.md).
@@ -85,7 +85,7 @@ Participation is covered by [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 ## Type checking
 
-`mypy dnsguard/` currently reports a backlog of findings, nearly all of one
+`mypy trench/` currently reports a backlog of findings, nearly all of one
 shape: the DNSSEC and wire layers pass rdata around as `object` and duck-type
 it, so mypy objects to every attribute access. Typing that properly means
 introducing precise rdata types across the parser and the validator — worth

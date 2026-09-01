@@ -1,7 +1,7 @@
 # Configuration
 
-DNSGuard reads a single pydantic-validated YAML file (`--config`). Every key is
-optional; see [`dnsguard.example.yaml`](https://github.com/dnsguard/dnsguard/blob/main/dnsguard.example.yaml)
+Trench reads a single pydantic-validated YAML file (`--config`). Every key is
+optional; see [`trench.example.yaml`](https://github.com/trench/trench/blob/main/trench.example.yaml)
 for the full annotated default.
 
 ## Filtering rules
@@ -33,7 +33,7 @@ Identity precedence: ClientID → exact IP → CIDR → MAC → default.
 
 ```yaml
 zones:
-  - {origin: home.lan., file: /etc/dnsguard/home.zone, dnssec: true}
+  - {origin: home.lan., file: /etc/trench/home.zone, dnssec: true}
 local_records:
   - {name: nas.home.lan, type: A, answer: 192.168.1.10}
 ```
