@@ -37,8 +37,12 @@ jobs:
       - run: |
           pip install pip-audit
           pip install -e .
+      # --skip-editable leaves out Trench itself, which is installed editable
+      # above and is not on PyPI to be audited against. Without it the job
+      # fails on the absence of the project rather than on a vulnerability,
+      # which is the one outcome this gate must never produce.
       - name: Known vulnerabilities in the dependency tree
-        run: pip-audit --strict --desc
+        run: pip-audit --strict --desc --skip-editable
 
   # The wire parser is the one component that reads attacker-controlled bytes
   # by definition, so it gets its own standing fuzz run rather than relying on
