@@ -591,25 +591,37 @@ class Updater:
 
     # ------------------------------------------------------------- internals
     async def _download(self, release: Release, into: Path) -> Path:
-        """Fetch the wheel and verify its digest. A mismatch is fatal."""
+        """Fetch the wheel and verify its digest. A mismatch is fatal.
+
+        Transport failures are translated into `UpdateError`, because that is
+        the only exception type the API knows how to answer with: everything
+        else escapes as a 500 with no audit entry. An index that still lists an
+        artifact the publisher has since removed is the ordinary case here, not
+        an exotic one, and "404 while fetching the wheel" is something an
+        operator can act on.
+        """
         target = into / _artifact_name(release.url)
         digest = hashlib.sha256()
         total = 0
         import aiohttp
         timeout = aiohttp.ClientTimeout(total=max(self.cfg.timeout * 10, 60.0))
         headers = {"User-Agent": USER_AGENT}
-        async with (
-            aiohttp.ClientSession(timeout=timeout, headers=headers) as session,
-            session.get(release.url) as resp,
-        ):
-            resp.raise_for_status()
-            with open(target, "wb") as fh:
-                async for chunk in resp.content.iter_chunked(65536):
-                    total += len(chunk)
-                    if total > MAX_ARTIFACT_BYTES:
-                        raise UpdateError("the artifact exceeds the size ceiling; refusing")
-                    digest.update(chunk)
-                    fh.write(chunk)
+        try:
+            async with (
+                aiohttp.ClientSession(timeout=timeout, headers=headers) as session,
+                session.get(release.url) as resp,
+            ):
+                resp.raise_for_status()
+                with open(target, "wb") as fh:
+                    async for chunk in resp.content.iter_chunked(65536):
+                        total += len(chunk)
+                        if total > MAX_ARTIFACT_BYTES:
+                            raise UpdateError("the artifact exceeds the size ceiling; refusing")
+                        digest.update(chunk)
+                        fh.write(chunk)
+        except (aiohttp.ClientError, TimeoutError) as e:
+            raise UpdateError(
+                f"could not download the artifact from {release.url}: {e}") from e
         got = digest.hexdigest()
         if got != release.sha256:
             raise UpdateError(
@@ -628,11 +640,23 @@ class Updater:
         again; `--no-deps` for the same reason. This is testing the artifact,
         not resolving a dependency graph — the real install does that.
 
-        The build has to answer two questions, not one. "Does it import?" was
-        the obvious check and it is the weaker half: a wheel from the wrong
+        The build has to answer three questions, not one. "Does it import?" was
+        the obvious check and it is the weakest of them: a wheel from the wrong
         project imports perfectly well. So it must also report *our* version,
         the one the index promised — which no other project's artifact can do
         by accident.
+
+        The third question is which copy answered, and it is the one that makes
+        the other two mean anything. `python -c` prepends the working directory
+        to `sys.path`, and this subprocess inherits the daemon's — so a Trench
+        started from its own checkout imports `./trench` here instead of the
+        wheel that was just installed. `--system-site-packages` is a second
+        route to the same place. Either way the version reported is some other
+        copy's version, and if it happens to match the one the index offered,
+        this function returns success having proved nothing whatsoever about
+        the bytes that are seconds away from being installed over a running
+        resolver. So the import states where it came from, and a module
+        resolved outside the staging environment is a hard failure.
         """
         env = staging / "venv"
         await self._run([sys.executable, "-m", "venv", "--system-site-packages", str(env)],
@@ -641,16 +665,30 @@ class Updater:
         await self._run([str(python), "-m", "pip", "install", "--no-input",
                          "--disable-pip-version-check", "--no-deps", str(wheel)],
                         timeout=STAGING_TIMEOUT, what="install into the staging environment")
-        out = await self._run([str(python), "-c",
+        # -I so the working directory, PYTHONPATH and the user site cannot
+        # shadow it either. It does not cover the inherited system packages —
+        # those come from pyvenv.cfg — which is what the path check below is for.
+        out = await self._run([str(python), "-I", "-c",
                                "import trench, trench.app, trench.engine.pipeline;"
-                               " print(trench.version.__version__)"],
+                               " print(trench.version.__version__); print(trench.__file__)"],
                               timeout=SMOKE_TIMEOUT, what="import the staged build")
-        reported = out.strip().splitlines()[-1].strip() if out.strip() else ""
+        lines = [ln.strip() for ln in out.strip().splitlines() if ln.strip()]
+        reported = lines[-2] if len(lines) >= 2 else ""
+        origin = lines[-1] if lines else ""
+        try:
+            Path(origin).resolve().relative_to(env.resolve())
+        except ValueError:
+            raise UpdateError(
+                f"the staging environment imported Trench from {origin!r}, which is "
+                f"outside it, so the downloaded artifact was never the thing tested. "
+                f"Another copy is shadowing the staged one — a checkout in the working "
+                f"directory, or an install inherited from the base interpreter. "
+                f"Refusing to install an artifact this could not verify.") from None
         if reported != release.version:
             raise UpdateError(
                 f"the staged build reports version {reported!r}, but the index "
                 f"offered {release.version!r}; refusing to install it")
-        log.info("staged build imports and reports version %s", reported)
+        log.info("staged build imports from %s and reports version %s", origin, reported)
 
     async def _install(self, wheel: Path) -> None:
         """Install into the live environment. Runs only after the smoke test."""

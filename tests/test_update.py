@@ -414,6 +414,34 @@ def test_the_distribution_name_is_compared_the_way_packaging_does():
 
 
 @pytest.mark.asyncio
+async def test_a_staged_build_imported_from_outside_the_staging_env_is_refused(
+        tmp_path, monkeypatch):
+    """The version answer only means something if the staged copy gave it.
+
+    `python -c` prepends the working directory to sys.path, so a daemon started
+    from a checkout imports `./trench` in the staging subprocess instead of the
+    wheel it just installed. When that copy happens to carry the version the
+    index offered, every other check in the smoke test passes while the
+    downloaded bytes remain completely untested — which is the one thing this
+    function exists to prevent.
+    """
+    up = _updater(tmp_path, _index("2.0.0", "2.1.0"), mode="auto")
+    payload = b"wheel"
+    _serve(monkeypatch, payload)
+    release = Release(version="2.1.0", sha256=hashlib.sha256(payload).hexdigest(),
+                      url="https://x/trench_dns-2.1.0-py3-none-any.whl", size=len(payload))
+
+    async def _run(argv, *, timeout, what):
+        # The right version, from the wrong copy.
+        return f"2.1.0\n{tmp_path / 'checkout' / 'trench' / '__init__.py'}\n" \
+            if "-c" in argv else ""
+
+    monkeypatch.setattr(up, "_run", _run)
+    with pytest.raises(UpdateError, match="outside it"):
+        await up.apply(release)
+
+
+@pytest.mark.asyncio
 async def test_a_staged_build_reporting_the_wrong_version_is_refused(tmp_path, monkeypatch):
     """Importing is the weak half of the smoke test: another project's wheel
     imports perfectly well. Reporting our version is the half it cannot fake."""
@@ -424,7 +452,14 @@ async def test_a_staged_build_reporting_the_wrong_version_is_refused(tmp_path, m
                       url="https://x/trench_dns-2.1.0-py3-none-any.whl", size=len(payload))
 
     async def _run(argv, *, timeout, what):
-        return "1.0.0\n" if "-c" in argv else ""
+        if "-c" not in argv:
+            return ""
+        # The import check reports the version *and* where it was imported
+        # from. Answer with a path inside the staging environment — derived
+        # from the interpreter being invoked — so this exercises the version
+        # half rather than tripping the shadowing check first.
+        env = pathlib.Path(argv[0]).parent.parent
+        return f"1.0.0\n{env / 'lib' / 'site-packages' / 'trench' / '__init__.py'}\n"
 
     monkeypatch.setattr(up, "_run", _run)
     with pytest.raises(UpdateError, match="reports version '1.0.0'"):

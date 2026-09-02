@@ -1131,7 +1131,7 @@ class App:
             log.info("serving now; fetching blocklists in the background")
             self._bootstrap = asyncio.create_task(self._initial_blocklist_fetch())
         await self._schedule_jobs()
-        self._banner()
+        self._banner(pending)
         await self._stop.wait()
 
     async def _initial_blocklist_fetch(self) -> None:
@@ -1276,7 +1276,7 @@ class App:
     def _learn_file(self):
         return self.config.data_path / "popularity.json"
 
-    def _banner(self) -> None:
+    def _banner(self, pending: bool = False) -> None:
         if not self.primary:
             log.info("worker %d/%d: Do53 on %s:%d (SO_REUSEPORT)", self.worker_idx,
                      self.nworkers, self.config.server.do53.host, self.config.server.do53.port)
@@ -1286,4 +1286,10 @@ class App:
         log.info("DNS  : %s:%d (udp+tcp)%s", s.do53.host, s.do53.port, wk)
         log.info("upstream: %s [%s]", ", ".join(self.config.upstream.servers),
                  self.config.upstream.strategy)
-        log.info("blocked domains: %d", self.filter.size)
+        # On a first run the lists have not been compiled yet, and reporting
+        # a bare 0 one line under "fetching blocklists in the background" reads
+        # as "this is not filtering" to someone who has just installed it.
+        if self.filter.size or not pending:
+            log.info("blocked domains: %d", self.filter.size)
+        else:
+            log.info("blocked domains: none yet — the first list fetch is still running")

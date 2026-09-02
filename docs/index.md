@@ -22,7 +22,7 @@ Nothing is published yet, so install from a checkout:
 git clone https://github.com/dev-doshi/trench && cd trench
 pip install -e .
 python3 -m trench --dns-port 5354 --upstream 1.1.1.1:53 \
-                  --source trench/data/default_blocklist.txt
+                  --source data/default_blocklist.txt
 dig @127.0.0.1 -p 5354 doubleclick.net    # 0.0.0.0
 ```
 

@@ -53,7 +53,7 @@ your machine has to move out of the way:
 git clone https://github.com/dev-doshi/trench && cd trench
 pip install -e ".[dev]"
 python3 -m trench --dns-port 5354 --upstream 1.1.1.1:53 \
-                  --source trench/data/default_blocklist.txt
+                  --source data/default_blocklist.txt
 ```
 
 In another terminal:

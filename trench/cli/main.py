@@ -187,7 +187,12 @@ def _do_upgrade(args) -> int:
             detail = json.loads(e.read()).get("error", "")
         except Exception:
             detail = ""
-        print(f"error: {detail or e}", file=sys.stderr)
+        # An auth failure has no JSON body to explain itself, so without this
+        # the first command a new install runs answers "401: Unauthorized" and
+        # nothing else — while every other subcommand says what to do about it.
+        hint = "" if detail or e.code not in (401, 403) else \
+            " (is the daemon running? do you need --token?)"
+        print(f"error: {detail or e}{hint}", file=sys.stderr)
         return 1
     except Exception as e:
         print(f"error: {e} (is the daemon running? do you need --token?)", file=sys.stderr)
