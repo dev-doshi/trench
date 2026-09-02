@@ -19,7 +19,7 @@ display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0
 .box{{max-width:520px;padding:40px;text-align:center}}
 h1{{font-size:54px;margin:0}}h1 b{{color:#5aa6ff}}.s{{color:#f7556a;font-size:20px;font-weight:700;margin:14px 0}}
 p{{color:#8b98ad}}code{{color:#e0b341;font-family:ui-monospace,monospace}}</style></head>
-<body><div class="box"><h1>🛡 DNS<b>Guard</b></h1>
+<body><div class="box"><h1>🛡 Tre<b>nch</b></h1>
 <div class="s">This site is blocked</div>
 <p>The domain <code id="host"></code> was blocked by your network's Trench filter
 (ads, trackers, malware, or a custom rule).</p>

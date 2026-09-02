@@ -41,7 +41,7 @@ onMounted(boot);
   <Frame v-else-if="store.state.user" />
   <div v-else class="login">
     <div class="box">
-      <h1>DNS<b>Guard</b></h1>
+      <h1>Tre<b>nch</b></h1>
       <div class="sub">Sign in to the console</div>
       <div class="err">{{ err }}</div>
       <form @submit.prevent="login">
