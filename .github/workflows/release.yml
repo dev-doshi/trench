@@ -10,6 +10,14 @@ on:
       tag:
         description: "Tag to release (e.g. v2.0.0)"
         required: true
+      # Manual runs rehearse by default. Publishing is irreversible — a PyPI
+      # version number can be yanked but never reused — so the button that is
+      # easy to press by accident must not be the one that claims a version.
+      # A tag push is unaffected: it publishes, which is what a tag means.
+      dry_run:
+        description: "Rehearse only: run verify and the tests, publish nothing"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -61,6 +69,7 @@ jobs:
 
   pypi:
     needs: [verify, test]
+    if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -81,6 +90,7 @@ jobs:
 
   ghcr:
     needs: [verify, test]
+    if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
