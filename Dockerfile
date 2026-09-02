@@ -5,7 +5,7 @@
 # silently moves to the next Debian and can change system libraries under a
 # build that was otherwise reproducible. Pin the digest too for a hard
 # guarantee — `FROM python:3.12-slim-bookworm@sha256:...`.
-FROM python:3.12-slim-bookworm AS base
+FROM python:3.14-slim-bookworm AS base
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
