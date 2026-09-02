@@ -79,12 +79,21 @@ trenchd --config trench.yaml
 
 ### Docker
 
-`docker-compose.yml` builds the image from the checkout and runs it on host
-networking, binding `:53`, `:853`, `:8443` and `:8089`:
+`docker-compose.yml` builds the image from the checkout, so there is nothing
+to pull — but it has to run *inside* the checkout, or Compose reports `no
+configuration file provided: not found`:
 
 ```bash
+git clone https://github.com/dev-doshi/trench && cd trench
 docker compose up -d
 ```
+
+It uses host networking and mounts the repository's `trench.yaml`, which binds
+DNS on `:53` and the console on `:8089`, both on `0.0.0.0`. DoT (`:853`), DoH
+(`:8443`) and DoQ stay disabled until you give it a certificate. Docker Desktop
+on macOS and Windows does not hand a container the host's network the way Linux
+does, so treat Compose there as a way to build and smoke-test the image rather
+than to serve a LAN.
 
 On a Raspberry Pi use `deploy/docker-compose.raspi.yml` instead — it adds the
 memory ceiling that keeps a blocklist refresh from being OOM-killed.
