@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300" role="img" aria-label="Trench — a self-hosted DNS server in pure Python">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0B1220"/>
+      <stop offset="1" stop-color="#101D31"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#2DD4BF"/>
+      <stop offset="1" stop-color="#38BDF8"/>
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#7DD3FC" stroke-opacity="0.05" stroke-width="1"/>
+    </pattern>
+    <style>
+      .f { font-family: ui-sans-serif, -apple-system, "Segoe UI", Inter, Helvetica, Arial, sans-serif; }
+      .mono { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="300" fill="url(#bg)"/>
+  <rect width="1200" height="300" fill="url(#grid)"/>
+  <rect x="0" y="296" width="1200" height="4" fill="url(#accent)" opacity="0.9"/>
+
+  <!-- wordmark -->
+  <text class="f" x="72" y="132" font-size="78" font-weight="700" letter-spacing="8" fill="#E9F1F7">TRENCH</text>
+  <text class="f" x="76" y="176" font-size="21" fill="#93A7C0">A self-hosted DNS server in pure Python.</text>
+  <text class="f" x="76" y="204" font-size="21" fill="#93A7C0">Sinkhole, recursive resolver, authoritative, DNSSEC.</text>
+
+  <!-- transport chips -->
+  <g class="mono" font-size="13" fill="#8FE3D8">
+    <g fill="none" stroke="#2DD4BF" stroke-opacity="0.35">
+      <rect x="76"  y="230" width="58" height="26" rx="13"/>
+      <rect x="142" y="230" width="50" height="26" rx="13"/>
+      <rect x="200" y="230" width="50" height="26" rx="13"/>
+      <rect x="258" y="230" width="50" height="26" rx="13"/>
+      <rect x="316" y="230" width="60" height="26" rx="13"/>
+    </g>
+    <text x="105" y="247" text-anchor="middle">Do53</text>
+    <text x="167" y="247" text-anchor="middle">DoT</text>
+    <text x="225" y="247" text-anchor="middle">DoH</text>
+    <text x="283" y="247" text-anchor="middle">DoQ</text>
+    <text x="346" y="247" text-anchor="middle">DoH3</text>
+  </g>
+
+  <!-- query flowing through the stages: some stop, one comes out -->
+  <g>
+    <line x1="690" y1="150" x2="1136" y2="150" stroke="#2DD4BF" stroke-opacity="0.22" stroke-width="2"/>
+
+    <g fill="#2DD4BF" fill-opacity="0.10" stroke="#2DD4BF" stroke-opacity="0.45">
+      <rect x="770" y="86" width="11" height="128" rx="5.5"/>
+      <rect x="860" y="86" width="11" height="128" rx="5.5"/>
+      <rect x="950" y="86" width="11" height="128" rx="5.5"/>
+      <rect x="1040" y="86" width="11" height="128" rx="5.5"/>
+    </g>
+
+    <!-- queries the stages stopped -->
+    <g>
+      <circle cx="756" cy="122" r="5.5" fill="none" stroke="#F87171" stroke-width="2"/>
+      <path d="M752.5 118.5l7 7" stroke="#F87171" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="756" cy="178" r="5.5" fill="none" stroke="#F87171" stroke-width="2"/>
+      <path d="M752.5 174.5l7 7" stroke="#F87171" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="846" cy="132" r="5.5" fill="none" stroke="#F87171" stroke-width="2"/>
+      <path d="M842.5 128.5l7 7" stroke="#F87171" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="936" cy="170" r="5.5" fill="none" stroke="#FBBF24" stroke-width="2"/>
+      <path d="M932.5 166.5l7 7" stroke="#FBBF24" stroke-width="2" stroke-linecap="round"/>
+    </g>
+
+    <!-- the query that survives every stage -->
+    <g fill="#2DD4BF">
+      <circle cx="700" cy="150" r="5"/>
+      <circle cx="815" cy="150" r="5"/>
+      <circle cx="905" cy="150" r="5"/>
+      <circle cx="995" cy="150" r="5"/>
+      <circle cx="1085" cy="150" r="7"/>
+    </g>
+    <path d="M1096 150h32" stroke="#2DD4BF" stroke-width="2" stroke-linecap="round"/>
+    <path d="M1120 144l8 6-8 6" fill="none" stroke="#2DD4BF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <text class="mono" x="913" y="248" font-size="13" fill="#6E839E" text-anchor="middle">policy &#183; filter &#183; cache &#183; resolve</text>
+  </g>
+</svg>

@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" role="img" aria-label="How a query moves through Trench">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0B1220"/><stop offset="1" stop-color="#101D31"/>
+    </linearGradient>
+    <style>
+      .f { font-family: ui-sans-serif, -apple-system, "Segoe UI", Inter, Helvetica, Arial, sans-serif; }
+      .mono { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
+    </style>
+  </defs>
+  <rect width="1200" height="700" fill="url(#bg)"/>
+  <rect x="60" y="40" width="300" height="62" rx="14" fill="#0F1B2D" stroke="#2DD4BF" stroke-opacity="0.30"/>
+  <text class="f" x="80" y="66" font-size="15" fill="#E9F1F7" text-anchor="start" font-weight="700">Clients</text>
+  <text class="f" x="80" y="88" font-size="12" fill="#93A7C0" text-anchor="start" font-weight="400">phones · laptops · IoT · servers</text>
+  <rect x="800" y="40" width="340" height="62" rx="14" fill="#0F1B2D" stroke="#60A5FA" stroke-opacity="0.30" stroke-dasharray="6 5"/>
+  <text class="f" x="820" y="66" font-size="15" fill="#E9F1F7" text-anchor="start" font-weight="700">DHCP  — off by default</text>
+  <text class="f" x="820" y="88" font-size="12" fill="#93A7C0" text-anchor="start" font-weight="400">leases give clients their names and their resolver</text>
+  <path d="M800 71H380" stroke="#60A5FA" stroke-opacity="0.30" stroke-width="2" stroke-dasharray="6 5"/>
+  <path d="M210 102L210 136" stroke="#2DD4BF" stroke-opacity="0.55" stroke-width="2"/>
+  <path d="M204 128L210 136L216 128" fill="none" stroke="#2DD4BF" stroke-opacity="0.55" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="60" y="140" width="1080" height="86" rx="14" fill="#0F1B2D" stroke="#2DD4BF" stroke-opacity="0.30"/>
+  <text class="f" x="80" y="166" font-size="12" font-weight="700" letter-spacing="1.6" fill="#6E839E">FRONTENDS  —  EVERY TRANSPORT, IN</text>
+  <rect x="80" y="178" width="88" height="28" rx="14.0" fill="#2DD4BF" fill-opacity="0.10" stroke="#2DD4BF" stroke-opacity="0.45"/>
+  <text class="mono" x="124" y="196" font-size="13" fill="#2DD4BF" text-anchor="middle">Do53 UDP</text>
+  <rect x="178" y="178" width="88" height="28" rx="14.0" fill="#2DD4BF" fill-opacity="0.10" stroke="#2DD4BF" stroke-opacity="0.45"/>
+  <text class="mono" x="222" y="196" font-size="13" fill="#2DD4BF" text-anchor="middle">Do53 TCP</text>
+  <rect x="276" y="178" width="49" height="28" rx="14.0" fill="#2DD4BF" fill-opacity="0.10" stroke="#2DD4BF" stroke-opacity="0.45"/>
+  <text class="mono" x="300" y="196" font-size="13" fill="#2DD4BF" text-anchor="middle">DoT</text>
+  <rect x="335" y="178" width="182" height="28" rx="14.0" fill="#2DD4BF" fill-opacity="0.10" stroke="#2DD4BF" stroke-opacity="0.45"/>
+  <text class="mono" x="426" y="196" font-size="13" fill="#2DD4BF" text-anchor="middle">DoH  RFC 8484 + JSON</text>
+  <rect x="527" y="178" width="49" height="28" rx="14.0" fill="#2DD4BF" fill-opacity="0.10" stroke="#2DD4BF" stroke-opacity="0.45"/>
+  <text class="mono" x="552" y="196" font-size="13" fill="#2DD4BF" text-anchor="middle">DoQ</text>
+  <rect x="586" y="178" width="57" height="28" rx="14.0" fill="#2DD4BF" fill-opacity="0.10" stroke="#2DD4BF" stroke-opacity="0.45"/>
+  <text class="mono" x="614" y="196" font-size="13" fill="#2DD4BF" text-anchor="middle">DoH3</text>
+  <text class="f" x="1120" y="197" font-size="12" fill="#6E839E" text-anchor="end" font-weight="400">DDR / DNR advertise the encrypted ones</text>
+  <path d="M600.0 226L600.0 258" stroke="#2DD4BF" stroke-opacity="0.55" stroke-width="2"/>
+  <path d="M594.0 250L600.0 258L606.0 250" fill="none" stroke="#2DD4BF" stroke-opacity="0.55" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="60" y="262" width="1080" height="118" rx="14" fill="#0F1B2D" stroke="#2DD4BF" stroke-opacity="0.30"/>
+  <text class="f" x="80" y="288" font-size="12" font-weight="700" letter-spacing="1.6" fill="#6E839E">PIPELINE  —  IN ORDER, EVERY QUERY</text>
+  <rect x="80" y="300" width="88" height="28" rx="14.0" fill="#2DD4BF" fill-opacity="0.10" stroke="#2DD4BF" stroke-opacity="0.45"/>
+  <text class="mono" x="124" y="318" font-size="13" fill="#2DD4BF" text-anchor="middle">validate</text>
+  <path d="M172 314h12" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2"/>
+  <path d="M180 310l5 4-5 4" fill="none" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="190" y="300" width="104" height="28" rx="14.0" fill="#2DD4BF" fill-opacity="0.10" stroke="#2DD4BF" stroke-opacity="0.45"/>
+  <text class="mono" x="242" y="318" font-size="13" fill="#2DD4BF" text-anchor="middle">rate-limit</text>
+  <path d="M298 314h12" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2"/>
+  <path d="M306 310l5 4-5 4" fill="none" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="316" y="300" width="143" height="28" rx="14.0" fill="#2DD4BF" fill-opacity="0.10" stroke="#2DD4BF" stroke-opacity="0.45"/>
+  <text class="mono" x="388" y="318" font-size="13" fill="#2DD4BF" text-anchor="middle">identify client</text>
+  <path d="M463 314h12" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2"/>
+  <path d="M471 310l5 4-5 4" fill="none" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="481" y="300" width="111" height="28" rx="14.0" fill="#2DD4BF" fill-opacity="0.10" stroke="#2DD4BF" stroke-opacity="0.45"/>
+  <text class="mono" x="536" y="318" font-size="13" fill="#2DD4BF" text-anchor="middle">local zones</text>
+  <path d="M596 314h12" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2"/>
+  <path d="M604 310l5 4-5 4" fill="none" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="614" y="300" width="72" height="28" rx="14.0" fill="#2DD4BF" fill-opacity="0.10" stroke="#2DD4BF" stroke-opacity="0.45"/>
+  <text class="mono" x="650" y="318" font-size="13" fill="#2DD4BF" text-anchor="middle">filter</text>
+  <path d="M690 314h12" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2"/>
+  <path d="M698 310l5 4-5 4" fill="none" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="708" y="300" width="65" height="28" rx="14.0" fill="#2DD4BF" fill-opacity="0.10" stroke="#2DD4BF" stroke-opacity="0.45"/>
+  <text class="mono" x="740" y="318" font-size="13" fill="#2DD4BF" text-anchor="middle">cache</text>
+  <path d="M777 314h12" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2"/>
+  <path d="M785 310l5 4-5 4" fill="none" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="795" y="300" width="80" height="28" rx="14.0" fill="#2DD4BF" fill-opacity="0.10" stroke="#2DD4BF" stroke-opacity="0.45"/>
+  <text class="mono" x="835" y="318" font-size="13" fill="#2DD4BF" text-anchor="middle">resolve</text>
+  <path d="M879 314h12" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2"/>
+  <path d="M887 310l5 4-5 4" fill="none" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="897" y="300" width="143" height="28" rx="14.0" fill="#2DD4BF" fill-opacity="0.10" stroke="#2DD4BF" stroke-opacity="0.45"/>
+  <text class="mono" x="968" y="318" font-size="13" fill="#2DD4BF" text-anchor="middle">rebinding guard</text>
+  <text class="f" x="80" y="358" font-size="12" fill="#93A7C0" text-anchor="start" font-weight="400">rules · groups · per-client policy · safe search · blocked services · LRU + negative + serve-stale + prefetch</text>
+  <rect x="60" y="420" width="346" height="124" rx="14" fill="#0F1B2D" stroke="#60A5FA" stroke-opacity="0.30"/>
+  <text class="f" x="80" y="450" font-size="15" fill="#E9F1F7" text-anchor="start" font-weight="700">Authoritative</text>
+  <text class="f" x="80" y="474" font-size="12.5" fill="#93A7C0" text-anchor="start" font-weight="400">zones, all common RR types,</text>
+  <text class="f" x="80" y="493" font-size="12.5" fill="#93A7C0" text-anchor="start" font-weight="400">BIND zonefile import,</text>
+  <text class="f" x="80" y="512" font-size="12.5" fill="#93A7C0" text-anchor="start" font-weight="400">online DNSSEC signing</text>
+  <path d="M600.0 380V398.0H233.0V416" fill="none" stroke="#60A5FA" stroke-opacity="0.45" stroke-width="2"/>
+  <path d="M227.0 408L233.0 416L239.0 408" fill="none" stroke="#60A5FA" stroke-opacity="0.45" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="426" y="420" width="346" height="124" rx="14" fill="#0F1B2D" stroke="#2DD4BF" stroke-opacity="0.30"/>
+  <text class="f" x="446" y="450" font-size="15" fill="#E9F1F7" text-anchor="start" font-weight="700">Forwarding</text>
+  <text class="f" x="446" y="474" font-size="12.5" fill="#93A7C0" text-anchor="start" font-weight="400">plain / TCP / DoT / DoH / DoQ,</text>
+  <text class="f" x="446" y="493" font-size="12.5" fill="#93A7C0" text-anchor="start" font-weight="400">per-domain routing, per-group</text>
+  <text class="f" x="446" y="512" font-size="12.5" fill="#93A7C0" text-anchor="start" font-weight="400">upstreams, fastest-of-N</text>
+  <path d="M600.0 380V398.0H599.0V416" fill="none" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2"/>
+  <path d="M593.0 408L599.0 416L605.0 408" fill="none" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="792" y="420" width="346" height="124" rx="14" fill="#0F1B2D" stroke="#2DD4BF" stroke-opacity="0.30"/>
+  <text class="f" x="812" y="450" font-size="15" fill="#E9F1F7" text-anchor="start" font-weight="700">Recursive</text>
+  <text class="f" x="812" y="474" font-size="12.5" fill="#93A7C0" text-anchor="start" font-weight="400">iterative from the root,</text>
+  <text class="f" x="812" y="493" font-size="12.5" fill="#93A7C0" text-anchor="start" font-weight="400">QNAME minimisation,</text>
+  <text class="f" x="812" y="512" font-size="12.5" fill="#93A7C0" text-anchor="start" font-weight="400">DNSSEC validation</text>
+  <path d="M600.0 380V398.0H965.0V416" fill="none" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2"/>
+  <path d="M959.0 408L965.0 416L971.0 408" fill="none" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="60" y="584" width="1080" height="96" rx="14" fill="#0F1B2D" stroke="#60A5FA" stroke-opacity="0.30"/>
+  <text class="f" x="80" y="610" font-size="12" font-weight="700" letter-spacing="1.6" fill="#6E839E">PLATFORM  —  WHAT IT RECORDS, AND WHAT YOU DRIVE IT WITH</text>
+  <rect x="80" y="620" width="150" height="28" rx="14.0" fill="#60A5FA" fill-opacity="0.10" stroke="#60A5FA" stroke-opacity="0.45"/>
+  <text class="mono" x="155" y="638" font-size="13" fill="#60A5FA" text-anchor="middle">SQLite query log</text>
+  <rect x="240" y="620" width="174" height="28" rx="14.0" fill="#60A5FA" fill-opacity="0.10" stroke="#60A5FA" stroke-opacity="0.45"/>
+  <text class="mono" x="327" y="638" font-size="13" fill="#60A5FA" text-anchor="middle">Prometheus /metrics</text>
+  <rect x="424" y="620" width="197" height="28" rx="14.0" fill="#60A5FA" fill-opacity="0.10" stroke="#60A5FA" stroke-opacity="0.45"/>
+  <text class="mono" x="522" y="638" font-size="13" fill="#60A5FA" text-anchor="middle">REST /api/v1 + OpenAPI</text>
+  <rect x="631" y="620" width="174" height="28" rx="14.0" fill="#60A5FA" fill-opacity="0.10" stroke="#60A5FA" stroke-opacity="0.45"/>
+  <text class="mono" x="718" y="638" font-size="13" fill="#60A5FA" text-anchor="middle">WebSocket live feed</text>
+  <rect x="815" y="620" width="127" height="28" rx="14.0" fill="#60A5FA" fill-opacity="0.10" stroke="#60A5FA" stroke-opacity="0.45"/>
+  <text class="mono" x="878" y="638" font-size="13" fill="#60A5FA" text-anchor="middle">admin console</text>
+  <rect x="952" y="620" width="104" height="28" rx="14.0" fill="#60A5FA" fill-opacity="0.10" stroke="#60A5FA" stroke-opacity="0.45"/>
+  <text class="mono" x="1004" y="638" font-size="13" fill="#60A5FA" text-anchor="middle">trench CLI</text>
+  <text class="f" x="80" y="668" font-size="12" fill="#93A7C0" text-anchor="start" font-weight="400">retention and privacy levels · CSV / JSON-lines export · RBAC, API tokens, TOTP · Grafana dashboard</text>
+</svg>

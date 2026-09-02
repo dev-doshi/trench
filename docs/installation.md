@@ -6,8 +6,16 @@ toolchain and no build step.
 
 ## pip
 
+!!! warning "Not published yet"
+
+    There is no tagged release, so neither the wheel nor the image exists on
+    a registry today — install [from source](#from-source) or with Compose.
+    When releases start, the distribution will be **`trench-dns`**: the name
+    `trench` on PyPI belongs to an unrelated project, and `pip install trench`
+    installs *that*.
+
 ```bash
-pip install trench
+pip install trench-dns      # once the first release is tagged
 trench --version
 ```
 
@@ -15,6 +23,9 @@ Two commands are installed: `trenchd` (the server) and `trench` (the CLI
 that talks to a running one).
 
 ## Docker
+
+The image is published on the first tagged release; until then, build it from
+the checkout with `docker compose up -d`.
 
 ```bash
 docker run -d --name trench \
