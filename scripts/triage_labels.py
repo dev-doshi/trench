@@ -23,19 +23,16 @@ import sys
 #: `.github/ISSUE_TEMPLATE/*.yml`; `scripts/check_templates.py` fails if a form
 #: offers an option that is not a key here.
 AREA_BY_ANSWER: dict[str, str] = {
-    "Recursive resolver / upstream forwarding": "area/resolver",
-    "DNSSEC validation": "area/dnssec",
-    "Filtering / blocklists / rules": "area/filtering",
-    "Answer cache": "area/cache",
-    "Fast path (repeat-query replay)": "area/cache",
-    "Transports (Do53, DoT, DoH, DoQ)": "area/transport",
-    "Authoritative zones / XFR / dynamic update": "area/auth-zone",
-    "DHCP server / lease-derived names": "area/dhcp",
-    "Admin API": "area/api",
-    "Admin console (web UI)": "area/console",
-    "Query log / statistics / export": "area/store",
+    "Resolution — recursion, forwarding, DNSSEC, cache": "area/resolution",
+    "Filtering — blocklists, rules, groups, safe search, services": "area/filtering",
+    "Transports — Do53, DoT, DoH, DoQ, DoH3, discovery": "area/transport",
+    "Authoritative zones — XFR, dynamic update, signing": "area/authoritative",
+    "DHCP server": "area/dhcp",
+    "Console or admin API": "area/console",
+    "Query log, statistics, or export": "area/data",
     "CLI": "area/cli",
-    "Packaging, Docker, or systemd": "area/packaging",
+    "Packaging — Docker, systemd, pip, upgrade": "area/packaging",
+    "Performance, memory, or stability": "area/performance",
     "Not sure": "",
 }
 
@@ -45,12 +42,12 @@ _AREA_HEADINGS = ("Which part of Trench",)
 #: Free-text signals. Deliberately few: a wrong label costs more than a
 #: missing one, so only phrases that are unambiguous in this project appear.
 _KEYWORDS: tuple[tuple[str, str], ...] = (
-    (r"\bDNSSEC\b|\bRRSIG\b|\bNSEC3?\b|\btrust anchor", "area/dnssec"),
-    (r"\bDoH\b|\bDoT\b|\bDoQ\b|\bQUIC\b", "area/transport"),
-    (r"\bTSIG\b|\bAXFR\b|\bIXFR\b|\bNOTIFY\b", "area/auth-zone"),
+    (r"\bDNSSEC\b|\bRRSIG\b|\bNSEC3?\b|\btrust anchor", "area/resolution"),
+    (r"\bDoH\b|\bDoT\b|\bDoQ\b|\bQUIC\b|\bDDR\b|\bDNR\b", "area/transport"),
+    (r"\bTSIG\b|\bAXFR\b|\bIXFR\b|\bNOTIFY\b", "area/authoritative"),
     (r"\bDHCP\b", "area/dhcp"),
     (r"\bOOM\b|out of memory|memory leak", "area/performance"),
-    (r"\bupdate (check|channel)\b|self-update|auto-?update", "area/updates"),
+    (r"\bupdate (check|channel)\b|self-update|auto-?update", "area/packaging"),
 )
 
 
@@ -87,12 +84,6 @@ def labels_for(body: str) -> list[str]:
     for pattern, label in _KEYWORDS:
         if re.search(pattern, body, re.IGNORECASE):
             add(label)
-    # A report that says it used to work is a regression, which is triaged
-    # differently from a defect that has always been there.
-    worked = sections.get("Did this work before?", "")
-    if worked and not re.fullmatch(r"(no|n/?a|never|-{1,3}|_No response_)\.?",
-                                   worked.strip(), re.IGNORECASE):
-        add("type/regression")
     return found
 
 

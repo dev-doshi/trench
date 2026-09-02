@@ -1,8 +1,8 @@
 name: Stale
 
-# Issues waiting on a reporter go quiet and stay open for ever. Only two
-# states are swept, both of which mean "we asked and heard nothing":
-# status/needs-info and status/needs-triage. Confirmed defects are never
+# Issues waiting on a reporter go quiet and stay open for ever. Only one
+# state is swept, and it means "we asked and heard nothing":
+# status/needs-info. Confirmed defects are never
 # closed by a robot — an unfixed bug does not stop being a bug.
 on:
   schedule:
@@ -24,7 +24,7 @@ jobs:
           days-before-close: 21
           only-labels: "status/needs-info"
           stale-issue-label: stale
-          exempt-issue-labels: "pinned,status/confirmed,status/in-progress,status/blocked,type/security,priority/critical,priority/high"
+          exempt-issue-labels: "status/confirmed,status/blocked,type/security,priority/critical,priority/high"
           stale-issue-message: >
             This has been waiting on more information for 45 days. If it is
             still happening, reply with what was asked for and it will be
@@ -36,7 +36,7 @@ jobs:
           days-before-pr-stale: 60
           days-before-pr-close: 30
           stale-pr-label: stale
-          exempt-pr-labels: "pinned,status/in-progress"
+          exempt-pr-labels: "status/blocked"
           stale-pr-message: >
             This pull request has been quiet for 60 days. Push, comment, or
             say what it is waiting on, and it stays open.

@@ -1,7 +1,7 @@
-name: "Documentation"
+name: Documentation
 description: Something in the docs is wrong, missing, or out of date
 title: "[docs] "
-labels: ["type/docs", "area/docs", "status/needs-triage"]
+labels: ["type/docs"]
 body:
   - type: markdown
     attributes:
@@ -15,7 +15,7 @@ body:
     attributes:
       label: Which page
       description: The URL on the docs site, or the path in `docs/`.
-      placeholder: "https://dev-doshi.github.io/trench/configuration/ or docs/configuration.md"
+      placeholder: "docs/configuration.md"
     validations:
       required: true
 

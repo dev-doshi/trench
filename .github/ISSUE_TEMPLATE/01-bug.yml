@@ -1,19 +1,17 @@
 name: Bug report
-description: Trench resolves, blocks, or serves something incorrectly
+description: Something Trench does is wrong — a verdict, an answer, the console, a crash, an install
 title: "[bug] "
-labels: ["type/bug", "status/needs-triage"]
+labels: ["type/bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        **Not the right form?**
+        One form covers every kind of defect. The **symptom** you pick below
+        decides which diagnostics are worth pasting — there is a checklist for
+        each one further down, so fill that in and skip the rest.
 
-        * A name is blocked that should not be, or slips through that should
-          not — use *Filtering: wrong verdict* instead.
-        * A name fails to resolve at all (SERVFAIL, NXDOMAIN, DNSSEC bogus) —
-          use *Resolution failure* instead.
-        * A security vulnerability — do **not** open an issue. Report it
-          privately: <https://github.com/dev-doshi/trench/security/advisories/new>
+        A security vulnerability does **not** belong here. Report it privately:
+        <https://github.com/dev-doshi/trench/security/advisories/new>
 
   - type: checkboxes
     id: preflight
@@ -27,12 +25,19 @@ body:
         - label: I have removed secrets from the config and logs I am pasting.
           required: true
 
-  - type: input
-    id: version
+  - type: dropdown
+    id: symptom
     attributes:
-      label: Trench version
-      description: Output of `trench --version`.
-      placeholder: "2.0.0"
+      label: What is wrong
+      options:
+        - A name is blocked that should resolve
+        - A name resolves that should be blocked
+        - A name will not resolve at all — SERVFAIL, NXDOMAIN, or a timeout
+        - The answer is wrong — wrong record, wrong TTL, or DNSSEC bogus
+        - Memory growth, an OOM kill, a crash, a restart loop, or slow answers
+        - The console or the HTTP API misbehaves
+        - It will not install, start, or upgrade
+        - Something else
     validations:
       required: true
 
@@ -43,19 +48,25 @@ body:
       description: Best guess is fine — this only routes the issue.
       options:
         - Not sure
-        - Recursive resolver / upstream forwarding
-        - DNSSEC validation
-        - Filtering / blocklists / rules
-        - Answer cache
-        - Fast path (repeat-query replay)
-        - Transports (Do53, DoT, DoH, DoQ)
-        - Authoritative zones / XFR / dynamic update
-        - DHCP server / lease-derived names
-        - Admin API
-        - Admin console (web UI)
-        - Query log / statistics / export
+        - Resolution — recursion, forwarding, DNSSEC, cache
+        - Filtering — blocklists, rules, groups, safe search, services
+        - Transports — Do53, DoT, DoH, DoQ, DoH3, discovery
+        - Authoritative zones — XFR, dynamic update, signing
+        - DHCP server
+        - Console or admin API
+        - Query log, statistics, or export
         - CLI
-        - Packaging, Docker, or systemd
+        - Packaging — Docker, systemd, pip, upgrade
+        - Performance, memory, or stability
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Trench version
+      description: Output of `trench --version`.
+      placeholder: "2.0.0"
     validations:
       required: true
 
@@ -70,8 +81,8 @@ body:
   - type: input
     id: platform
     attributes:
-      label: OS and architecture
-      description: Distribution and CPU architecture, plus the board if it is one.
+      label: OS, architecture, and hardware
+      description: Distribution and CPU architecture, plus the board and its RAM if it is one.
       placeholder: "Raspberry Pi OS 12, arm64, Pi 4 (2 GB)"
     validations:
       required: true
@@ -83,21 +94,6 @@ body:
     validations:
       required: true
 
-  - type: textarea
-    id: repro
-    attributes:
-      label: Reproduction
-      description: >
-        The query that shows it, as a `dig` line, plus the answer you got. A
-        packet capture (`tcpdump -i any -w dns.pcap port 53`) helps for
-        anything on the wire.
-      render: shell
-      placeholder: |
-        $ dig @192.168.1.2 example.com A +dnssec
-        ...
-    validations:
-      required: true
-
   - type: input
     id: frequency
     attributes:
@@ -106,22 +102,58 @@ body:
     validations:
       required: true
 
+  - type: markdown
+    attributes:
+      value: |
+        ### Diagnostics
+
+        Paste whatever your symptom asks for. This is the part that decides
+        whether the issue can be worked on or has to wait for a round trip.
+
+        | Symptom | What makes it actionable |
+        |---|---|
+        | Wrong verdict (blocked / not blocked) | `trench why <name>` — it names the rule, the list it came from, and the policy that applied — plus which `filtering.sources` are enabled |
+        | Will not resolve | `dig @<trench> <name> <type> +dnssec`, then the same query against `1.1.1.1` or `8.8.8.8` for comparison |
+        | Wrong answer | The `dig` output next to what you expected, and a capture if it is on the wire: `tcpdump -i any -w dns.pcap port 53` |
+        | Memory, crash, or slowness | RSS over time (`ps -o rss= -p $(pidof trenchd)`), `trench stats`, the size of `data/`, any `MemoryMax=` / `mem_limit` in force, the query rate, and whether it lines up with a blocklist refresh |
+        | Console or API | The browser console and network tab after a cache-bypassing reload — the console is a committed build, so a stale bundle looks like a bug — or the failing request and its response |
+        | Install, start, or upgrade | The exact command and its complete output |
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction and diagnostics
+      description: The commands you ran and their output, from the table above.
+      render: shell
+      placeholder: |
+        $ trench why ads.example --client 192.168.1.50
+        ...
+    validations:
+      required: true
+
   - type: textarea
     id: config
     attributes:
       label: Configuration
-      description: The relevant part of `trench.yaml`, with secrets removed.
+      description: >
+        The relevant part of `trench.yaml`, with secrets removed. If this only
+        happens for some clients, include the client entry, its filtering group
+        and upstream group.
       render: yaml
 
   - type: textarea
     id: logs
     attributes:
       label: Logs
-      description: "Run with `log.level: debug` if the cause is not obvious."
+      description: >
+        Run with `log.level: debug` if the cause is not obvious.
+        `journalctl -u trench -n 200` under systemd; add `dmesg | grep -i oom`
+        for a kill.
       render: shell
 
-  - type: textarea
+  - type: input
     id: regression
     attributes:
       label: Did this work before?
       description: If it is a regression, the last version that worked is the most useful thing in this form.
+      placeholder: "Worked in 1.9.2 / never worked / do not know"
