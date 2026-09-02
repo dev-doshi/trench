@@ -129,7 +129,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
       # Lets anyone verify the image was built from this repo by this workflow.
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@v4
         with:
           subject-name: ghcr.io/${{ github.repository }}
           subject-digest: ${{ steps.build.outputs.digest }}
