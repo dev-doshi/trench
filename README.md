@@ -217,8 +217,8 @@ There is also DGA and DNS-tunnelling detection.
 SQLite query log with search, CSV and JSON-lines export, retention and four
 privacy levels. REST `/api/v1` with OpenAPI, plus a WebSocket live feed. RBAC,
 API tokens, TOTP two-factor, and lockout. Labelled Prometheus `/metrics` with a
-latency histogram and a [Grafana dashboard](deploy/grafana-dashboard.json). A
-CLI, the console, and config import from Pi-hole and AdGuard Home.
+latency histogram. A CLI, the console, and config import from Pi-hole and AdGuard
+Home.
 </details>
 
 <details>

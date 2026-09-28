@@ -1,9 +1,6 @@
 """Prometheus exposition: labelled series, the latency histogram, escaping."""
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 from trench.cache import Cache
 from trench.ops import metrics
 from trench.stats import Counters
@@ -70,18 +67,3 @@ def test_pause_state_is_exported(monkeypatch):
     text = render(Counters(), pipeline=FakePipeline())
     assert "trench_filtering_enabled 1" in text
     assert "trench_filtering_paused 1" in text
-
-
-def test_shipped_grafana_dashboard_is_valid_json_and_matches_metric_names():
-    path = Path(__file__).resolve().parent.parent / "deploy" / "grafana-dashboard.json"
-    board = json.loads(path.read_text())
-    assert board["title"] == "Trench"
-    exprs = " ".join(t["expr"] for p in board["panels"] for t in p.get("targets", []))
-    exported = render(Counters(), pipeline=None)
-    for metric in ("trench_queries_total", "trench_query_actions_total",
-                   "trench_query_duration_seconds_bucket", "trench_cache_size",
-                   "trench_query_rcodes_total", "trench_upstream_answers_total",
-                   "trench_detections_total", "trench_clients_seen"):
-        assert metric in exprs, f"dashboard does not use {metric}"
-        # every metric the dashboard charts must actually be exported
-        assert metric.replace("_bucket", "") in exported

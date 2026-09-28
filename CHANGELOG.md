@@ -60,8 +60,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   HTTPS/SVCB answers, tested both ways. `pass` is the default: ECH hides the TLS
   server name, not the DNS question.
 - **89 blocked services**, up from 12, in ten categories including the AI
-  assistants, listed at `GET /api/v1/services`; and a Grafana dashboard in
-  `deploy/`.
+  assistants, listed at `GET /api/v1/services`.
 - **Update checking, with optional automatic installation** (`updates.mode`).
   The default is `notify`: Trench tells you a release exists and installs
   nothing. Automatic installation verifies the artifact's sha256 against the
