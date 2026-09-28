@@ -9,14 +9,23 @@
 import { computed, onMounted, ref } from "vue";
 import { api, setToken } from "../lib/api";
 import { store } from "../lib/store";
+import Collection from "../ui/Collection.vue";
 
 interface Field {
   path: string; label: string; type: string; group: string; help: string;
   options: string[]; min: number | null; max: number | null;
   unit: string; restart: boolean; placeholder: string;
+  secret?: boolean; readonly?: boolean;
 }
 
 const fields = ref<Field[]>([]);
+/* Collections — zones, keys, devices, groups. Held beside the flat fields
+ * rather than inside them: their value is a tree, so "is it dirty" is a
+ * structural comparison and not a string one. */
+const collections = ref<any[]>([]);
+const csaved = ref<Record<string, any>>({});
+const cdraft = ref<Record<string, any>>({});
+const clone = (v: any) => JSON.parse(JSON.stringify(v ?? null));
 const groups = ref<string[]>([]);
 const saved = ref<Record<string, any>>({});   // what the server last confirmed
 const draft = ref<Record<string, any>>({});   // what is in the form
@@ -125,6 +134,9 @@ async function load() {
     const d: Record<string, any> = {};
     for (const f of r.fields as Field[]) d[f.path] = asText(f, r.values[f.path]);
     draft.value = d;
+    collections.value = r.collections || [];
+    csaved.value = r.collection_values || {};
+    cdraft.value = clone(r.collection_values || {});
   } catch (e: any) {
     store.toast("Settings unavailable", e?.message || "", true);
   } finally { loading.value = false; }
@@ -132,11 +144,19 @@ async function load() {
 onMounted(async () => { await load(); await loadAccess(); });
 
 const shown = computed(() => fields.value.filter((f) => f.group === group.value));
+const shownCollections = computed(() =>
+  collections.value.filter((c) => c.group === group.value));
+
+/** Collections whose tree differs from what the server confirmed. */
+const cdirty = computed(() =>
+  collections.value.map((c) => c.path)
+    .filter((p) => JSON.stringify(cdraft.value[p]) !== JSON.stringify(csaved.value[p])));
 
 /** Paths whose form value differs from what the server confirmed. */
 const dirty = computed(() => {
   const out: string[] = [];
   for (const f of fields.value) {
+    if (f.readonly) continue;
     const a = draft.value[f.path];
     const b = asText(f, saved.value[f.path]);
     const same = f.type === "list"
@@ -148,14 +168,18 @@ const dirty = computed(() => {
 });
 
 const dirtyIn = (g: string) =>
-  dirty.value.some((p) => fields.value.find((f) => f.path === p)?.group === g);
+  dirty.value.some((p) => fields.value.find((f) => f.path === p)?.group === g) ||
+  cdirty.value.some((p) => collections.value.find((c) => c.path === p)?.group === g);
+
+const totalDirty = computed(() => dirty.value.length + cdirty.value.length);
 
 async function save() {
-  if (!dirty.value.length) return;
+  if (!totalDirty.value) return;
   busy.value = true;
   const changes: Record<string, any> = {};
   for (const p of dirty.value) changes[p] = draft.value[p];
-  const n = dirty.value.length;
+  for (const p of cdirty.value) changes[p] = cdraft.value[p];
+  const n = totalDirty.value;
   try {
     const r = await api.put("/settings", { changes });
     store.toast(`Saved ${n} setting${n > 1 ? "s" : ""}`,
@@ -168,6 +192,7 @@ async function save() {
 
 function revert() {
   for (const f of fields.value) draft.value[f.path] = asText(f, saved.value[f.path]);
+  cdraft.value = clone(csaved.value);
 }
 
 function setSkin(v: string) {
@@ -187,9 +212,9 @@ function saveTokenValue() {
     <header class="vw-head">
       <h2>Settings</h2>
       <div class="acts">
-        <span class="st-dirty" v-if="dirty.length">{{ dirty.length }} unsaved</span>
-        <button class="btn" v-if="dirty.length" @click="revert">revert</button>
-        <button class="btn primary" :disabled="!dirty.length || busy || !writable" @click="save">
+        <span class="st-dirty" v-if="totalDirty">{{ totalDirty }} unsaved</span>
+        <button class="btn" v-if="totalDirty" @click="revert">revert</button>
+        <button class="btn primary" :disabled="!totalDirty || busy || !writable" @click="save">
           {{ busy ? "saving…" : "save" }}
         </button>
       </div>
@@ -216,7 +241,11 @@ function saveTokenValue() {
           </span>
 
           <span class="st-ctl">
-            <input v-if="f.type === 'bool'" type="checkbox" class="sw" v-model="draft[f.path]" />
+            <!-- state the file cannot set: shown as what it is, not as a
+                 control that would be ignored -->
+            <em v-if="f.readonly" class="st-ro">{{ saved[f.path] ? "armed" : "not armed" }}</em>
+
+            <input v-else-if="f.type === 'bool'" type="checkbox" class="sw" v-model="draft[f.path]" />
 
             <select v-else-if="f.type === 'select'" v-model="draft[f.path]">
               <option v-for="o in f.options" :key="o" :value="o">{{ o }}</option>
@@ -229,12 +258,17 @@ function saveTokenValue() {
                    v-model="draft[f.path]" :min="f.min ?? undefined" :max="f.max ?? undefined"
                    :step="f.type === 'float' ? 'any' : 1" />
 
-            <input v-else type="text" v-model="draft[f.path]" :placeholder="f.placeholder" />
+            <input v-else :type="f.secret ? 'password' : 'text'" v-model="draft[f.path]"
+                   :placeholder="f.secret ? 'unchanged' : f.placeholder"
+                   :autocomplete="f.secret ? 'new-password' : undefined" />
 
             <u v-if="f.unit">{{ f.unit }}</u>
             <b v-if="f.restart" title="saved now, applied on restart">restart</b>
           </span>
         </label>
+        <Collection v-for="c in shownCollections" :key="c.path" :spec="c"
+                    v-model="cdraft[c.path]" />
+
         <p class="st-path" v-if="configPath">Saved to <code>{{ configPath }}</code></p>
       </div>
 

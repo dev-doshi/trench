@@ -214,6 +214,12 @@ class SharedBlockTable:
 
     # --- lookup ---
     def get(self, domain: str) -> str | None:
+        # An empty table is the normal state for a worker whose blocklists are
+        # all operator rules, and for every unit test. This is asked once per
+        # label of every query name, so answering before the encode and the
+        # crc32 is worth the branch.
+        if not self._n:
+            return None
         slots = self._slots
         if slots is None:
             return None

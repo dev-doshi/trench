@@ -201,3 +201,79 @@ def test_a_sender_may_be_stricter_than_we_are():
     signed, _ = sign_wire(m.to_wire(), key, time_signed=1_000_000, fudge=5)
     with pytest.raises(TSIGError, match="skew"):
         verify_wire(signed, {"xfr-key.": key}, now=1_000_000 + 60, fudge_max=300)
+
+
+# ------------------------------------------------- the handler's own edges
+def test_a_query_that_is_neither_update_nor_notify_is_not_ours():
+    h = _handler(allow_update=("127.0.0.1",))
+    plain = Message(id=1)
+    plain.questions.append(Question(ORIGIN, Type.A, Class.IN))
+    assert h.handle_tcp(plain.to_wire(), plain, "127.0.0.1") == []
+
+
+def test_an_update_with_no_question_is_notauth():
+    h = _handler(allow_update=("127.0.0.1",))
+    msg = Message(id=1)
+    msg.flags |= (Opcode.UPDATE << Flags.OPCODE_SHIFT)
+    out = h.handle_tcp(msg.to_wire(), msg, "127.0.0.1")
+    assert Message.parse(out[0]).rcode == Rcode.NOTAUTH
+
+
+def test_an_update_for_a_name_below_the_apex_is_notauth():
+    """The zone section names the zone, not a record in it."""
+    h = _handler(allow_update=("127.0.0.1",))
+    msg = _update_msg()
+    msg.questions = [Question(Name.from_text("www.example.com"), Type.SOA, Class.IN)]
+    out = h.handle_tcp(msg.to_wire(), msg, "127.0.0.1")
+    assert Message.parse(out[0]).rcode == Rcode.NOTAUTH
+
+
+def test_a_reply_to_an_update_keeps_the_update_opcode():
+    """A response whose opcode does not match the request is not an answer to
+    it, and clients drop it."""
+    h = _handler(allow_update=("127.0.0.1",))
+    out = h.handle_tcp(_update_msg().to_wire(), _update_msg(), "127.0.0.1")
+    reply = Message.parse(out[0])
+    assert reply.opcode == Opcode.UPDATE
+    assert reply.qr is True and reply.aa is True
+
+
+def test_a_notify_for_a_zone_with_no_secondary_is_not_acted_on():
+    h = _handler()
+    out = h.handle_udp(_notify_msg().to_wire(), _notify_msg(), PRIMARY)
+    assert out is None or Message.parse(out).rcode != Rcode.NOERROR
+
+
+def test_a_signed_notify_from_the_primary_is_honoured():
+    store = ZoneStore()
+    store.add(_zone())
+    h = AuthHandler(store, {"xfr-key.": _key()})
+    sec = SecondaryZone(ORIGIN, PRIMARY, key=_key())
+    h.register_secondary(sec)
+    msg = _notify_msg()
+    wire, _ = sign_wire(msg.to_wire(), _key())
+    out = h.handle_udp(wire, Message.parse(wire), PRIMARY)
+    assert Message.parse(out).rcode == Rcode.NOERROR
+    assert sec._wake.is_set(), "the refresh loop was not woken"
+
+
+def test_a_notify_signed_with_the_wrong_key_is_refused():
+    store = ZoneStore()
+    store.add(_zone())
+    h = AuthHandler(store, {"xfr-key.": _key()})
+    sec = SecondaryZone(ORIGIN, PRIMARY, key=_key())
+    h.register_secondary(sec)
+    msg = _notify_msg()
+    other = TSIGKey.from_base64("xfr-key.", base64.b64encode(b"z" * 32).decode())
+    wire, _ = sign_wire(msg.to_wire(), other)
+    out = h.handle_udp(wire, Message.parse(wire), PRIMARY)
+    assert Message.parse(out).rcode != Rcode.NOERROR
+    assert not sec._wake.is_set()
+
+
+def test_a_host_and_port_are_split_from_a_spec():
+    from trench.auth_zone.handler import _hostport
+    assert _hostport("192.0.2.1") == ("192.0.2.1", 53)
+    assert _hostport("192.0.2.1:5353") == ("192.0.2.1", 5353)
+    # An IPv6 literal has more than one colon, so it is taken whole.
+    assert _hostport("2001:db8::1") == ("2001:db8::1", 53)

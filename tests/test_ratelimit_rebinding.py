@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from trench.cache import Cache
 from trench.config import Config
 from trench.engine import Pipeline
@@ -77,3 +79,70 @@ def test_pipeline_rebinding():
                     forwarder=FakeForwarder("10.0.0.9"), counters=Counters(), config=cfg)
     r = asyncio.run(pipe.resolve(mkquery("public.com"), "1.1.1.1"))
     assert not r.answers   # private answer to a public name stripped
+
+
+# --- the memoised private-address verdict -------------------------------------
+#: (address, private). Spelled out rather than derived, so the table is the
+#: specification: `_is_private` is memoised, and a cache is only as good as the
+#: answer it remembers.
+#:
+#: It also pins the classification itself, which is not Trench's to define —
+#: `ipaddress.is_private` is, and it has moved. Measured across 3.10/3.11.2/
+#: 3.12/3.13/3.14, `2002::1` (6to4, RFC 3056) is private on every one of them
+#: except 3.11.2, so the range Trench strips depends on the interpreter it runs
+#: under. That one is left out of the table below because no single value is
+#: correct for all supported versions; everything here is stable across them,
+#: and a future interpreter that changes any of it fails this test rather than
+#: quietly widening or narrowing what rebinding protection covers.
+_VERDICTS = [
+    ("93.184.216.34", False),      # ordinary public v4
+    ("8.8.8.8", False),
+    ("10.0.0.1", True),            # RFC 1918
+    ("172.16.0.1", True),
+    ("172.32.0.1", False),         # just outside 172.16/12
+    ("192.168.1.5", True),
+    ("127.0.0.1", True),           # loopback
+    ("0.0.0.0", True),             # unspecified
+    ("169.254.1.1", True),         # link-local
+    # RFC 6598 shared address space. Not private per `ipaddress` on any
+    # interpreter tested (3.10 through 3.14), so Trench does not strip it —
+    # which is what Tailscale users need, since 100.64.0.0/10 is exactly where
+    # Tailscale puts its peers.
+    ("100.64.0.1", False),
+    ("240.0.0.1", True),           # reserved
+    ("255.255.255.255", True),
+    ("2606:4700::1111", False),    # public v6
+    ("::1", True),                 # v6 loopback
+    ("fd00::1", True),             # unique local
+    ("fe80::1", True),             # v6 link-local
+    ("::", True),                  # v6 unspecified
+    ("not-an-address", False),     # unparseable: not evidence of anything
+    ("", False),
+]
+
+
+@pytest.mark.parametrize("addr,private", _VERDICTS)
+def test_the_private_address_verdict(addr, private):
+    from trench.engine.rebinding import _is_private
+    assert _is_private(addr) is private
+
+
+def test_the_verdict_is_remembered_not_recomputed():
+    """The memoisation is a measured optimisation — `scrub` was about half the
+    uncached forward path — so it has to actually take effect, and it has to be
+    bounded: the addresses come from answers, which means a caller picks them."""
+    from trench.engine.rebinding import _VERDICT_CACHE, _is_private
+
+    _is_private.cache_clear()
+    for addr, _ in _VERDICTS:
+        _is_private(addr)
+    first = _is_private.cache_info()
+    assert first.hits == 0 and first.misses == len(_VERDICTS)
+
+    for addr, expected in _VERDICTS:
+        assert _is_private(addr) is expected          # same answers, from cache
+    assert _is_private.cache_info().hits == len(_VERDICTS)
+
+    for i in range(_VERDICT_CACHE * 2):               # churn it
+        _is_private(f"10.{i >> 16 & 255}.{i >> 8 & 255}.{i & 255}")
+    assert _is_private.cache_info().currsize <= _VERDICT_CACHE

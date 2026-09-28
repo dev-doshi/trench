@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from trench.cache import Cache
 from trench.clients.names import HostNames, reverse_name, sanitize_hostname
 from trench.config import Config
@@ -179,3 +181,117 @@ def test_reverse_name_and_its_inverse_agree():
         assert address_from_reverse(reverse_name(ip)) == ip
     assert address_from_reverse("example.com") is None
     assert address_from_reverse("1.2.in-addr.arpa") is None
+
+
+# --- the reverse-name shapes ---
+def test_an_ipv4_reverse_name_round_trips():
+    from trench.clients.names import address_from_reverse
+    assert address_from_reverse("1.1.168.192.in-addr.arpa") == "192.168.1.1"
+    assert address_from_reverse(reverse_name("192.168.1.50")) == "192.168.1.50"
+
+
+def test_an_ipv6_reverse_name_round_trips():
+    from trench.clients.names import address_from_reverse
+    rev = reverse_name("2001:db8::1")
+    got = address_from_reverse(rev)
+    import ipaddress
+    assert ipaddress.ip_address(got) == ipaddress.ip_address("2001:db8::1")
+
+
+@pytest.mark.parametrize("name", [
+    "example.com",                       # not a reverse name at all
+    "1.2.in-addr.arpa",                  # too few labels
+    "999.1.168.192.in-addr.arpa",        # an octet no address has
+    "zz.0.0.0.ip6.arpa",                 # not hex, and too short
+    "",
+])
+def test_something_that_is_not_a_reverse_name_yields_nothing(name):
+    from trench.clients.names import address_from_reverse
+    assert address_from_reverse(name) is None
+
+
+# --- resolve() edges ---
+def test_a_query_with_no_question_is_not_ours():
+    assert names().resolve(Message(id=1)) is None
+
+
+def test_a_name_outside_our_domain_is_not_ours():
+    hn = names()
+    hn.register("192.168.1.50", "laptop")
+    assert hn.resolve(mkquery("laptop.example.com")) is None
+
+
+def test_an_any_query_is_answered_for_a_known_name():
+    hn = names()
+    hn.register("192.168.1.50", "laptop")
+    resp = hn.resolve(mkquery("laptop.lan", Type.ANY))
+    assert resp.rcode == Rcode.NOERROR
+    assert resp.answers[0].rdata.address == "192.168.1.50"
+
+
+def test_a_mismatched_type_at_a_known_name_is_nodata():
+    """The name exists, so NXDOMAIN would be a lie."""
+    hn = names()
+    hn.register("192.168.1.50", "laptop")
+    resp = hn.resolve(mkquery("laptop.lan", Type.AAAA))
+    assert resp.rcode == Rcode.NOERROR and resp.answers == []
+
+
+def test_a_type_we_do_not_serve_is_left_alone():
+    hn = names()
+    hn.register("192.168.1.50", "laptop")
+    assert hn.resolve(mkquery("laptop.lan", Type.MX)) is None
+
+
+def test_a_reverse_name_that_is_not_an_address_shape_is_left_alone():
+    assert names().resolve(mkquery("nonsense.in-addr.arpa", Type.PTR)) is None
+
+
+def test_a_reverse_query_for_an_unleased_address_in_scope_is_nxdomain():
+    """`unknown.lan` has no answer anywhere on the internet, and asking an
+    upstream about it publishes the household's naming scheme."""
+    resp = names().resolve(mkquery(reverse_name("192.168.1.77"), Type.PTR))
+    assert resp is not None and resp.rcode == Rcode.NXDOMAIN
+
+
+def test_a_reverse_any_query_is_answered():
+    hn = names()
+    hn.register("192.168.1.50", "laptop")
+    resp = hn.resolve(mkquery(reverse_name("192.168.1.50"), Type.ANY))
+    assert resp.answers[0].rdata.name.to_text() == "laptop.lan."
+
+
+def test_a_registration_of_a_name_that_sanitises_to_nothing_is_refused():
+    hn = names()
+    assert hn.register("192.168.1.50", "!!!") == ""
+    assert hn.entries() == []
+
+
+def test_a_registration_for_something_that_is_not_an_address_is_refused():
+    assert names().register("not-an-address", "laptop") == ""
+
+
+def test_without_a_scope_any_address_may_register():
+    hn = HostNames(domain="lan")
+    assert hn.register("203.0.113.9", "laptop") == "laptop.lan"
+
+
+def test_forgetting_an_address_drops_both_directions():
+    hn = names()
+    hn.register("192.168.1.50", "laptop")
+    hn.forget("192.168.1.50")
+    assert hn.ip_for("laptop.lan") == ""
+    assert hn.name_for("192.168.1.50") == ""
+
+
+def test_forgetting_an_address_that_was_never_leased_is_harmless():
+    names().forget("192.168.1.99")
+
+
+def test_the_entries_list_reports_both_halves():
+    hn = names()
+    hn.register("192.168.1.50", "laptop")
+    rows = hn.entries()
+    assert len(rows) == 1
+    assert rows[0]["ip"] == "192.168.1.50"
+    assert rows[0]["name"] == "laptop.lan"

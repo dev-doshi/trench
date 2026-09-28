@@ -17,6 +17,8 @@ per insertion stays constant and small.
 """
 from __future__ import annotations
 
+import heapq
+
 
 class TopCounter:
     """Counter-compatible enough for the statistics code that uses it."""
@@ -55,8 +57,19 @@ class TopCounter:
         self._d = dict(survivors)
 
     def most_common(self, n: int | None = None) -> list[tuple[str, int]]:
-        items = sorted(self._d.items(), key=lambda kv: kv[1], reverse=True)
-        return items if n is None else items[:n]
+        """The `n` heaviest keys, heaviest first — ties in insertion order.
+
+        `heapq.nlargest` for a bounded `n`, as `collections.Counter` does and
+        for the same reason: a top-15 list does not need the other 19,985 keys
+        put in order. The dashboard asks for six of these per poll, and the
+        Prometheus exporter asks for six with `n=0` — which sorted the whole
+        table to slice nothing off the front of it.
+        """
+        if n is None:
+            return sorted(self._d.items(), key=lambda kv: kv[1], reverse=True)
+        if n <= 0:
+            return []
+        return heapq.nlargest(n, self._d.items(), key=lambda kv: kv[1])
 
     def values(self):
         return self._d.values()

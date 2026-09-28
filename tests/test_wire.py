@@ -77,6 +77,54 @@ def test_dnspython_to_ours_with_compression():
     assert ours.answers[1].rdata.to_text() == "93.184.216.34"
 
 
+def test_we_compress_what_we_write_not_just_read_what_others_compressed():
+    """The test above proves we decompress dnspython's output. Nothing proved we
+    compress our own, and a silent failure there is invisible: every message
+    still parses, every test still passes, and every response just gets bigger
+    until it stops fitting in 512 bytes and clients are pushed onto TCP.
+
+    The compression table is a suffix index, and `write_name` keys it on a slice
+    of the lowercased wire form — store and lookup have to agree on that key
+    type or every lookup misses and compression silently stops happening.
+    """
+    name = Name.from_text("www.example.com.")
+    msg = Message(id=1)
+    msg.questions.append(Question(name, Type.A, Class.IN))
+    for i in range(10):
+        msg.answers.append(RR(name, Type.A, Class.IN, 300, R.A(f"93.184.216.{i}")))
+
+    compressed = msg.to_wire()
+    plain = msg.to_wire(compress=False)
+    # each repeat of a 17-octet name becomes a 2-octet pointer
+    assert len(plain) - len(compressed) >= 10 * 15
+    assert Message.parse(compressed).to_wire() == compressed
+    assert len(Message.parse(plain).answers) == 10
+
+
+def test_a_shared_suffix_is_compressed_not_just_a_whole_repeated_name():
+    """Compression points at any suffix already written, which is most of what
+    it buys in a real answer: a delegation names several hosts in one zone."""
+    msg = Message(id=1)
+    msg.questions.append(Question(Name.from_text("example.com."), Type.NS, Class.IN))
+    for host in ("ns1", "ns2", "ns3", "ns4"):
+        msg.answers.append(RR(Name.from_text("example.com."), Type.NS, Class.IN, 300,
+                              R.NS(Name.from_text(f"{host}.example.com."))))
+    compressed = msg.to_wire()
+    assert len(msg.to_wire(compress=False)) - len(compressed) >= 4 * 11
+    assert [rr.rdata.to_text() for rr in Message.parse(compressed).answers] == [
+        f"ns{i}.example.com." for i in (1, 2, 3, 4)]
+
+
+def test_our_compression_is_at_least_as_tight_as_dnspythons():
+    """A reference rather than a number of our own choosing."""
+    query = dns.message.make_query("www.example.com", "A")
+    reference = dns.message.make_response(query)
+    reference.answer.append(dns.rrset.from_text(
+        "www.example.com.", 300, "IN", "A", "93.184.216.34", "93.184.216.35"))
+    ours = Message.parse(reference.to_wire())
+    assert len(ours.to_wire()) <= len(reference.to_wire())
+
+
 def test_unknown_type_roundtrips_raw():
     rd = R.Unknown(9999, b"\xde\xad\xbe\xef")
     m = Message(id=2)

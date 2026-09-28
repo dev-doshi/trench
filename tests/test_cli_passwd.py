@@ -86,3 +86,88 @@ def test_missing_database_is_an_error_not_a_new_one(tmp_path, capsys):
     assert main(["passwd", "--data-dir", str(tmp_path / "nope")]) == 1
     assert not (tmp_path / "nope").exists()
     assert "no database" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_clear_totp_removes_the_second_factor(tmp_path, capsys):
+    """Resetting the password alone leaves the authenticator standing, so the
+    reset appears to work and the next login still fails."""
+    db = await _db(tmp_path)
+    auth = AuthManager(db)
+    await auth.create_user("admin", "old-one")
+    await auth.set_totp("admin", "JBSWY3DPEHPK3PXP")
+    await db.close()
+
+    assert await run("admin", "--data-dir", str(tmp_path),
+                     "--password", "new-one", "--clear-totp") == 0
+
+    db = await _db(tmp_path)
+    auth = AuthManager(db)
+    try:
+        assert await auth.totp_secret("admin") == ""
+        assert await auth.login("admin", "new-one")
+    finally:
+        await db.close()
+    out = capsys.readouterr().out
+    assert "two-factor removed" in out
+
+
+@pytest.mark.asyncio
+async def test_a_reset_without_clear_totp_keeps_the_second_factor(tmp_path):
+    db = await _db(tmp_path)
+    auth = AuthManager(db)
+    await auth.create_user("admin", "old-one")
+    await auth.set_totp("admin", "JBSWY3DPEHPK3PXP")
+    await db.close()
+
+    await run("admin", "--data-dir", str(tmp_path), "--password", "new-one")
+
+    db = await _db(tmp_path)
+    try:
+        assert await AuthManager(db).totp_secret("admin") == "JBSWY3DPEHPK3PXP"
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_clear_totp_on_a_newly_created_user(tmp_path, capsys):
+    db = await _db(tmp_path)
+    await db.close()
+    assert await run("newop", "--data-dir", str(tmp_path), "--password", "pw",
+                     "--role", "viewer", "--clear-totp") == 0
+    out = capsys.readouterr().out
+    assert "user created (viewer)" in out and "two-factor removed" in out
+
+
+@pytest.mark.asyncio
+async def test_the_message_says_sessions_are_not_dropped(tmp_path, capsys):
+    """Sessions live in the daemon's memory: anyone already logged in stays
+    logged in until it restarts, and the operator has to be told."""
+    db = await _db(tmp_path)
+    await AuthManager(db).create_user("admin", "old-one")
+    await db.close()
+    await run("admin", "--data-dir", str(tmp_path), "--password", "new-one")
+    assert "restart the daemon" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_a_custom_database_filename_is_honoured(tmp_path):
+    db = Database(tmp_path / "other.db")
+    await db.connect()
+    await AuthManager(db).create_user("admin", "old-one")
+    await db.close()
+    assert await run("admin", "--data-dir", str(tmp_path), "--db", "other.db",
+                     "--password", "new-one") == 0
+
+
+@pytest.mark.asyncio
+async def test_main_runs_passwd_through_asyncio(tmp_path, capsys):
+    """`main` dispatches this one through `asyncio.run`; it must not be called
+    from inside a running loop, so it is driven in a thread."""
+    import asyncio
+    db = await _db(tmp_path)
+    await AuthManager(db).create_user("admin", "old-one")
+    await db.close()
+    rc = await asyncio.to_thread(
+        main, ["passwd", "admin", "--data-dir", str(tmp_path), "--password", "new"])
+    assert rc == 0

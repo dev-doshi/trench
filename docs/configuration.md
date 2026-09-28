@@ -1,7 +1,7 @@
 # Configuration
 
 Trench reads a single pydantic-validated YAML file (`--config`). Every key is
-optional; see [`trench.example.yaml`](https://github.com/trench/trench/blob/main/trench.example.yaml)
+optional; see [`trench.example.yaml`](https://github.com/dev-doshi/trench/blob/main/trench.example.yaml)
 for the full annotated default.
 
 ## Filtering rules

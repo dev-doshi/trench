@@ -28,10 +28,14 @@ failing.
 """
 from __future__ import annotations
 
+import math
 import struct
 import time
 
-from ..wire.rrtypes import Type
+from ..store.querylog import QueryRecord
+from ..wire import Message
+from ..wire.rrtypes import EDNSOption, Type, type_to_text
+from .pipeline import PREFETCH_WINDOW
 
 _U16 = struct.Struct(">H")
 _U32 = struct.Struct(">I")
@@ -190,7 +194,8 @@ class WireAnswer:
 
     __slots__ = ("blob", "ttls", "original", "base_ttl", "inserted", "qend",
                  "qname", "qtype", "action", "rcode", "reason", "rule", "source",
-                 "upstream", "proto", "answers", "rtype", "cookie_at", "q_cookie_at")
+                 "upstream", "proto", "answers", "rtype", "cookie_at", "q_cookie_at",
+                 "refreshing")
 
     def __init__(self, blob: bytes, ttls: tuple[int, ...], base_ttl: int,
                  inserted: float, qend: int, *, qname: str, qtype: str,
@@ -219,6 +224,10 @@ class WireAnswer:
         # query. -1 when cookies are not in play.
         self.cookie_at = cookie_at
         self.q_cookie_at = q_cookie_at
+        # Set once this entry has asked for an early refresh, so a name being
+        # replayed many times a second does not re-parse its own query for the
+        # whole of `PREFETCH_WINDOW`. A completed refresh replaces the entry.
+        self.refreshing = False
 
 
 class FastPath:
@@ -266,16 +275,18 @@ class FastPath:
         # apart, and whichever asked first would have its verdict replayed to
         # the other. The address is not in the key, so the only safe answer is
         # to stand down entirely while any such rule exists.
-        # Every rule set that could decide a verdict here, not just the default
-        # one: a `$client` rule inside a *group's* list is matched on the
-        # address, and a `cidr` client maps every address in its range onto one
-        # Policy — so one tag covers them all and one address's verdict would be
-        # replayed to the rest of the range.
-        engines = [p.filter, *[g.own for g in p.group_filters.values()]]
-        if any(getattr(e, "has_client_rules", False) for e in engines if e is not None):
+        #
+        # `Pipeline.any_client_rules` answers that from a flag it recomputes
+        # when the engines are installed. Asking the engines directly meant
+        # building a list of them and walking it on every replayed query —
+        # measured at 23% of the whole replay path, for a value that cannot
+        # change between two queries without going through one of those two
+        # setters.
+        if p.any_client_rules:
             return False
         # With ECS in play the answers become subnet-specific, so a recorded
-        # one cannot be replayed to another client.
+        # one cannot be replayed to another client. Read live: it is one
+        # attribute, and a config reload is not obliged to touch this table.
         return getattr(p.config.upstream, "ecs", "off") in ("off", "strip")
 
     def _policy_tag(self, client_ip: str, client_id: str = "") -> bytes:
@@ -346,6 +357,12 @@ class FastPath:
         if p.tunnel is not None and p.tunnel.inspect(entry.qname, entry.rtype, client_ip).suspicious:
             return None
 
+        if (remaining <= PREFETCH_WINDOW and not entry.refreshing
+                and entry.action != "blocked"):
+            # Nothing upstream backs a block, so there is nothing to refresh.
+            entry.refreshing = True
+            p.prefetch_replayed(Message.parse(data), client_ip, entry.proto, client_id)
+
         out = bytearray(entry.blob)
         out[0:2] = data[0:2]                            # the client's own id
         out[12:qend] = data[12:qend]                    # and its own letter case
@@ -360,7 +377,7 @@ class FastPath:
             # shared countdown into every offset understated every TTL above the
             # minimum — a CNAME at 3600 alongside an A at 60 replayed as 60/60,
             # which is not the reply the pipeline would have produced.
-            _U32.pack_into(out, off, max(1, -int(-(was - elapsed) // 1)))
+            _U32.pack_into(out, off, max(1, math.ceil(was - elapsed)))
         if entry.cookie_at >= 0 and p.cookies is not None:
             # A server cookie is HMAC(secret, client_cookie || client_ip): a
             # function of who is asking, not of what they asked. The key pins the
@@ -400,8 +417,7 @@ class FastPath:
             p.dga.note_outcome(entry.qname, client_ip, entry.rcode)
         if p.learn is not None and entry.action in ("cached", "forwarded"):
             p.learn.note(entry.qname)
-        if p.querylog is not None:
-            from ..store.querylog import QueryRecord
+        if p.querylog is not None and getattr(p.querylog, "recording", True):
             # A fresh record per hit: `enqueue` redacts fields in place at higher
             # privacy levels, so a shared instance would leak one client's
             # redaction into the next client's row.
@@ -439,8 +455,7 @@ class FastPath:
         resp = ctx.response
         if resp is None:
             return
-        from ..wire.rrtypes import EDNSOption, type_to_text
-        from .pipeline import _rcode_text
+        from .pipeline import _rcode_text  # circular at import time; cheap here
         cookie_at = q_cookie_at = -1
         if self.pipeline.cookies is not None:
             # Only a reply that actually carries a cookie has anything

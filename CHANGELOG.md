@@ -84,6 +84,30 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Rebinding protection costs about a seventh of what it did.** The verdict for
+  an answer address is a pure function of the string, and it was recomputed from
+  scratch for every record of every answer: profiled, `scrub` was roughly half
+  the uncached forward path, with `ipaddress._parse_octet` the single largest
+  entry. Memoised behind a bounded table, the project's own `forward (uncached)`
+  benchmark goes 64.1 us -> 55.0 us; an address that never repeats costs 5% more
+  than not caching, which is the right side of that trade.
+- **"upstream failed" means the upstream failed.** Every exception on the answer
+  path was logged under that message, so an `AttributeError` in Trench's own
+  code sent the operator to debug the wrong host — and since the client sees
+  SERVFAIL either way, that log line was the only evidence such a bug existed.
+  A `TrenchError`, `OSError` or timeout is still a warning; anything else is now
+  an error with a traceback.
+- **`trench.example.yaml` documents every setting again.** It says so at the
+  top, which made it the one place an operator can find a setting without
+  reading `config.py`, and thirty had accreted without being added — every
+  stream and UDP bound, the fast path, DoH3, DNS cookies, TSIG keys, secondary
+  zones. A test now fails when a setting is added without documenting it. The
+  encrypted transports also show their real defaults (8853/8854/8444, so Trench
+  runs without root) rather than the production ports.
+- **The served OpenAPI document describes the whole API.** It had drifted to 16
+  of 47 routes, and the omissions included `/api/v1/auth/login` — so a client
+  generated from it could not authenticate to reach the sixteen it did describe.
+  Every summary now names the role it needs.
 - **Metrics are usable.** Labelled series for rcode, upstream and detection kind,
   a real latency histogram (an average cannot show a p99 regression), gauges for
   the filtering switch and any running pause, and escaped label values — one raw
@@ -99,6 +123,70 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- The container healthcheck probed a hardcoded port 53 while both `Config`'s
+  default and `trench.example.yaml` listen on 5354, so the general-purpose
+  Compose deployment marked a container unhealthy while it was resolving
+  perfectly. It now reads `server.do53` from the mounted config, resolves the
+  address family instead of assuming IPv4, and says so plainly when Do53 is
+  disabled rather than timing out. `TRENCH_HEALTH_*` still overrides it.
+
+- **A malformed record could switch DNSSEC validation off.** `parse_rdata` keeps
+  a record it cannot decode rather than failing the whole message, so `rr.rtype`
+  and the class of `rr.rdata` can disagree — a truncated A record keeps rtype 1
+  and arrives as `Unknown`. Sixteen registered types can do this, DS, DNSKEY and
+  NSEC3 among them. The DNSKEY RRset is filtered on `k.flags & ZONE_FLAG`
+  *before* any signature is checked, so one undecodable key raised
+  `AttributeError` out of `Validator.validate`; the resolver treats an
+  unexpected validator error as INSECURE and serves the answer. A spoofed DNSKEY
+  response that would have been rejected as bogus was served unvalidated
+  instead, for the cost of appending one junk record. Every field read off rdata
+  now tests the rdata rather than the record's claim about itself.
+- **One bad record no longer costs the whole answer.** The same mismatch reached
+  the rebinding scrub, which runs on every upstream answer under the shipped
+  defaults: reading `.address` off an undecodable A record raised, and the
+  client got SERVFAIL for a query that was fine and an upstream that was
+  reachable. The referral path did it too, discarding every good glue address
+  alongside one bad one and making a delegation unresolvable.
+- **`GET /api/v1/querylog?limit=-1` returned the entire query log.** SQLite reads
+  a negative LIMIT as *no* limit, so the 1000-row cap was walked straight
+  through and every row was materialised and serialised to JSON — one
+  authenticated request at viewer role. `POST /api/v1/whatif` had the same hole
+  past its own 50,000-row cap.
+- **A mistyped number in a query string is no longer a 500.** `history?days=`
+  was guarded; its seven neighbours — `top`, `since`, `until`, `limit`,
+  `offset`, `minutes`, `hours` — were not, so `int()` raised out of the handler
+  and aiohttp turned it into a traceback. They now share one helper that also
+  rejects `nan` (which silently defeated every `min()` cap, since comparisons
+  against it are false) and bounds values to what SQLite can bind.
+- **The DoH JSON API answers 400 for a name it cannot parse.** `?name=` went
+  straight to `Name.from_text` unguarded on an open resolver endpoint — a 500
+  and a traceback per request, caller's choice. `?type=` three lines above it
+  was already guarded.
+- **A dot inside a label survives being written out and read back.** `to_text`
+  escapes it as `\.` per RFC 1035 §5.1, but `from_text` split on every dot
+  before unescaping — cutting the name at the escape that exists to say "this
+  dot is not a separator", then reading a fragment ending in a lone backslash.
+  `Name.from_text(name.to_text())` raised `IndexError` for any such name. It
+  also raised `ValueError` for `\999` and `UnicodeEncodeError` for non-ASCII,
+  where every caller catches `WireError`. That reached the blocklist parser (on
+  third-party lists fetched on a timer), the zone-file parser, and the DoH query
+  parameter above.
+- **A bad `$ORIGIN` or `$TTL` names the file and the line.** Both reached
+  `line.split()[1]` and `int()` raw, so one typo in a hand-written zone file
+  took the daemon down at start-up with a traceback naming neither the zone nor
+  the line — the same failure `_rdata` had already been fixed for one level
+  down.
+- **An unusable `upstream.servers` entry is refused at load.** A non-numeric
+  port killed start-up with `invalid literal for int() with base 10`, naming
+  neither the setting nor the server; a port of 99999 was accepted outright and
+  failed later somewhere with no visible connection to the cause. Specs are now
+  checked at config load with the parser the resolver itself calls, so the two
+  cannot disagree about what a spec means.
+- **A truncated DHCP option is refused rather than stored short.** `_parse_options`
+  read the length octet without checking it exists — `IndexError` where `parse`
+  documents `ValueError` — and an option claiming more bytes than remained was
+  kept at whatever length arrived, so a truncated hostname could be registered
+  in DNS as though the client had sent it.
 - **Startup failures are fatal again.** Nothing awaited the task running
   `App.run()`, so anything it raised — a missing certificate, a port in use, the
   refusal to keep running as root — vanished into an unretrieved exception while

@@ -117,6 +117,11 @@ def render(counters: Counters, cache, filter_size: int, fast=None,
         out.append(_line("trench_fastpath_usable", int(fast.usable)))
 
     if pipeline is not None:
+        out.append("# HELP trench_prefetch_total Entries refreshed before expiry")
+        out.append("# TYPE trench_prefetch_total counter")
+        out.append(_line("trench_prefetch_total", pipeline.prefetches, 'event="issued"'))
+        out.append(_line("trench_prefetch_total", pipeline.prefetch_failures,
+                         'event="failed"'))
         out.append("# HELP trench_filtering_enabled Global filtering switch")
         out.append("# TYPE trench_filtering_enabled gauge")
         out.append(_line("trench_filtering_enabled", int(bool(pipeline.enabled))))

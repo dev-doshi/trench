@@ -9,7 +9,6 @@ from trench.security.acme import (
     ACMEAccount,
     b64url,
     dns01_txt,
-    http01_keyauth,
     make_csr,
 )
 
@@ -67,10 +66,6 @@ def test_dns01_digest():
     val = dns01_txt("tokenABC", tp)
     expected = b64url(hashlib.sha256(f"tokenABC.{tp}".encode()).digest())
     assert val == expected and len(val) == 43
-
-
-def test_http01_keyauth():
-    assert http01_keyauth("tok", "thumb") == "tok.thumb"
 
 
 def test_csr_has_sans():

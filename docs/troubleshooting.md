@@ -106,7 +106,10 @@ trench passwd admin --clear-totp
 
 The healthcheck sends a real query over loopback and requires a well-formed
 reply. It queries a `.invalid` name, so an upstream outage does not fail it —
-unhealthy means Trench itself has stopped answering.
+unhealthy means Trench itself has stopped answering. It reads the port to probe
+from `server.do53` in the mounted config, so changing the listening port does
+not strand it; `TRENCH_HEALTH_HOST` and `TRENCH_HEALTH_PORT` override that, and
+a config with Do53 switched off has nothing for it to query.
 
 ```bash
 docker logs trench

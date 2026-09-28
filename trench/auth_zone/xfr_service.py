@@ -46,7 +46,12 @@ class TransferService:
         will length-prefix. Empty list => connection should send REFUSED."""
         q = query.question
         zone = self.zonestore.authoritative_for(q.name) if q else None
-        if zone is None or zone.origin != q.name:
+        # A zone with no apex SOA is not a servable zone — App registers each
+        # `local_records` entry as a one-record Zone, and `authoritative_for`
+        # matches one on an exact-name query. Transferring it would serialise an
+        # RR whose rdata is None and take the connection down with an
+        # AttributeError instead of answering.
+        if zone is None or zone.origin != q.name or zone.soa is None:
             return [self._err(query, Rcode.NOTAUTH)]
         policy = self._policy_for(zone.origin)
         # empty allow_transfer = deny all (a zone is never transferable by default)

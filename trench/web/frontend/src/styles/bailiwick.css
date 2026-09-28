@@ -835,11 +835,22 @@ body {
    A generated form. Two columns on a fixed grid so every control lines up down
    the page regardless of label length — the previous page drifted because each
    row chose its own layout. */
+/* Fourteen tabs do not fit a narrow window, and a flex row that does not fit
+   widens its parent — which scrolled the whole page sideways rather than the
+   strip. It scrolls inside itself instead, with the same thin scrollbar the
+   rest of the console uses, and the buttons stop shrinking to fit. */
 .st-tabs {
   display: flex; gap: 2px; padding: 0 var(--b-4);
   border-bottom: 1px solid var(--b-edge); background: var(--b-void);
   position: sticky; top: 47px; z-index: 3;
+  overflow-x: auto; scrollbar-width: thin;
 }
+.st-tabs button { flex: none; white-space: nowrap; }
+.st-tabs::-webkit-scrollbar { height: 6px; }
+.st-tabs::-webkit-scrollbar-thumb {
+  background: var(--b-edge); border-radius: 3px;
+}
+.st-tabs::-webkit-scrollbar-track { background: transparent; }
 .st-tabs button {
   position: relative; background: none; border: none; cursor: pointer;
   padding: 10px var(--b-3) 9px; color: var(--b-ink-3);
@@ -1231,3 +1242,54 @@ html::-webkit-scrollbar, body::-webkit-scrollbar { width: 0; height: 0; }
   .btn, .btn-q { min-height: 36px; }
   .bw-crumb button { min-height: 36px; }
 }
+
+/* ── Devices: the filtering control ───────────────────────────────────────
+   The switch sits in a table being scanned, so the cell reserves the space its
+   label will need whatever the label says: "on", "exempt" and a save failure
+   all render into the same box, and the rows below never move. */
+.tb td.filt { white-space: nowrap; }
+.sw-cell { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.sw-cell .sub { display: block; min-width: 46px; }
+.sw-cell input.sw:disabled { opacity: .5; cursor: progress; }
+
+/* ── Settings: structured collections ─────────────────────────────────────
+   An entry is a block rather than a table row. Eleven fields in eleven columns
+   would scroll sideways and force a choice about which ones are worth showing;
+   a wrapping grid needs neither. The controls are the same ones the flat form
+   uses, so a collection reads as part of that form and not as a second design. */
+.col-set { border-top: 1px solid var(--b-edge-soft); padding: var(--b-4) 0 var(--b-3); }
+.col-head { display: flex; align-items: baseline; gap: var(--b-3); }
+.col-head .st-lbl { flex: 1; }
+.col-acts { display: flex; align-items: center; gap: var(--b-2); flex: none; }
+.col-empty {
+  margin: var(--b-2) 0 0; font: 400 var(--b-ui-s)/1.5 var(--b-ui); color: var(--b-ink-4);
+}
+.col-item {
+  display: flex; align-items: flex-start; gap: var(--b-3);
+  margin-top: var(--b-2); padding: var(--b-3);
+  background: var(--b-well); border: 1px solid var(--b-edge-soft); border-radius: var(--b-r);
+}
+/* The columns are sized, not auto: a field that resizes as you type drags every
+   field beside it, which is the jumping this console is supposed to be free of. */
+.col-grid {
+  flex: 1; display: grid; gap: var(--b-2) var(--b-3);
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  align-items: start;
+}
+.col-f { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.col-f.wide { grid-column: span 2; }
+.col-f > span {
+  font: 600 var(--b-cap)/1.4 var(--b-ui); letter-spacing: .07em;
+  text-transform: uppercase; color: var(--b-ink-4);
+}
+.col-f input[type="text"], .col-f input[type="number"], .col-f select,
+.col-f textarea { width: 100%; min-width: 0; }
+.col-f textarea { resize: vertical; }
+.col-f input.sw { align-self: start; }
+.col-rm { flex: none; }
+@media (max-width: 640px) {
+  .col-item { flex-direction: column; }
+  .col-f.wide { grid-column: span 1; }
+}
+/* A value the operator can see and the config file cannot set. */
+.st-ro { font: 500 var(--b-ui-s)/1.5 var(--b-ui); color: var(--b-ink-3); font-style: normal; }

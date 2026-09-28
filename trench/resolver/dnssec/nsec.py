@@ -24,6 +24,7 @@ import base64
 import hashlib
 
 from ...wire import Type
+from ...wire import rdata as R
 from ...wire.name import Name
 
 # RFC 9276 §3.2: treat a zone demanding an excessive iteration count as
@@ -97,11 +98,11 @@ def _ancestors(qname: Name, zone: Name) -> list[Name]:
     return out
 
 
-def _covered(name: Name, nsecs: list[tuple[Name, object]]) -> bool:
+def _covered(name: Name, nsecs: list[tuple[Name, R.NSEC]]) -> bool:
     return any(nsec_covers(o, rd.next_name, name) for o, rd in nsecs)
 
 
-def _is_delegation(rd) -> bool:
+def _is_delegation(rd: R.NSEC | R.NSEC3) -> bool:
     """True for a *parent-side* delegation record: NS set, SOA clear.
 
     Such a record describes the cut, not the child's contents, so it proves
@@ -121,7 +122,7 @@ def _gap_unproven(rd) -> bool:
 
 
 # ---------------------------------------------------------------- NSEC
-def nsec_nodata(qname: Name, qtype: int, nsecs: list[tuple[Name, object]]) -> bool:
+def nsec_nodata(qname: Name, qtype: int, nsecs: list[tuple[Name, R.NSEC]]) -> bool:
     """A NODATA proof: an NSEC at exactly qname whose bitmap lacks qtype.
 
     CNAME must be absent too — had one existed, the server owed us the chain
@@ -139,7 +140,7 @@ def nsec_nodata(qname: Name, qtype: int, nsecs: list[tuple[Name, object]]) -> bo
 
 
 def nsec_wildcard_nodata(qname: Name, qtype: int,
-                         nsecs: list[tuple[Name, object]]) -> bool:
+                         nsecs: list[tuple[Name, R.NSEC]]) -> bool:
     """NODATA at a name that exists only through a wildcard: the wildcard
     matches but carries no qtype, and the exact name is proven absent."""
     for owner, rd in nsecs:
@@ -155,7 +156,7 @@ def nsec_wildcard_nodata(qname: Name, qtype: int,
     return False
 
 
-def nsec_nxdomain(qname: Name, nsecs: list[tuple[Name, object]]) -> bool:
+def nsec_nxdomain(qname: Name, nsecs: list[tuple[Name, R.NSEC]]) -> bool:
     """An NXDOMAIN proof needs two things, and the second is routinely
     forgotten: the name is absent, *and* no wildcard could have answered for it.
 
@@ -180,7 +181,7 @@ def nsec_nxdomain(qname: Name, nsecs: list[tuple[Name, object]]) -> bool:
 
 
 def nsec_wildcard_expansion(qname: Name, expanded_from: Name,
-                            nsecs: list[tuple[Name, object]]) -> bool:
+                            nsecs: list[tuple[Name, R.NSEC]]) -> bool:
     """A wildcard-expanded answer is honest only if the exact name it stood in
     for really is absent — otherwise one wildcard signature can be replayed
     over every name the zone answers for directly."""
@@ -190,7 +191,7 @@ def nsec_wildcard_expansion(qname: Name, expanded_from: Name,
     return _covered(qname, nsecs)
 
 
-def nsec_ds_denial(child: Name, nsecs: list[tuple[Name, object]]) -> str | None:
+def nsec_ds_denial(child: Name, nsecs: list[tuple[Name, R.NSEC]]) -> str | None:
     """What the parent's NSEC records say about a missing DS.
 
     Returns 'insecure' (a real delegation carrying no DS — the subtree is
@@ -254,11 +255,11 @@ class Nsec3Set:
     to stop, not to compute harder.
     """
 
-    def __init__(self, items: list[tuple[Name, object]], zone: Name,
+    def __init__(self, items: list[tuple[Name, R.NSEC3]], zone: Name,
                  max_iterations: int = MAX_NSEC3_ITERATIONS):
         self.zone = zone
         self.usable = False
-        self.records: list[tuple[str, object]] = []
+        self.records: list[tuple[str, R.NSEC3]] = []
         self.salt = b""
         self.iterations = 0
         self._cache: dict[Name, str] = {}

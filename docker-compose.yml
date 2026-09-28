@@ -29,6 +29,11 @@ services:
     # the blocklists and the query log — so :ro was buying very little while
     # breaking every control on that page.
     volumes:
+      # `cp trench.example.yaml trench.yaml` first. This file is gitignored —
+      # it describes somebody's actual network — so a fresh clone does not have
+      # one, and a bind mount whose source is missing does not fail in a way
+      # that points here. `deploy/raspi.yaml` is committed, so the Pi compose
+      # file has nothing to copy.
       - ./trench.yaml:/data/trench.yaml
       - trench-data:/data
 

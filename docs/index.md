@@ -1,6 +1,6 @@
 # Trench
 
-![Trench](assets/banner.svg)
+![Trench, a self-hosted DNS server in pure Python](assets/banner.svg)
 
 A self-hosted DNS server in pure-Python asyncio: ad/tracker sinkhole,
 validating recursive resolver, authoritative server with online DNSSEC signing,
@@ -32,7 +32,7 @@ works, not enough to be coverage.
 
 ## How a query moves through it
 
-![Clients reach Trench over Do53, DoT, DoH, DoQ or DoH3; every query runs the same ordered pipeline; answers come from local zones, an upstream, or recursion from the root](assets/architecture.svg)
+![One ordered path: validate, rate limit, identify client, local zones, discovery, filter, cache, resolve, rebinding guard. Validation, rate limiting and the rebinding guard can refuse a query; local zones, discovery, the filter and the cache can answer it and stop it going further; what survives is forwarded or resolved from the root](assets/architecture.svg)
 
 ## Transports
 

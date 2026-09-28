@@ -12,8 +12,11 @@ class Writer:
 
     def __init__(self) -> None:
         self.buf = bytearray()
-        # case-insensitive suffix -> offset, for DNS name compression
-        self.names: dict[tuple[bytes, ...], int] = {}
+        # case-insensitive suffix -> offset, for DNS name compression. Keyed on
+        # a slice of the lowercased wire form, not on a tuple of labels: see
+        # `write_name`, which switched to bytes for the hashing cost and left
+        # this annotation behind describing a table that no longer exists.
+        self.names: dict[bytes, int] = {}
 
     def tell(self) -> int:
         return len(self.buf)

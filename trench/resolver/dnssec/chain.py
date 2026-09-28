@@ -285,7 +285,8 @@ class Validator:
         work.query()
         msg = await self.ask(child, Type.DS)
         ds = [rr.rdata for rr in msg.answers
-              if rr.rtype == Type.DS and rr.name == child]
+              if rr.rtype == Type.DS and rr.name == child
+              and isinstance(rr.rdata, R.DS)]
         if ds:
             sigs = [rr.rdata for rr in msg.answers
                     if rr.rtype == Type.RRSIG and rr.name == child
@@ -322,8 +323,16 @@ class Validator:
             return cached
         work.query()
         msg = await self.ask(zone, Type.DNSKEY)
+        # `isinstance`, not `rtype` alone: a DNSKEY record whose rdata did not
+        # decode keeps rtype 48 and arrives as `Unknown` (see `parse_rdata`),
+        # and the ZONE-flag filter below reads `.flags` off it *before* any
+        # signature is checked. One such record in the RRset raised
+        # AttributeError out of `validate`, where the caller turns an
+        # unexpected error into INSECURE — so a spoofed DNSKEY response that
+        # would have been rejected as bogus was served unvalidated instead.
         dnskeys = [rr.rdata for rr in msg.answers
-                   if rr.rtype == Type.DNSKEY and rr.name == zone]
+                   if rr.rtype == Type.DNSKEY and rr.name == zone
+                   and isinstance(rr.rdata, R.DNSKEY)]
         sigs = [rr.rdata for rr in msg.answers
                 if rr.rtype == Type.RRSIG and rr.name == zone
                 and rr.rdata.type_covered == Type.DNSKEY]
@@ -405,20 +414,28 @@ class Validator:
         allowed to prove anything.
         """
         sigs = [(rr.name, rr.rdata) for rr in authority if rr.rtype == Type.RRSIG]
-        out: dict[int, list[tuple[Name, object]]] = {Type.NSEC: [], Type.NSEC3: []}
-        for rtype in (Type.NSEC, Type.NSEC3):
+        nsecs: list[tuple[Name, R.NSEC]] = []
+        nsec3s: list[tuple[Name, R.NSEC3]] = []
+        # `isinstance`, not the rtype alone: a record claiming NSEC3 whose rdata
+        # did not decode arrives as `Unknown` (see `parse_rdata`), and every
+        # reader below takes `.salt`, `.next_hashed` and the rest off it. It is
+        # dropped rather than carried: the surviving records are still what the
+        # signature is checked against, so one that the zone really did sign
+        # cannot be quietly excluded — its removal fails the RRset instead.
+        for rtype, cls, into in ((Type.NSEC, R.NSEC, nsecs),
+                                 (Type.NSEC3, R.NSEC3, nsec3s)):
             by_owner: dict[Name, list] = defaultdict(list)
             for rr in authority:
-                if rr.rtype == rtype:
+                if rr.rtype == rtype and isinstance(rr.rdata, cls):
                     by_owner[rr.name].append(rr.rdata)
             for owner, rdatas in by_owner.items():
                 mine = [s for o, s in sigs if o == owner and s.type_covered == rtype]
                 ok, expanded = self._verify(owner, rtype, rdatas, mine, keys, zone, work)
                 if ok and expanded is None:
-                    out[rtype].extend((owner, rd) for rd in rdatas)
+                    into.extend((owner, rd) for rd in rdatas)
         n3 = None
-        if out[Type.NSEC3]:
-            candidate = Nsec3Set(out[Type.NSEC3], zone,
+        if nsec3s:
+            candidate = Nsec3Set(nsec3s, zone,
                                  max_iterations=self.max_nsec3_iterations)
             n3 = candidate if candidate.usable else None
-        return out[Type.NSEC], n3
+        return nsecs, n3

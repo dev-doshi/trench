@@ -13,7 +13,8 @@ import time
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from ..cache import Cache, detach
-from ..errors import UpstreamError
+from ..config import Config
+from ..errors import TrenchError, UpstreamError
 from ..filter import Action, Decision
 from ..filter.cnamecloak import inspect as inspect_cloak
 from ..filter.ipmatch import answer_addresses
@@ -50,6 +51,19 @@ if TYPE_CHECKING:                        # attached by App; imported lazily at
 
 log = get("pipeline")
 
+#: Failures that are the upstream's or the network's, not ours. Anything else
+#: reaching the handler in `_resolve_upstream` is a bug in this package.
+_UPSTREAM_FAULTS = (TrenchError, OSError, TimeoutError)
+
+#: Shared empty set for the `$client` name match — see `_run`.
+_NO_NAMES: frozenset[str] = frozenset()
+
+#: How close to expiry an entry must be before a query refreshes it early.
+#: Read by `_maybe_prefetch` and by the fast path, which have to agree: if the
+#: fast path replayed inside a window the cache would not refresh in, it would
+#: schedule a refresh on every query for the rest of the entry's life.
+PREFETCH_WINDOW = 30
+
 
 class _Answer(NamedTuple):
     """The outcome of one upstream fetch.
@@ -59,7 +73,10 @@ class _Answer(NamedTuple):
     must not be confused with an exception, and must not be cached.
     """
     resp: Message | None
-    block: object | None
+    #: A `Decision`, from the cloak inspection or built where an answer is
+    #: rejected. Typed as `object` it was three unchecked attribute reads at the
+    #: one place that unpacks it.
+    block: Decision | None
 
 
 def _detach_task(fut) -> None:
@@ -70,7 +87,7 @@ def _detach_task(fut) -> None:
 
 class Pipeline:
     def __init__(self, *, filter_engine, cache: Cache, forwarder,
-                 counters: Counters, config, querylog=None, clients=None,
+                 counters: Counters, config: Config, querylog=None, clients=None,
                  services=None, safebrowse=None, zones=None, plugins=None,
                  forwarders=None, workers: int = 1):
         # How many sibling workers share this machine's traffic. Every piece of
@@ -89,6 +106,11 @@ class Pipeline:
         # Per-group filtering: {group name -> LayeredFilter over self._filter}.
         # Rebuilt from the compiled group engines whenever the rules change.
         self.group_filters: dict = {}
+        #: True while any installed rule set scopes a rule to particular
+        #: clients. Recomputed by `_refresh_client_rules` from the two setters
+        #: below, which are the only ways an engine is ever installed — see
+        #: `any_client_rules`.
+        self._any_client_rules = False
         self.counters = counters
         self.config = config
         self.querylog = querylog
@@ -103,13 +125,18 @@ class Pipeline:
         self.learn: PopularityTracker | None = None   # learned prewarm, set by App
         self._prefetching: set[Any] = set()  # cache keys with an in-flight prefetch
         self._prefetch_tasks: set[Any] = set()   # strong refs; see _prefetch
+        #: Prefetches issued and prefetches that came back with an answer. An
+        #: operator cannot otherwise tell optimistic caching from a cache that
+        #: simply expires — the two look identical from outside.
+        self.prefetches = 0
+        self.prefetch_failures = 0
         self._inflight: dict[Any, Any] = {}       # cache key -> future for the query in flight
         # RFC 8767 §6 client response timer: how long a client waits for a
         # refresh before being handed retained stale data instead.
         self.stale_timeout = float(getattr(config.cache, "serve_stale_client_timeout", 1.8))
         self.ede = bool(getattr(getattr(config, "filtering", None), "ede", False))
         from .ratelimit import RateLimiter
-        sec = getattr(config, "security", None)
+        sec = config.security
         self.ratelimiter = RateLimiter(getattr(sec, "rate_limit", 0.0),
                                        getattr(sec, "rate_burst", 0),
                                        workers=self.workers)
@@ -117,19 +144,20 @@ class Pipeline:
         self.local_suffixes = tuple(getattr(sec, "local_suffixes", ()))
         self.use_0x20 = bool(getattr(sec, "use_0x20", False))
         self.cookies: CookieJar | None = None
-        if getattr(sec, "dns_cookies", False):
+        if sec.dns_cookies:
             from .cookies import CookieJar
             self.cookies = CookieJar()
         self.dga: DGADetector | None = None
-        if getattr(sec, "dga_detection", False):
+        if sec.dga_detection:
             from ..filter.dga import DGADetector
             self.dga = DGADetector(threshold=sec.dga_threshold, block=sec.dga_block,
                                    workers=self.workers)
         self.tunnel: TunnelDetector | None = None
-        if getattr(sec, "tunnel_detection", False):
+        if sec.tunnel_detection:
             from ..filter.tunnel import TunnelDetector
             self.tunnel = TunnelDetector(threshold=sec.tunnel_threshold,
                                          block=sec.tunnel_block, workers=self.workers)
+        self._refresh_client_rules()
         self.enabled = True  # global blocking toggle
         # Timed pauses. `enabled` is the permanent switch; these are the "let it
         # through for five minutes" one, which is the control an operator
@@ -166,6 +194,12 @@ class Pipeline:
             self.fast.clear()
 
     def paused(self, client_ip: str = "") -> bool:
+        # A pause is a rare, operator-initiated state, and this is asked on
+        # every query. When nothing is paused there is nothing to compare
+        # against, so neither the clock read nor the dict lookup below is worth
+        # doing — both tables being empty is already the whole answer.
+        if not self.paused_until and not self._client_pause:
+            return False
         now = time.time()
         if self.paused_until > now:
             return True
@@ -183,7 +217,14 @@ class Pipeline:
 
     @property
     def paused_any(self) -> bool:
-        """True while any pause is in effect, for the replay table's gate."""
+        """True while any pause is in effect, for the replay table's gate.
+
+        Read once per replayed query, so the no-pause case — which is every
+        query on a box nobody has paused — answers without reading the clock or
+        walking the per-client table.
+        """
+        if not self.paused_until and not self._client_pause:
+            return False
         now = time.time()
         return self.paused_until > now or any(u > now for u in self._client_pause.values())
 
@@ -209,6 +250,7 @@ class Pipeline:
         rebuild the engine means a sixth cannot forget.
         """
         self._filter = engine
+        self._refresh_client_rules()
         if self.fast is not None:
             self.fast.clear()
 
@@ -225,8 +267,27 @@ class Pipeline:
             name: LayeredFilter(name, engine, lambda: self._filter, inherit)
             for name, (engine, inherit) in (engines or {}).items()
         }
+        self._refresh_client_rules()
         if self.fast is not None:
             self.fast.clear()
+
+    @property
+    def any_client_rules(self) -> bool:
+        """True while any installed rule set carries a `$client` rule.
+
+        Read once per query by the replay table's gate, which has to stand down
+        entirely while such a rule exists: `$client` matches on the source
+        address, and the address is not in the replay key. Working it out from
+        the engines each time meant building a list of them per query, so it is
+        derived when the engines are installed instead — `filter`'s setter and
+        `set_group_filters` are the only two places that can install one.
+        """
+        return self._any_client_rules
+
+    def _refresh_client_rules(self) -> None:
+        engines = [self._filter, *[g.own for g in self.group_filters.values()]]
+        self._any_client_rules = any(
+            getattr(e, "has_client_rules", False) for e in engines if e is not None)
 
     def filter_for(self, policy) -> Any:
         """The rule set this client resolves under.
@@ -393,7 +454,13 @@ class Pipeline:
         if active and fc.enabled and pol_block:
             # $client rules match on the source IP, a CIDR containing it, or the
             # client's configured name — all three appear in real lists.
-            cnames = frozenset(n for n in (policy.name if policy else "",) if n)
+            #
+            # Built only when some rule actually scopes itself to a client.
+            # Otherwise `_applicable` never looks at it, and this was a genexp
+            # and a frozenset allocated per query to be ignored.
+            cnames = _NO_NAMES
+            if self._any_client_rules and policy is not None and policy.name:
+                cnames = frozenset((policy.name,))
             d = self.filter_for(policy).match(ctx.qname, ctx.qtype, ctags=ctags,
                                               client=ctx.client_ip,
                                               client_names=cnames)
@@ -424,12 +491,12 @@ class Pipeline:
 
         # 6c. DNS tunneling / exfiltration detection
         if active and self.tunnel is not None:
-            res = self.tunnel.inspect(ctx.qname, ctx.qtype, ctx.client_ip)
-            if res.suspicious:
+            tun = self.tunnel.inspect(ctx.qname, ctx.qtype, ctx.client_ip)
+            if tun.suspicious:
                 self.counters.note_tunnel(ctx.qname)
-                ctx.reason, ctx.source = res.reason, "tunnel"
+                ctx.reason, ctx.source = tun.reason, "tunnel"
                 if self.tunnel.block:
-                    self._block(ctx, reason=res.reason, source="tunnel")
+                    self._block(ctx, reason=tun.reason, source="tunnel")
                     return
 
         # 7. cache (ECS scope keeps per-subnet answers separate, and so does
@@ -481,7 +548,17 @@ class Pipeline:
         except Exception as e:
             if self._serve_stale(ctx, key, "stale-fallback"):
                 return
-            log.warning("upstream failed for %s: %s", ctx.qname, e)
+            if isinstance(e, _UPSTREAM_FAULTS):
+                log.warning("upstream failed for %s: %s", ctx.qname, e)
+            else:
+                # Not the upstream's fault. Everything above raises a
+                # TrenchError or an OSError to *reject* an answer; anything else
+                # getting here is our own code failing on a response, and saying
+                # "upstream failed" sent the operator to debug the wrong host.
+                # It is also the only signal that such a bug exists at all,
+                # since the client just sees SERVFAIL either way — a malformed
+                # A record in an answer hid here for exactly that reason.
+                log.exception("internal error handling the answer for %s", ctx.qname)
             ctx.response = ctx.query.reply(Rcode.SERVFAIL)
             ctx.action = "failed"
             return
@@ -614,7 +691,11 @@ class Pipeline:
         # anything else reads the response, so every later stage — cloak
         # inspection, rebinding scrub, the cache — only ever sees records
         # that legitimately answer this question.
-        cut = sanitize(resp, ctx.qname)
+        # The query's own Name, not `ctx.qname`: sanitize only ever compares
+        # names by their canonical key, so rendering this one to text and
+        # parsing it straight back was a Name built per forwarded query.
+        qq = ctx.query.question
+        cut = sanitize(resp, qq.name if qq is not None else ctx.qname)
         if cut.answers:
             # An upstream attaching answers for other names is either broken
             # or hostile; either way the operator should hear about it.
@@ -626,7 +707,13 @@ class Pipeline:
             strip_ech_records(resp)
         # 8b. CNAME-cloak inspection: a first-party CNAME may resolve to a
         # blocked tracker — sinkhole if so.
-        if (self.enabled and fc.enabled and fc.cname_inspect
+        #
+        # `policy.block` is part of the guard because this is still blocking.
+        # The name path honours a client exempted from filtering; these two
+        # answer-side checks did not, so "filtering off for this client" turned
+        # off only the half of it that matches on the question.
+        pol_block = getattr(ctx.policy, "block", True)
+        if (self.enabled and fc.enabled and fc.cname_inspect and pol_block
                 and hasattr(self.filter, "match") and resp.answers):
             pol = ctx.policy
             try:
@@ -642,7 +729,8 @@ class Pipeline:
         # 8b-ii. Address lists: the name in the question may be new, but the
         # network the answer points into usually is not. Runs after the cloak
         # check so a cloaked name is still reported as a cloak.
-        if self.enabled and fc.enabled and getattr(fc, "block_answer_ips", False):
+        if (self.enabled and fc.enabled and pol_block
+                and getattr(fc, "block_answer_ips", False)):
             ips = getattr(self.filter, "ips", None)
             if ips:
                 for addr in answer_addresses(resp):
@@ -719,6 +807,33 @@ class Pipeline:
             orig = q.question.name
         return fwd, orig
 
+    def prefetch_replayed(self, query: Message, client_ip: str, proto: str,
+                          client_id: str = "") -> None:
+        """Refresh the entry behind a reply the fast path is about to replay.
+
+        `_maybe_prefetch` hangs off the cache read in `_run`, and the fast path
+        answers repeat queries in `datagram_received` without ever reaching it.
+        Those are the same queries: an entry is replayable precisely because it
+        is being asked for repeatedly, which is also what makes it worth
+        refreshing early. So the names with the most repeats were the only ones
+        prefetch could never fire for, and each paid a full upstream round trip
+        once per TTL. Measured on the live deployment: 72% of queries forwarded
+        at a 159 ms p50, for names re-asked every 80-140 s.
+
+        Parsing the query here undoes what the fast path exists to avoid, so it
+        happens once per entry per TTL — the caller holds a flag — and only
+        inside `PREFETCH_WINDOW`.
+        """
+        if not self.config.cache.prefetch:
+            return
+        ctx = QueryContext(query=query, client_ip=client_ip, proto=proto,
+                           client_id=client_id)
+        if self.clients is not None:
+            ctx.policy = self.clients.identify(client_ip, client_id)
+        key = self.cache.key_for(query, ecs=self._ecs_scope(ctx), view=self._view(ctx))
+        if key is not None:
+            self._maybe_prefetch(ctx, key)
+
     def _maybe_prefetch(self, ctx: QueryContext, key) -> None:
         """Refresh a popular entry shortly before it expires (optimistic caching).
 
@@ -729,17 +844,19 @@ class Pipeline:
         checked for, on the one path nobody is waiting to notice.
         """
         rem = self.cache.remaining(key)
-        if rem is None or rem > 30:
+        if rem is None or rem > PREFETCH_WINDOW:
             return
         if key in self._prefetching:
             return
         self._prefetching.add(key)
 
+        self.prefetches += 1
+
         async def refresh():
             try:
                 await self._fetch(ctx, key)
             except Exception:
-                pass
+                self.prefetch_failures += 1
             finally:
                 self._prefetching.discard(key)
 
@@ -813,13 +930,24 @@ class Pipeline:
             rcode=rcode, upstream=ctx.upstream, elapsed_us=ctx.elapsed_us(),
             reason=ctx.reason,
         )
-        if self.querylog is not None:
-            answers = [rr.rdata.to_text() for rr in resp.answers if rr.rtype != Type.OPT]
-            self.querylog.enqueue(record_from_ctx(qname, qtype, ctx, rcode, answers))
+        ql = self.querylog
+        if ql is not None and getattr(ql, "recording", True):
+            # Rendering the answer section costs a string per record, on the
+            # query's own latency path — and at the two higher privacy levels
+            # `enqueue` throws the whole record, or just the answers, away
+            # again. Ask first rather than build and discard. `getattr` because
+            # a stand-in log only has to provide `enqueue`.
+            answers = ([rr.rdata.to_text() for rr in resp.answers if rr.rtype != Type.OPT]
+                       if getattr(ql, "records_answers", True) else [])
+            ql.enqueue(record_from_ctx(qname, qtype, ctx, rcode, answers))
+
+
+#: Numeric rcode -> mnemonic. Same reasoning as `rrtypes._TYPE_TEXT`: this runs
+#: once per query in `_finalize` and once per replayed reply, and building an
+#: enum member to read `.name` off it costs five times a dict lookup.
+_RCODE_TEXT: dict[int, str] = {int(r): r.name for r in Rcode}
 
 
 def _rcode_text(rc: int) -> str:
-    try:
-        return Rcode(rc).name
-    except ValueError:
-        return str(rc)
+    name = _RCODE_TEXT.get(rc)
+    return name if name is not None else str(rc)

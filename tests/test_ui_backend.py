@@ -3,19 +3,13 @@ query-log filters/facets/purge, privacy summary, and the multiplexed WS."""
 from __future__ import annotations
 
 import json
-import socket
 import time
 
 import aiohttp
 import pytest
+from support import free_port
 
 from trench.stats import Counters
-
-
-def _free_port():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close()
-    return p
 
 
 # --- counters: series + live listeners ---
@@ -128,7 +122,7 @@ async def _api(tmp_path):
                                  "web": {"enabled": True, "admin_password": "pw"}})
     app = App(cfg)
     await app.setup_storage()
-    port = _free_port()
+    port = free_port()
     app.api = APIServer(app, "127.0.0.1", port)
     await app.api.start()
     return app, port

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from trench.cache import Cache
 from trench.clients import Client, ClientRegistry, Policy
 from trench.config import Config
@@ -117,3 +119,89 @@ def test_pipeline_safebrowse_parental():
     assert r.answers[0].rdata.to_text() == "0.0.0.0"
     r2 = asyncio.run(pipe.resolve(mkquery("adult.example"), "10.0.0.5"))
     assert r2.answers[0].rdata.to_text() == "0.0.0.0"
+
+
+# --- every worker has to see a console-managed client, not just the primary ---
+@pytest.mark.asyncio
+async def test_a_non_primary_worker_loads_database_managed_clients(tmp_path):
+    """Only the primary opens the database for writing, and `setup_storage`
+    returned before `reload_clients` for everyone else — so a client created in
+    the console existed in one worker out of `workers`. Behind one SO_REUSEPORT
+    socket that does not read as "it did not work": the exemption applies to
+    roughly 1/N of the client's queries and looks like flapping.
+    """
+    from trench.app import App
+    from trench.config import Config
+    cfg = Config.model_validate({"data_dir": str(tmp_path),
+                                 "server": {"do53": {"enabled": False}},
+                                 "querylog": {"enabled": True}})
+    primary = App(cfg, primary=True)
+    await primary.setup_storage()
+    try:
+        await primary.db.execute(
+            "INSERT INTO client(ident, ident_type, name, policy) VALUES(?,?,?,?)",
+            ("10.0.0.9", "ip", "unfiltered", '{"block": false}'))
+        await primary.reload_clients()
+        assert primary.clients.identify("10.0.0.9", None).block is False
+
+        worker = App(cfg, primary=False)
+        await worker.setup_storage()
+        try:
+            assert worker.db is None, "a non-primary worker must not open a writer"
+            pol = worker.clients.identify("10.0.0.9", None)
+            assert pol.block is False, "this worker never saw the managed client"
+        finally:
+            if worker.db_ro is not None:
+                await worker.db_ro.close()
+    finally:
+        await primary.db.close()
+
+
+def test_notify_workers_is_a_no_op_without_a_supervisor():
+    """A single-process install has no siblings, and must not signal whatever
+    process happens to be its parent."""
+    import os
+    from unittest.mock import patch
+
+    from trench.app import App
+    from trench.config import Config
+    app = App(Config())
+    assert app.supervisor_pid is None
+    with patch.object(os, "kill") as kill:
+        app.notify_workers()
+        kill.assert_not_called()
+        app.supervisor_pid = 4242
+        app.notify_workers()
+        kill.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_a_worker_that_started_before_the_database_existed_recovers(tmp_path):
+    """The workers are forked in the same instant, so on a first run a sibling
+    can look for the primary's database before the primary has created it. A
+    handle opened only at start-up would then be absent for the life of the
+    process, and every console-managed client would be invisible in that worker
+    until the next restart."""
+    from trench.app import App
+    from trench.config import Config
+    cfg = Config.model_validate({"data_dir": str(tmp_path),
+                                 "server": {"do53": {"enabled": False}},
+                                 "querylog": {"enabled": True}})
+    worker = App(cfg, primary=False)
+    await worker.setup_storage()                 # nothing to open yet
+    assert worker.db_ro is None
+    assert worker.clients.identify("10.0.0.9", None).block is True
+
+    primary = App(cfg, primary=True)             # …the primary catches up
+    await primary.setup_storage()
+    try:
+        await primary.db.execute(
+            "INSERT INTO client(ident, ident_type, name, policy) VALUES(?,?,?,?)",
+            ("10.0.0.9", "ip", "unfiltered", '{"block": false}'))
+        await worker.reload_clients()            # the next reload finds it
+        assert worker.db_ro is not None, "the handle must be retried, not given up on"
+        assert worker.clients.identify("10.0.0.9", None).block is False
+    finally:
+        if worker.db_ro is not None:
+            await worker.db_ro.close()
+        await primary.db.close()

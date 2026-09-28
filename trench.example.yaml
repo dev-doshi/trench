@@ -1,4 +1,9 @@
-# Trench configuration. All keys optional; shown values are the defaults.
+# Trench configuration. Every key is optional, and every key Trench reads is
+# shown here. Values are the defaults, except where the file is also acting
+# as a starter config and says so: `data_dir`, the Do53 `port`, the upstream
+# `servers`, `filtering.sources`, and the `host` of each encrypted transport
+# (which defaults to 127.0.0.1 like everything else — 0.0.0.0 is shown
+# because a transport you turn on is usually one you want the LAN to reach).
 data_dir: ./data
 dev: false
 uvloop: true
@@ -11,24 +16,48 @@ server:
     port: 5354           # set 53 in production
     udp: true
     tcp: true
+  # The encrypted transports default to unprivileged ports so Trench runs
+  # without root; the standard ones (853 for DoT/DoQ, 443 for DoH/DoH3) need
+  # privilege to bind, which `server.user` below then hands back.
   dot:                   # DNS-over-TLS (P1)
     enabled: false
     host: 0.0.0.0
-    port: 853
+    port: 8853           # 853 in production
     cert: null
     key: null
   doh:                   # DNS-over-HTTPS (P1)
     enabled: false
     host: 0.0.0.0
-    port: 8443
+    port: 8443           # 443 in production
     path: /dns-query
     tls: false
   doq:                   # DNS-over-QUIC (P1)
     enabled: false
     host: 0.0.0.0
-    port: 853
+    port: 8854           # 853 in production
+  doh3:                  # DNS-over-HTTP/3 (P1)
+    enabled: false
+    host: 0.0.0.0
+    port: 8444           # 443 in production
   edns_udp_size: 1232
   workers: 1             # Do53 worker processes for multi-core; 0 = auto (CPU count)
+  # Connection bounds for the stream transports (TCP/DoT). Without them a
+  # connection opened and then abandoned is held for as long as the peer keeps
+  # the socket alive.
+  tcp_idle_timeout: 10.0   # RFC 7766 §6.2.3; 0 disables
+  tcp_max_connections: 512 # per worker
+  tcp_max_per_client: 32
+  tcp_max_inflight: 16     # pipelined queries answered at once per connection
+  # Cap on UDP queries in flight per worker. Rate limiting runs inside the
+  # pipeline, so without this a flood pays for a task and a parse before
+  # anything can refuse it. 0 disables.
+  udp_max_inflight: 2048
+  # Wire-resident fast path: answer a repeat query by replaying the bytes the
+  # pipeline produced for it, patching only the transaction id and the TTLs. It
+  # declines anything it cannot reproduce exactly, so turning it off changes
+  # throughput and nothing else.
+  fast_path: true
+  fast_path_entries: 16384
   # Shed root after binding the privileged ports. Port 53 needs privilege to
   # bind and nothing after that, so a resolver that keeps root is carrying it
   # for no reason — including in the Docker image, which starts as root
@@ -60,6 +89,26 @@ upstream:
   ecs: "off"             # off | forward | strip  (quoted: bare off is a YAML boolean)
   verify: true           # verify TLS certs of encrypted upstreams
   dnssec: false          # validate DNSSEC
+  qname_min: true        # RFC 9156: ask each server only the part of the name it
+                         # needs, so the root and the TLDs never see the whole one
+  # Wall-clock and packet ceilings for one client question, including the side
+  # resolutions it spawns to find nameserver addresses. These are what stop a
+  # deep or hostile branch of the tree turning one query into unbounded
+  # traffic; raise them only with a reason. Recursive mode only.
+  recursion_budget: 5.0
+  recursion_max_queries: 40
+  recursion_query_timeout: 1.5   # per authoritative server, kept well under the
+                                 # whole-resolution budget so a slow first
+                                 # nameserver does not consume it
+  # How many source ports to spread plain-UDP upstream queries over, for the
+  # ephemeral-port entropy RFC 5452 asks for. 1024 gives 10 bits on top of the
+  # 16-bit transaction id; 0 opens a socket per query (full entropy, +67us).
+  # Only affects `udp://` upstreams — DoT/DoH/DoQ keep one connection.
+  udp_source_ports: 1024
+  # The AD bit is an upstream's claim that it validated DNSSEC. Relaying a claim
+  # we did not make and cannot authenticate is how a plaintext-UDP spoofer gets
+  # a forged answer marked "verified".
+  trust_ad: auto         # auto (only from DoT/DoH/DoQ) | always | never
   trust_anchors: ""      # path to a root.key (IANA DS records or a BIND
                          # trust-anchors block). Empty uses <data_dir>/root.key
                          # if present, else the anchors built into this release.
@@ -77,6 +126,13 @@ cache:
   serve_stale: true
   serve_stale_max: 86400
   prefetch: true
+  serve_stale_client_timeout: 1.8   # RFC 8767 §6 recommends <= 1.8s; 0 = wait
+  persist: false         # save and restore the cache across restarts
+  # Learned prewarm: track query popularity (persisted) and refresh the top
+  # names before their TTLs lapse.
+  prewarm: false
+  prewarm_top: 50
+  prewarm_interval: 300  # seconds between sweeps
   shared: true           # in multi-worker mode, share one cache across workers (mmap)
   shared_slots: 16384    # ~ shared_slots * (22 + shared_payload) bytes of shared RAM
   shared_payload: 1232
@@ -96,6 +152,18 @@ filtering:
                          # blocked whatever its name was. RPZ `rpz-ip` triggers
                          # in any source above land in the same matcher.
   block_answer_ips: true
+  ede: true              # RFC 8914: attach the reason for a block to the response
+  ctags: []              # client tags a rule's $ctag modifier can select on
+  # Substrings marking a source as protective (malware/phishing/threat feeds).
+  # These are judged on coverage, not hit rate: a threat feed that never fires
+  # means the network is clean, which is the outcome you paid for. Names
+  # matching well-known threat-feed conventions are detected anyway.
+  protective_sources: []
+  # Serve an explainer page on the block IP, so a blocked request lands on
+  # something that says why rather than on a connection error.
+  block_page: false
+  block_page_host: 0.0.0.0
+  block_page_port: 8088
   ech: pass              # pass | strip — the `ech` parameter in HTTPS/SVCB
                          # answers. Stripping downgrades clients to a visible
                          # TLS server name and buys this resolver nothing.
@@ -118,6 +186,20 @@ clients: []
 
 # --- authoritative zones + local DNS ---
 zones: []
+# Shared secrets for authenticating zone transfers, NOTIFY and dynamic UPDATE.
+# A zone names one in `zones[].tsig_key`; without it those operations are
+# authorised by client address alone.
+tsig_keys: []
+  # - name: xfr.
+  #   algorithm: hmac-sha256
+  #   secret: "<base64>"
+# Zones this server slaves from a primary: it pulls them over AXFR/IXFR and
+# answers authoritatively for what it pulled.
+secondaries: []
+  # - origin: example.com.
+  #   primary: 192.0.2.1
+  #   port: 53
+  #   key: xfr.           # a name from tsig_keys above
   # - {origin: home.lan., file: /etc/trench/home.zone, dnssec: true}
 local_records: []
   # - {name: nas.home.lan, type: A, answer: 192.168.1.10}
@@ -143,6 +225,7 @@ security:
   # policy, the rate-limit bucket, the lockout counter and the ECS subnet.
   trusted_proxies: []
   rebinding_protection: true
+  dns_cookies: false     # RFC 7873 server cookies (anti-spoof / anti-amplification)
   local_suffixes: [lan, local, home.arpa, internal, localhost]
   use_0x20: false
   dga_detection: false   # real-time detection of algorithmically-generated (malware C2) domains
@@ -185,9 +268,6 @@ querylog:
 gravity:
   refresh_hours: 24
 
-# Automatic TLS certificates over ACME dns-01. Needs `zones` to contain the name
-# being certified — this server answers the challenge from its own zone, so
-# nothing has to be reachable from the internet. See docs/security.md.
 # Updates. `notify` checks on a timer and tells you; it never installs.
 # `auto` also installs, but only where Trench owns the installation (a
 # virtual environment it can write to — never a container image, a distro
@@ -206,10 +286,18 @@ updates:
   restart: manual             # manual | systemd
   unit: trench
 
+# Automatic TLS certificates over ACME dns-01. Needs `zones` to contain the name
+# being certified — this server answers the challenge from its own zone, so
+# nothing has to be reachable from the internet. See docs/security.md.
 acme:
   enabled: false
   domains: []
   email: ""
+  directory: "https://acme-v02.api.letsencrypt.org/directory"
+  settle: 0.0            # seconds to wait after publishing the challenge before
+                         # asking the CA to look. 0 is right when this server
+                         # answers the query itself; raise it when a secondary
+                         # has to pull the zone first.
 
 web:
   enabled: true

@@ -36,8 +36,15 @@ def _config_writable(path) -> tuple[bool, str]:
         return (True, "") if os.access(p.parent, os.W_OK) else (
             False, f"{p.parent} is not writable.")
     if not os.access(p, os.W_OK):
-        return False, (f"{p} is read-only. In the shipped container it is bind-mounted "
-                       f"with ':ro' — drop that flag to edit settings from here.")
+        # Two different causes land here and the message used to name only one,
+        # which sent a real deployment looking for a ':ro' that was not there.
+        # The container drops ALL capabilities, CAP_DAC_OVERRIDE included, so
+        # running as root is not enough on its own: the file's own mode has to
+        # permit the write.
+        return False, (f"{p} is read-only. Either it is bind-mounted with ':ro', "
+                       f"or its owner and mode do not permit this process to "
+                       f"write it — the container drops CAP_DAC_OVERRIDE, so "
+                       f"even root obeys the permission bits.")
     return True, ""
 
 
@@ -59,6 +66,23 @@ def _write_config(src, text: str) -> None:
     except OSError:
         tmp.unlink(missing_ok=True)
     src.write_text(text)
+
+
+def _security_headers(resp) -> None:
+    """Anti-framing and sniffing headers, on a response or on a raised one."""
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("Referrer-Policy", "same-origin")
+    resp.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
+        "object-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+        # `ws:`/`wss:` as bare schemes are not scoped to this origin: they
+        # permit a socket to anywhere. The console's only socket is its own
+        # /api/v1/ws, and 'self' already covers it for both schemes.
+        "connect-src 'self'")
+
+
 API = "/api/v1"
 
 #: Ceiling on one inbound WebSocket message. The console's own frames are a
@@ -70,6 +94,59 @@ class _NoUpdater(Exception):
     """`updates.mode` is off, so there is no updater to ask. Not an error the
     caller did anything to cause, so the handlers turn it into an explanation
     rather than a 500."""
+
+
+#: SQLite binds an integer as 64-bit signed and raises OverflowError inside its
+#: driver thread for anything wider — a 500, not a bad request. Every number
+#: `_num` returns ends up as a bind parameter or in arithmetic with a timestamp,
+#: so the representable range is the outer bound on all of them, over and above
+#: whatever `cap` a caller asks for.
+_INT64_MAX = 2 ** 63 - 1
+
+
+def _num(query, name: str, default, cap=None, kind=int, floor=0):
+    """A numeric request parameter, clamped to [floor, cap], or `default`.
+
+    `query` is anything with `.get` — a query string or a decoded JSON body.
+    Every caller is a pagination or window hint written by whoever built the
+    request — the console, a bookmark, a script — so all three guards here are
+    about input nobody vouched for:
+
+    * **Not a number.** `int("abc")` raised ValueError straight out of the
+      handler and aiohttp turned it into a 500. `history?days=` was already
+      wrapped in a try/except falling back to its default; its seven neighbours
+      were not. The default rather than a 400, because that is what that one
+      guard chose, and it reads right: a malformed hint is no hint.
+    * **Not finite.** `float("nan")` parses, and `min(nan, cap)` is `nan`
+      because every comparison against it is False, so the cap silently does
+      nothing and the `int()` that follows fails somewhere further in.
+    * **Below the floor.** This is the one that mattered: SQLite reads a
+      *negative* LIMIT as no limit at all, so `?limit=-1` walked straight
+      through a 1000-row cap and returned the whole query log — every row
+      materialised and serialised to JSON, from one authenticated GET.
+
+    Clamping here rather than at each call site is the point: the bound cannot
+    be remembered in one handler and forgotten in the next.
+    """
+    raw = query.get(name)
+    value = default
+    if raw not in (None, ""):
+        try:
+            value = kind(raw)
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError because a JSON body arrives already typed: `float()`
+            # of an integer too large to represent raises it, and it is not a
+            # ValueError. A query string cannot reach it — `float("9" * 400)` is
+            # `inf`, which the finiteness check below catches instead.
+            value = default
+    if value is None:
+        return None
+    if value != value or value in (float("inf"), float("-inf")):
+        return default
+    if floor is not None:
+        value = max(value, floor)
+    value = max(min(value, _INT64_MAX), -_INT64_MAX)
+    return min(value, cap) if cap is not None else value
 
 
 class APIServer:
@@ -198,18 +275,16 @@ class APIServer:
         page a logged-in admin visits could frame the console, overlay bait on
         the filtering toggle, and disable network-wide filtering in one click.
         """
-        resp = await handler(request)
-        resp.headers.setdefault("X-Frame-Options", "DENY")
-        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
-        resp.headers.setdefault("Referrer-Policy", "same-origin")
-        resp.headers.setdefault(
-            "Content-Security-Policy",
-            "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
-            "object-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
-            # `ws:`/`wss:` as bare schemes are not scoped to this origin: they
-            # permit a socket to anywhere. The console's only socket is its own
-            # /api/v1/ws, and 'self' already covers it for both schemes.
-            "connect-src 'self'")
+        # `_require` and the validating handlers signal failure by *raising* an
+        # HTTPException, which never passes through the return path below — so
+        # every 400/401/403 the console can provoke went out bare, and "on every
+        # response" was true only of the ones that succeeded.
+        try:
+            resp = await handler(request)
+        except web.HTTPException as e:
+            _security_headers(e)
+            raise
+        _security_headers(resp)
         return resp
 
     def _require(self, request: web.Request, role: str) -> dict:
@@ -267,7 +342,10 @@ class APIServer:
         body = await _json(request)
         name = (body.get("name") or "").strip()
         scope = body.get("scope", "viewer")
-        days = int(body.get("expires_days") or 0)
+        # Capped at ten years: past that an expiry is indistinguishable from
+        # the `0` that already means "never", and an uncapped value reached
+        # `time.time() + days * 86400` and then SQLite, overflowing both.
+        days = _num(body, "expires_days", 0, 3650)
         if not name:
             return web.json_response({"error": "name required"}, status=400)
         expires = int(time.time() + days * 86400) if days > 0 else 0
@@ -348,10 +426,10 @@ class APIServer:
         q = request.query
         f = {"qname": q.get("qname"), "client": q.get("client"), "action": q.get("action"),
              "rcode": q.get("rcode"), "upstream": q.get("upstream"),
-             "since": int(q["since"]) if q.get("since") else None,
-             "until": int(q["until"]) if q.get("until") else None}
+             "since": _num(q, "since", None),
+             "until": _num(q, "until", None)}
         rows = await self.app.querylog.search(
-            **f, limit=min(int(q.get("limit", 100)), 1000), offset=int(q.get("offset", 0)))
+            **f, limit=_num(q, "limit", 100, 1000), offset=_num(q, "offset", 0))
         total = await self.app.querylog.search_count(**f)
         return web.json_response({"rows": rows, "total": total})
 
@@ -371,7 +449,7 @@ class APIServer:
 
     async def timeseries(self, request: web.Request) -> web.Response:
         self._require(request, "viewer")
-        minutes = min(int(request.query.get("minutes", 60)), self.app.counters.SERIES_BUCKETS)
+        minutes = _num(request.query, "minutes", 60, self.app.counters.SERIES_BUCKETS)
         return web.json_response({"series": self.app.counters.series(minutes)})
 
     # column/expression whitelists for /analytics — never interpolate user
@@ -405,11 +483,13 @@ class APIServer:
             return web.json_response({"error": "invalid bucket/group/metric"}, status=400)
         mexpr = self._AN_METRICS[metric]
 
-        where, args = ["1=1"], []
-        if q.get("since"):
-            where.append("ts >= ?"); args.append(int(q["since"]))
-        if q.get("until"):
-            where.append("ts <= ?"); args.append(int(q["until"]))
+        where: list[str] = ["1=1"]
+        args: list[object] = []
+        since, until = _num(q, "since", None), _num(q, "until", None)
+        if since is not None:
+            where.append("ts >= ?"); args.append(since)
+        if until is not None:
+            where.append("ts <= ?"); args.append(until)
         if q.get("qname"):
             where.append("qname LIKE ?"); args.append(f"%{q['qname']}%")
         if q.get("client"):
@@ -417,7 +497,7 @@ class APIServer:
         if q.get("action"):
             where.append("action = ?"); args.append(q["action"])
         w = " AND ".join(where)
-        top = min(int(q.get("top", 8)), 12)
+        top = _num(q, "top", 8, 12)
 
         gcol = self._AN_GROUPS.get(group)
         if gcol:  # keep only the busiest groups so charts stay legible
@@ -598,10 +678,11 @@ class APIServer:
             return web.json_response({"error": "name is required"}, status=400)
         if self.app.querylog is None:
             return web.json_response({"name": name, "history": []})
-        try:
-            days = int(request.query.get("days", "0"))
-        except ValueError:
-            days = 0
+        # Capped at the log's own retention: asking for more than was kept can
+        # only return the same rows, and an uncapped `days` reached
+        # `time.time() - days * 86400` with an integer of any size the caller
+        # cared to type, which overflows before it is ever a timestamp.
+        days = _num(request.query, "days", 0, self.app.config.querylog.retention_days)
         since = int((time.time() - days * 86400) * 1_000_000) if days > 0 else None
         rows = await self.app.querylog.history(name, since=since)
         return web.json_response({"name": name, "history": rows})
@@ -684,6 +765,13 @@ class APIServer:
         changes = body.get("changes") or {}
         if not isinstance(changes, dict) or not changes:
             raise web.HTTPBadRequest(text="no changes")
+        # A write-only field comes back from the form empty when the operator
+        # did not touch it. Writing that through would clear the credential.
+        changes = {k: v for k, v in changes.items()
+                   if not (getattr(st._BY_PATH.get(k), "secret", False)
+                           and (v is None or v == ""))}
+        if not changes:
+            raise web.HTTPBadRequest(text="no changes")
 
         path = self.app._config_path
         ok, why = _config_writable(path)
@@ -703,7 +791,13 @@ class APIServer:
 
         try:
             for key, raw in changes.items():
-                st.merge(tree, key, st.coerce(key, raw))
+                # Collections carry structured JSON; the flat fields carry
+                # scalars. Both land in the same tree and are validated by the
+                # same `Config.model_validate` below.
+                if key in st._COL_BY_PATH:
+                    st.merge(tree, key, st.coerce_collection(key, raw))
+                else:
+                    st.merge(tree, key, st.coerce(key, raw))
         except KeyError as e:
             raise web.HTTPBadRequest(text=f"unknown setting {e}") from e
         except (ValueError, TypeError) as e:
@@ -731,6 +825,8 @@ class APIServer:
             # and `filtering.sources` is the one that rebuilds the lists, in the
             # background, so this request is not holding the browser open for it.
             await self.app.apply_config(list(changes))
+            # …and in the other workers, which do not share this one's objects.
+            self.app.notify_workers()
         except Exception:
             log.exception("settings saved but could not be applied")
             return web.json_response({"ok": True, "reloaded": False,
@@ -833,8 +929,8 @@ class APIServer:
                               list_text=body.get("list_text") or "")
         result = await whatif_from_querylog(
             self.app.db, self.app.filter, delta,
-            hours=min(float(body.get("hours", 24)), 24 * 30),
-            limit=min(int(body.get("limit", 5000)), 50_000))
+            hours=_num(body, "hours", 24, 24 * 30, float),
+            limit=_num(body, "limit", 5000, 50_000))
         return web.json_response(result.to_json())
 
     async def collateral(self, request: web.Request) -> web.Response:
@@ -845,11 +941,11 @@ class APIServer:
         if self.app.querylog is None:
             return web.json_response({"findings": [], "reason": "query log disabled"})
         from ..analyze import collateral_from_querylog
-        hours = min(float(request.query.get("hours", 24)), 24 * 30)
+        hours = _num(request.query, "hours", 24, 24 * 30, float)
         _, allowed = self.app.filter.custom_rules()
         findings = await collateral_from_querylog(
             self.app.querylog, hours=hours, exclude=set(allowed),
-            limit=min(int(request.query.get("limit", 25)), 200))
+            limit=_num(request.query, "limit", 25, 200))
         return web.json_response({
             "findings": [f.to_json() for f in findings],
             "hours": hours,
@@ -860,7 +956,7 @@ class APIServer:
         """What each blocklist contributes versus what it costs to hold."""
         self._require(request, "viewer")
         from ..analyze import list_effectiveness, lists_from_querylog
-        hours = min(float(request.query.get("hours", 24)), 24 * 30)
+        hours = _num(request.query, "hours", 24, 24 * 30, float)
         hints = tuple(self.app.config.filtering.protective_sources)
         if self.app.querylog is None:
             stats, observed = list_effectiveness(self.app.filter, [], protective_hints=hints), 0.0
@@ -886,7 +982,7 @@ class APIServer:
         few actually decided differently for this network.
         """
         self._require(request, "viewer")
-        limit = min(int(request.query.get("limit", 20)), 200)
+        limit = _num(request.query, "limit", 20, 200)
         if self.app.db is None:
             return web.json_response({"reviews": []})
         rows = await self.app.db.fetchall(
@@ -918,11 +1014,18 @@ class APIServer:
         itype = body.get("ident_type", "ip")
         if not ident or itype not in self._IDENT_TYPES:
             return web.json_response({"error": "ident and valid ident_type required"}, status=400)
-        policy = json.dumps(body.get("policy") or {})
+        policy_obj = body.get("policy") or {}
+        # Whatever lands here is read back by `client_from_row` on every client
+        # reload, so a list or a bare scalar is refused at the door rather than
+        # stored and tripped over later.
+        if not isinstance(policy_obj, dict):
+            return web.json_response({"error": "policy must be an object"}, status=400)
+        policy = json.dumps(policy_obj)
         await self.app.db.execute(
             "INSERT INTO client(ident, ident_type, name, comment, policy) VALUES(?,?,?,?,?)",
             (ident, itype, body.get("name", ""), body.get("comment", ""), policy))
         await self.app.reload_clients()
+        self.app.notify_workers()
         await self._audit(request, "client.create", ident)
         return web.json_response({"ok": True})
 
@@ -940,11 +1043,14 @@ class APIServer:
             if col in body:
                 fields.append(f"{col}=?"); params.append(body[col])
         if "policy" in body:
+            if not isinstance(body["policy"], dict):
+                return web.json_response({"error": "policy must be an object"}, status=400)
             fields.append("policy=?"); params.append(json.dumps(body["policy"]))
         if fields:
             params.append(cid)
             await self.app.db.execute(f"UPDATE client SET {', '.join(fields)} WHERE id=?", params)
             await self.app.reload_clients()
+            self.app.notify_workers()
         await self._audit(request, "client.update", str(cid))
         return web.json_response({"ok": True})
 
@@ -953,6 +1059,7 @@ class APIServer:
         cid = request.match_info["cid"]
         await self.app.db.execute("DELETE FROM client WHERE id=?", (cid,))
         await self.app.reload_clients()
+        self.app.notify_workers()
         await self._audit(request, "client.delete", str(cid))
         return web.json_response({"ok": True})
 
@@ -1108,34 +1215,103 @@ def _client_ip(request: web.Request) -> str:
 _OPENAPI = {
     "openapi": "3.0.3",
     "info": {"title": "Trench API", "version": __version__},
+    # Every route the server registers, except the console SPA at `/`. Kept
+    # complete by `tests/test_openapi.py` rather than by remembering: this
+    # described 16 of 47 routes, and the omissions included `/auth/login`, so a
+    # client generated from it could not authenticate to use the rest.
+    # The role in each summary is the minimum `_require` accepts.
     "paths": {
-        f"{API}/stats": {"get": {"summary": "Realtime stats", "responses": {"200": {"description": "ok"}}}},
-        f"{API}/querylog": {"get": {"summary": "Search the query log"}},
-        f"{API}/rules": {"get": {"summary": "List allow/deny rules"},
-                         "post": {"summary": "Add/remove an allow/deny rule"}},
-        f"{API}/toggle": {"post": {"summary": "Toggle global blocking"}},
-        f"{API}/notary": {
-            "get": {"summary": "Quorum findings for the pinned names"}},
-        f"{API}/history": {
-            "get": {"summary": "What a name has resolved to over time"}},
-        f"{API}/services": {
-            "get": {"summary": "Blocked-services catalogue by category"}},
-        f"{API}/groups": {
-            "get": {"summary": "Filtering groups in force, and their members"}},
-        f"{API}/explain": {
-            "get": {"summary": "Explain what this resolver did with a name"}},
-        f"{API}/silence": {
-            "get": {"summary": "Devices that stopped querying this resolver"}},
-        f"{API}/pause": {
-            "get": {"summary": "Current pause state"},
-            "post": {"summary": "Pause filtering for N seconds (optionally one client)"},
-        },
+        # --- authentication -------------------------------------------------
+        f"{API}/auth/login": {
+            "post": {"summary": "Exchange name + password (+ TOTP) for a session cookie"}},
+        f"{API}/auth/logout": {"post": {"summary": "End the session"}},
+        f"{API}/auth/me": {"get": {"summary": "The current session's user and role"}},
         f"{API}/auth/tokens": {
             "get": {"summary": "List API tokens (admin)"},
             "post": {"summary": "Create an API token; returned once (admin)"}},
+        f"{API}/auth/tokens/{{tid}}": {
+            "delete": {"summary": "Revoke an API token (admin)"}},
         f"{API}/auth/totp/enrol": {"post": {"summary": "Begin TOTP enrolment (admin)"}},
         f"{API}/auth/totp/confirm": {"post": {"summary": "Confirm and enable TOTP (admin)"}},
-        f"{API}/gravity/refresh": {"post": {"summary": "Refresh blocklists"}},
+        f"{API}/auth/totp": {"delete": {"summary": "Disable TOTP (admin)"}},
+
+        # --- what the resolver is doing --------------------------------------
+        f"{API}/stats": {"get": {"summary": "Realtime stats (viewer)",
+                                 "responses": {"200": {"description": "ok"}}}},
+        f"{API}/timeseries": {"get": {"summary": "Per-minute counters for the last N minutes (viewer)"}},
+        f"{API}/system": {"get": {"summary": "Version, uptime, upstreams and resolver mode (viewer)"}},
+        f"{API}/ws": {"get": {"summary": "Live channel: snapshot, per-query events, 2s stats (viewer)"}},
+        f"{API}/privacy": {
+            "get": {"summary": "What is stored, where, and what survives a reboot (viewer)"}},
+
+        # --- the query log ----------------------------------------------------
+        f"{API}/querylog": {"get": {"summary": "Search the query log (viewer)"}},
+        f"{API}/querylog/facets": {
+            "get": {"summary": "Distinct clients, actions, rcodes and upstreams (viewer)"}},
+        f"{API}/querylog/export": {
+            "get": {"summary": "Stream the query log as NDJSON (viewer)"}},
+        f"{API}/querylog/purge": {"post": {"summary": "Delete every logged query (editor)"}},
+        f"{API}/analytics": {
+            "get": {"summary": "Flexible aggregation over the query log (viewer)"}},
+        f"{API}/history": {
+            "get": {"summary": "What a name has resolved to over time (viewer)"}},
+        f"{API}/explain": {
+            "get": {"summary": "Explain what this resolver did with a name (viewer)"}},
+
+        # --- filtering ---------------------------------------------------------
+        f"{API}/rules": {"get": {"summary": "List operator allow/deny rules (viewer)"},
+                         "post": {"summary": "Add or remove an allow/deny rule (editor)"}},
+        f"{API}/toggle": {"post": {"summary": "Toggle global blocking (editor)"}},
+        f"{API}/groups": {
+            "get": {"summary": "Filtering groups in force, and their members (viewer)"}},
+        f"{API}/services": {
+            "get": {"summary": "Blocked-services catalogue by category (viewer)"}},
+        f"{API}/pause": {
+            "get": {"summary": "Current pause state (viewer)"},
+            "post": {"summary": "Pause filtering for N seconds, optionally one client (editor)"}},
+        f"{API}/whatif": {
+            "post": {"summary": "Dry-run a rule change against recorded history (viewer)"}},
+        f"{API}/collateral": {
+            "get": {"summary": "Blocked domains that look like they are breaking a service (viewer)"}},
+        f"{API}/lists": {
+            "get": {"summary": "What each blocklist contributes against what it costs (viewer)"}},
+        f"{API}/list-reviews": {
+            "get": {"summary": "History of blocklist updates and what each changed (viewer)"}},
+        f"{API}/gravity/refresh": {"post": {"summary": "Refresh blocklists (editor)"}},
+
+        # --- clients ------------------------------------------------------------
+        f"{API}/clients": {"get": {"summary": "Clients seen on the network (viewer)"}},
+        f"{API}/clients/manage": {
+            "get": {"summary": "Configured per-client policies (viewer)"},
+            "post": {"summary": "Create a per-client policy (editor)"}},
+        f"{API}/clients/manage/{{cid}}": {
+            "put": {"summary": "Update a per-client policy (editor)"},
+            "delete": {"summary": "Delete a per-client policy (editor)"}},
+
+        # --- integrity and operations ---------------------------------------------
+        f"{API}/notary": {
+            "get": {"summary": "Pinned names whose upstreams disagreed (viewer)"}},
+        f"{API}/silence": {
+            "get": {"summary": "Devices that stopped querying this resolver (viewer)"}},
+        f"{API}/audit": {"get": {"summary": "Recent administrative actions (admin)"}},
+        f"{API}/cache/flush": {"post": {"summary": "Empty the answer cache (editor)"}},
+        f"{API}/settings": {
+            "get": {"summary": "Current configuration (viewer)"},
+            "put": {"summary": "Validate, persist and reload a settings change (admin)"}},
+
+        # --- updates ----------------------------------------------------------------
+        f"{API}/update": {"get": {"summary": "Update state and the latest known release (viewer)"}},
+        f"{API}/update/check": {
+            "post": {"summary": "Check now; never installs (editor)"}},
+        f"{API}/update/apply": {
+            "post": {"summary": "Install a release; the caller waits for it (admin)"}},
+        f"{API}/update/rollback": {
+            "post": {"summary": "Return to the previously installed release (admin)"}},
+
+        # --- unauthenticated ----------------------------------------------------------
+        f"{API}/openapi.json": {"get": {"summary": "This document"}},
         "/metrics": {"get": {"summary": "Prometheus metrics"}},
+        "/healthz": {"get": {"summary": "Liveness: always 200 once the server is up"}},
+        "/readyz": {"get": {"summary": "Readiness: 503 until the filter engine is loaded"}},
     },
 }

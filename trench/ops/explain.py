@@ -71,6 +71,18 @@ async def explain(app, name: str, qtype: str = "A", client: str = "",
     }
     findings: list[dict] = report["findings"]
 
+    # Parsed once, here, and every stage that needs a wire name uses this. The
+    # `name=` in the console's URL is unvalidated user input: a label longer
+    # than the wire allows used to raise out of the cache probe and turn the
+    # whole report into a 500, which is the one thing this function promises
+    # not to do.
+    owner: Name | None = None
+    try:
+        owner = Name.from_text(qname + ".")
+    except Exception as e:
+        findings.append({"stage": "name", "verdict": "not a valid name",
+                         "detail": str(e)})
+
     policy = None
     if client and app.clients is not None:
         policy = app.clients.identify(client)
@@ -87,9 +99,9 @@ async def explain(app, name: str, qtype: str = "A", client: str = "",
             findings.append({"stage": "local", "verdict": "answered here",
                              "detail": f"a DHCP lease publishes {qname} as {ip}"})
     zones = getattr(app, "zones", None)
-    if zones is not None and not getattr(zones, "empty", True):
+    if zones is not None and owner is not None and not getattr(zones, "empty", True):
         try:
-            if zones.authoritative_for(Name.from_text(qname + ".")) is not None:
+            if zones.authoritative_for(owner) is not None:
                 findings.append({"stage": "zone", "verdict": "answered here",
                                  "detail": "this server is authoritative for it"})
         except Exception:
@@ -151,9 +163,9 @@ async def explain(app, name: str, qtype: str = "A", client: str = "",
 
     # --- cache --------------------------------------------------------------
     cache = getattr(app, "cache", None)
-    if cache is not None:
+    if cache is not None and owner is not None:
         probe = Message(id=0)
-        probe.questions.append(Question(Name.from_text(qname + "."), rtype, Class.IN))
+        probe.questions.append(Question(owner, rtype, Class.IN))
         key = cache.key_for(probe)
         if key is not None:
             hit = cache.get(key, allow_stale=True)
@@ -198,10 +210,10 @@ async def explain(app, name: str, qtype: str = "A", client: str = "",
                     "detail": f"{client} is not asking this resolver: {row['evidence']}"})
 
     # --- resolve it now, if asked -------------------------------------------
-    if resolve:
+    if resolve and owner is not None:
         query = Message(id=0)
         query.set_flag(0x0100, True)     # RD
-        query.questions.append(Question(Name.from_text(qname + "."), rtype, Class.IN))
+        query.questions.append(Question(owner, rtype, Class.IN))
         try:
             ctx = await pipe.resolve_ctx(query, client or "127.0.0.1", proto="internal")
             resp = ctx.response
@@ -229,15 +241,16 @@ async def explain(app, name: str, qtype: str = "A", client: str = "",
 def _verdict(report: dict, findings: list[dict]) -> str:
     """One sentence. The evidence is already in the report; this says which of
     it is the answer."""
-    order = ["switch", "device", "contract", "filter", "service", "protection",
-             "resolution", "zone", "local"]
+    order = ["name", "switch", "device", "contract", "filter", "service",
+             "protection", "resolution", "zone", "local"]
     for stage in order:
         for f in findings:
             if f["stage"] != stage:
                 continue
             if f["verdict"] in ("blocked", "paused", "filtering off", "bypassing",
                                 "silent", "SERVFAIL", "assertion failing",
-                                "answered here", "rewritten", "explicitly allowed"):
+                                "answered here", "rewritten", "explicitly allowed",
+                                "not a valid name"):
                 return f"{report['name']}: {f['verdict']} — {f['detail']}"
     live = report.get("live") or {}
     if live.get("action") in ("forwarded", "cached"):

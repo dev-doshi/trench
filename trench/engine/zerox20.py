@@ -7,7 +7,6 @@ treated as forged. The client's original case is restored on the way back.
 """
 from __future__ import annotations
 
-import copy
 import random
 
 from ..wire import RR, Message, Question
@@ -23,15 +22,6 @@ def randomize_name(name: Name) -> Name:
                 out[i] = (b ^ 0x20) if random.getrandbits(1) else b
         labels.append(bytes(out))
     return Name(tuple(labels))
-
-
-def apply(query: Message) -> tuple[Message, Name]:
-    """Return (forward_query_with_randomized_name, original_name)."""
-    q = query.question
-    rnd = randomize_name(q.name)
-    fwd = copy.copy(query)
-    fwd.questions = [Question(rnd, q.rtype, q.rclass)]
-    return fwd, q.name
 
 
 def verify(resp: Message, expected: Name) -> bool:

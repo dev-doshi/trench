@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from ..errors import WireError
 from ..wire import rdata as R
 from ..wire.name import Name
 from ..wire.rrtypes import Rcode, Type, type_from_text
@@ -84,6 +85,12 @@ def parse_dnsrewrite(spec: str) -> Rewrite:
         1.2.3.4               (A)        ::1 (AAAA)
         example.org           (CNAME)
         NOERROR;A;1.2.3.4     (explicit)
+
+    Raises `ValueError` for a spec that cannot be represented — an unknown rtype
+    (`NOERROR;NOTATYPE;x`), an MX without a numeric preference, a target that is
+    not a legal name. The caller drops that one rule: a subscribed list is
+    untrusted input, and one malformed line used to abort the compile of the
+    whole corpus with it.
     """
     spec = spec.strip()
     up = spec.upper()
@@ -95,7 +102,10 @@ def parse_dnsrewrite(spec: str) -> Rewrite:
         parts = spec.split(";")
         rcode_s, rtype_s = parts[0].strip().upper(), parts[1].strip().upper()
         value = parts[2].strip() if len(parts) > 2 else ""
-        rd, rtype = _rdata_for(rtype_s, value)
+        try:
+            rd, rtype = _rdata_for(rtype_s, value)
+        except (KeyError, ValueError, WireError) as e:
+            raise ValueError(f"bad $dnsrewrite target {spec!r}: {e}") from e
         rcode = int(Rcode[rcode_s]) if rcode_s in Rcode.__members__ else Rcode.NOERROR
         return Rewrite(rcode=rcode, rdata=rd, rtype=rtype)
     # bare value: infer type
@@ -104,7 +114,11 @@ def parse_dnsrewrite(spec: str) -> Rewrite:
     if ":" in spec and _is_ipv6(spec):
         return Rewrite(rdata=R.AAAA(spec), rtype=Type.AAAA)
     # treat as CNAME target
-    return Rewrite(rdata=R.CNAME(Name.from_text(spec)), rtype=Type.CNAME)
+    try:
+        target = Name.from_text(spec)
+    except (WireError, ValueError) as e:
+        raise ValueError(f"bad $dnsrewrite target {spec!r}: {e}") from e
+    return Rewrite(rdata=R.CNAME(target), rtype=Type.CNAME)
 
 
 def _rdata_for(rtype_s: str, value: str) -> tuple[R.Rdata | None, int]:
@@ -121,7 +135,11 @@ def _rdata_for(rtype_s: str, value: str) -> tuple[R.Rdata | None, int]:
         return R.TXT([value.encode()]), rtype
     if rtype == Type.MX:
         pref, _, exch = value.partition(" ")
-        return R.MX(int(pref or 0), Name.from_text(exch or value)), rtype
+        # `MX;mail.example.org` (no preference) is common enough in the wild to
+        # accept rather than reject: preference 0, the whole value as exchange.
+        if not exch:
+            return R.MX(0, Name.from_text(value)), rtype
+        return R.MX(int(pref), Name.from_text(exch)), rtype
     return None, rtype
 
 

@@ -850,3 +850,100 @@ async def test_a_packet_that_never_left_does_not_cost_budget():
     rec._peers[COM] = _Peer(rtt=9.0)                # and attempted last
     resp = await rec.resolve("www.example.com", Type.A)
     assert ips(resp) == ["93.184.216.34"], f"budget eaten by unsent packets; tried {log_}"
+
+
+# --- validation wiring ---
+@pytest.mark.asyncio
+async def test_a_validator_defect_is_reported_and_the_answer_still_flows(caplog):
+    """Treating it as INSECURE keeps the answer flowing rather than turning a
+    validator defect into an outage, but it must be visible."""
+    tree = Tree({
+        ROOT: lambda name, qt: referral("com", "ns1.com", COM),
+        COM: lambda name, qt: referral("example.com", "ns.example.com", AUTH),
+        AUTH: lambda name, qt: answer("www.example.com", "93.184.216.34"),
+    })
+    rec = Recursive(tree, root_hints=[ROOT], validate=True)
+
+    class Broken:
+        async def validate(self, *a, **kw):
+            raise RuntimeError("validator exploded")
+
+        async def validate_denial(self, *a, **kw):
+            raise RuntimeError("validator exploded")
+
+    rec._validator = Broken()
+    resp = await rec.resolve("www.example.com", int(Type.A))
+    assert ips(resp) == ["93.184.216.34"]
+    assert resp.ad is False, "an unvalidated answer must not claim to be secure"
+    assert any("validator error" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_a_validator_lookup_inherits_the_callers_budget():
+    """A fresh budget per hop let one client query walk a deliberately deep
+    signed chain and spend hundreds of packets."""
+    tree = Tree({
+        ROOT: lambda name, qt: referral("com", "ns1.com", COM),
+        COM: lambda name, qt: referral("example.com", "ns.example.com", AUTH),
+        AUTH: lambda name, qt: answer("www.example.com", "93.184.216.34"),
+    })
+    rec = Recursive(tree, root_hints=[ROOT], validate=False)
+    # Called outside a resolution, it makes its own budget rather than failing.
+    msg = await rec._validator_ask(n("www.example.com."), int(Type.A))
+    assert msg is not None
+
+
+# --- nameserver chasing ---
+@pytest.mark.asyncio
+async def test_a_root_cut_with_no_addresses_falls_back_to_the_hints():
+    tree = Tree({ROOT: lambda name, qt: answer("example.com", "93.184.216.34")})
+    rec = Recursive(tree, root_hints=[ROOT], validate=False)
+    from trench.resolver.recursive import ROOT as ROOT_NAME
+    from trench.resolver.recursive import _Cut, _Job
+    cut = _Cut(ROOT_NAME, (n("a.root-servers.net."),), {}, expires=1e18)
+    job = _Job(deadline=rec.clock() + 5, queries=40)
+    assert await rec._addresses(job, cut, 0) == [ROOT]
+
+
+@pytest.mark.asyncio
+async def test_chasing_stops_at_the_depth_limit():
+    tree = Tree({ROOT: lambda name, qt: answer("example.com", "93.184.216.34")})
+    rec = Recursive(tree, root_hints=[ROOT], validate=False, max_ns_depth=2)
+    from trench.resolver.recursive import _Cut, _Job
+    cut = _Cut(n("com."), (n("ns.com."),), {}, expires=1e18)
+    job = _Job(deadline=rec.clock() + 5, queries=40)
+    assert await rec._addresses(job, cut, 5) == []
+
+
+@pytest.mark.asyncio
+async def test_a_nameserver_already_being_chased_is_not_chased_again():
+    tree = Tree({ROOT: lambda name, qt: answer("example.com", "93.184.216.34")})
+    rec = Recursive(tree, root_hints=[ROOT], validate=False)
+    from trench.resolver.recursive import _Cut, _Job
+    cut = _Cut(n("com."), (n("ns.com."),), {}, expires=1e18)
+    job = _Job(deadline=rec.clock() + 5, queries=40)
+    job.chasing.add(n("ns.com."))
+    assert await rec._addresses(job, cut, 0) == []
+
+
+@pytest.mark.asyncio
+async def test_a_failing_nameserver_lookup_is_swallowed():
+    """One unresolvable nameserver must not fail the whole resolution."""
+    def boom(name, qt):
+        raise RuntimeError("upstream exploded")
+
+    tree = Tree({ROOT: boom})
+    rec = Recursive(tree, root_hints=[ROOT], validate=False)
+    from trench.resolver.recursive import _Cut, _Job
+    cut = _Cut(n("com."), (n("ns.com."),), {}, expires=1e18)
+    job = _Job(deadline=rec.clock() + 5, queries=40)
+    assert await rec._addresses(job, cut, 0) == []
+    assert n("ns.com.") not in job.chasing, "the chase marker must be released"
+
+
+# --- resolution with no servers left ---
+@pytest.mark.asyncio
+async def test_a_cut_that_yields_no_servers_fails_rather_than_looping():
+    rec = Recursive(Tree({}), root_hints=[], validate=False)
+    resp = await rec.resolve("www.example.com", int(Type.A))
+    assert resp.rcode == Rcode.SERVFAIL

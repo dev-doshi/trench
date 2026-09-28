@@ -115,6 +115,13 @@ class ClientRegistry:
             ov = json.loads(row["policy"]) if row["policy"] else {}
         except (ValueError, TypeError):
             ov = {}
+        if not isinstance(ov, dict):
+            # The column holds whatever was POSTed. A list or a bare scalar
+            # raised here, inside `reload_clients`' one try/except — so a single
+            # malformed policy silently disabled *every* database-managed
+            # client until someone read the log.
+            log.warning("client %s has a non-object policy; ignoring it", row["ident"])
+            ov = {}
         pol = Policy(
             name=row["name"] or row["ident"],
             block=bool(ov.get("block", True)),

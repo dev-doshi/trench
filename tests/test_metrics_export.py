@@ -64,6 +64,8 @@ def test_pause_state_is_exported(monkeypatch):
     class FakePipeline:
         enabled = True
         paused_any = True
+        prefetches = 0
+        prefetch_failures = 0
 
     text = render(Counters(), pipeline=FakePipeline())
     assert "trench_filtering_enabled 1" in text

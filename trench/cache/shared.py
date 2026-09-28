@@ -17,6 +17,13 @@ import hashlib
 import mmap
 import struct
 import time
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Type-only: `multiprocessing` is imported inside `create`, which is the one
+    # place that needs it, and importing it at module scope costs every process
+    # that only ever reads the table.
+    from multiprocessing.synchronize import Lock
 
 _HDR = struct.Struct("<QdIH")   # keyhash(u64), inserted(f64), ttl(u32), length(u16)
 _HDR_LEN = _HDR.size
@@ -38,7 +45,7 @@ def key64(qname: bytes, qtype: int, qclass: int, do: bool, ecs: str = "",
 
 
 class SharedCache:
-    def __init__(self, mm, locks, slots: int, payload: int):
+    def __init__(self, mm, locks: list[Lock], slots: int, payload: int):
         self.mm = mm
         self.locks = locks
         self.slots = slots
@@ -53,7 +60,7 @@ class SharedCache:
         locks = [multiprocessing.Lock() for _ in range(_STRIPES)]
         return cls(mm, locks, slots, payload)
 
-    def _slot(self, k: int) -> tuple[int, object]:
+    def _slot(self, k: int) -> tuple[int, Lock]:
         bucket = k % self.slots
         return bucket * self.slot_size, self.locks[bucket % _STRIPES]
 

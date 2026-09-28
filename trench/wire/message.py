@@ -187,8 +187,16 @@ class Message:
         return m
 
     def min_ttl(self) -> int | None:
-        ttls = [rr.ttl for rr in (self.answers + self.authority) if rr.rtype != Type.OPT]
-        return min(ttls) if ttls else None
+        # Walked rather than collected: this runs on every answer entering the
+        # cache, and the list comprehension it replaces built a concatenation of
+        # both sections and then a second list of their TTLs, to take one number
+        # off the result.
+        best: int | None = None
+        for section in (self.answers, self.authority):
+            for rr in section:
+                if rr.rtype != Type.OPT and (best is None or rr.ttl < best):
+                    best = rr.ttl
+        return best
 
 
 

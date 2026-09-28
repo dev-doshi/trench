@@ -48,17 +48,35 @@ class Name:
     # --- text ---
     @classmethod
     def from_text(cls, s: str) -> Name:
+        """Parse presentation format (RFC 1035 §5.1). Raises WireError.
+
+        Note the escapes: a label may contain any octet, and the text form
+        spells the awkward ones `\\.`, `\\\\` and `\\DDD`. So the dots that
+        separate labels are only the *unescaped* ones — splitting on every dot
+        cut a name in half at the `\\.` that means a literal dot inside a
+        label, which `to_text` emits and the wire carries perfectly legally, and
+        then handed the unescaper a fragment ending in a lone backslash.
+        `Name.from_text(name.to_text())` raised IndexError for any such name.
+        """
         s = s.strip()
         if s in (".", ""):
             return cls(())
-        if s.endswith("."):
-            s = s[:-1]
-        labels = []
-        for part in s.split("."):
-            b = _unescape(part)
+        if "\\" in s:
+            labels = _labels_from_text(s)
+        else:
+            # No escapes: the overwhelming majority of names, and splitting is
+            # then exactly equivalent.
+            if s.endswith("."):
+                s = s[:-1]
+            try:
+                labels = [part.encode("ascii", "strict") for part in s.split(".")]
+            except UnicodeEncodeError as e:
+                # An IDN has to reach here already punycoded. Raised bare, this
+                # was the one failure of `from_text` that was not a WireError.
+                raise WireError(f"non-ASCII character in {s!r}") from e
+        for b in labels:
             if not 1 <= len(b) <= MAX_LABEL:
                 raise WireError(f"bad label length in {s!r}")
-            labels.append(b)
         n = cls(tuple(labels))
         if n.wire_len() > MAX_NAME:
             raise WireError("name too long")
@@ -134,7 +152,21 @@ def wire_key(text: str) -> bytes:
     return Name.from_text(text).key
 
 
+#: Every octet a label may carry verbatim: printable ASCII except `.` and `\`,
+#: which have to be escaped. Used as a `bytes.translate` delete-set — see
+#: `_escape`.
+_SAFE_OCTETS = bytes(c for c in range(0x21, 0x7F) if c not in (0x2E, 0x5C))
+
+
 def _escape(label: bytes) -> str:
+    # Almost every label in real traffic is plain ASCII with nothing to escape,
+    # and this is on the query path: `ctx.qname` renders the question name, and
+    # the per-byte loop below was 15% of the whole object pipeline — a Python
+    # list append and a `chr` call for each octet of each label. Deleting the
+    # safe octets and asking whether anything is left answers "does this label
+    # need escaping at all?" in one C call, and the decode is a second one.
+    if not label.translate(None, _SAFE_OCTETS):
+        return label.decode("ascii")
     out = []
     for c in label:
         if c in (0x2E, 0x5C):  # . \
@@ -146,24 +178,58 @@ def _escape(label: bytes) -> str:
     return "".join(out)
 
 
-def _unescape(part: str) -> bytes:
-    if "\\" not in part:
-        return part.encode("ascii", "strict")
-    out = bytearray()
-    i = 0
-    while i < len(part):
-        c = part[i]
-        if c == "\\":
-            if i + 3 < len(part) + 1 and part[i + 1:i + 4].isdigit():
-                out.append(int(part[i + 1:i + 4]))
-                i += 4
-            else:
-                out.append(ord(part[i + 1]))
-                i += 2
-        else:
-            out.append(ord(c))
+def _labels_from_text(s: str) -> list[bytes]:
+    """Split on unescaped dots and unescape, in one pass.
+
+    One pass because the two steps are not separable: which dots are separators
+    is itself a fact about the escaping. Every way out of here that is not a
+    label is a `WireError`, because that is what `from_text` promises and its
+    callers catch — a trailing backslash used to raise IndexError and `\\999`
+    a bare ValueError, and both reached the blocklist parser, the zone-file
+    parser and the DoH JSON endpoint from input none of them chose.
+    """
+    labels: list[bytes] = []
+    cur = bytearray()
+    i, n = 0, len(s)
+    while i < n:
+        c = s[i]
+        if c == ".":
+            labels.append(bytes(cur))
+            cur.clear()
             i += 1
-    return bytes(out)
+        elif c != "\\":
+            o = ord(c)
+            if o > 0xFF:
+                raise WireError(f"non-latin-1 character in {s!r}")
+            cur.append(o)
+            i += 1
+        elif i + 1 >= n:
+            raise WireError(f"trailing backslash in {s!r}")
+        elif _is_ddd(s, i + 1):
+            v = int(s[i + 1:i + 4])
+            if v > 0xFF:
+                raise WireError(f"escape \\{s[i + 1:i + 4]} out of range in {s!r}")
+            cur.append(v)
+            i += 4
+        else:
+            o = ord(s[i + 1])
+            if o > 0xFF:
+                raise WireError(f"non-latin-1 character in {s!r}")
+            cur.append(o)
+            i += 2
+    labels.append(bytes(cur))
+    if len(labels) > 1 and labels[-1] == b"":
+        labels.pop()                    # the root dot that ends a fully qualified name
+    return labels
+
+
+def _is_ddd(s: str, i: int) -> bool:
+    """True for exactly three ASCII digits at `i` — the `\\DDD` escape.
+
+    `str.isdigit` is not that test: it is true for non-ASCII digits too, and
+    `int` accepts them, so `\\٣٣٣` decoded as the octet 333.
+    """
+    return i + 3 <= len(s) and all("0" <= ch <= "9" for ch in s[i:i + 3])
 
 
 def read_name(r: Reader) -> Name:

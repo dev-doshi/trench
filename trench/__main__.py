@@ -75,12 +75,13 @@ async def _amain(cfg: Config, *, primary: bool = True, worker_idx: int = 0,
                  nworkers: int = 1, shm_path: str | None = None, do53_socks=None,
                  cache_shared=None, config_path: str | None = None,
                  prebuilt_filter=None, record_ring=None,
-                 querylog_salt: bytes = b"") -> None:
+                 querylog_salt: bytes = b"", supervisor_pid: int | None = None) -> None:
     from .app import App
     app = App(cfg, primary=primary, worker_idx=worker_idx, nworkers=nworkers,
               shm_path=shm_path, do53_socks=do53_socks, cache_shared=cache_shared,
               config_path=config_path, prebuilt_filter=prebuilt_filter,
               record_ring=record_ring, querylog_salt=querylog_salt)
+    app.supervisor_pid = supervisor_pid
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -105,6 +106,25 @@ async def _amain(cfg: Config, *, primary: bool = True, worker_idx: int = 0,
             task.add_done_callback(_reloads.discard)
 
         loop.add_signal_handler(signal.SIGHUP, _on_hup)
+
+        # SIGUSR1 -> adopt a policy change made through the API in a sibling
+        # worker. Deliberately not SIGHUP: this runs on every save, and a
+        # blocklist refresh on every save is why the console used to hang for
+        # seconds. Config and clients only.
+        _adopts: set = set()
+
+        async def _adopt() -> None:
+            await app.apply_config()
+            await app.reload_clients()
+
+        def _on_usr1() -> None:
+            if _adopts:
+                return          # one in flight already covers this change
+            task = asyncio.ensure_future(_adopt())
+            _adopts.add(task)
+            task.add_done_callback(_adopts.discard)
+
+        loop.add_signal_handler(signal.SIGUSR1, _on_usr1)
     except (NotImplementedError, AttributeError):  # pragma: no cover
         pass
     await _await_startup_or_stop(app, stop, worker_idx=worker_idx)
@@ -239,6 +259,7 @@ def _run_workers(cfg: Config, nworkers: int, config_path: str | None = None) -> 
     prebuilt = _prebuild_filter(cfg)
 
     pids = []
+    supervisor_pid = os.getpid()    # captured here: in the child it is the child
     for idx in range(nworkers):
         pid = os.fork()
         if pid == 0:  # child
@@ -250,7 +271,8 @@ def _run_workers(cfg: Config, nworkers: int, config_path: str | None = None) -> 
                                    prebuilt_filter=prebuilt,
                                    record_ring=(record_ring.for_lane(idx)
                                                 if record_ring else None),
-                                   querylog_salt=salt))
+                                   querylog_salt=salt,
+                                   supervisor_pid=supervisor_pid))
             except KeyboardInterrupt:
                 pass
             except BaseException:
@@ -281,6 +303,9 @@ def _run_workers(cfg: Config, nworkers: int, config_path: str | None = None) -> 
     # service down — on every multi-worker deployment, which is both shipped
     # configs.
     signal.signal(signal.SIGHUP, _forward)
+    # A worker that saved a policy change raises this at the supervisor so every
+    # worker adopts it, rather than only the one that happened to serve the API.
+    signal.signal(signal.SIGUSR1, _forward)
     for p in pids:
         try:
             os.waitpid(p, 0)

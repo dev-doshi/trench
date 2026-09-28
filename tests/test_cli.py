@@ -42,3 +42,54 @@ user_rules:
     assert res.sources == ["https://list.one/hosts"]
     assert "||ads.example^" in res.rules
     assert "@@||safe.example^" in res.allow
+
+
+# --- through the CLI, which is how an operator actually runs it ---
+def _pihole_db(tmp_path):
+    db = tmp_path / "gravity.db"
+    con = sqlite3.connect(db)
+    con.executescript("""
+        CREATE TABLE adlist(id INTEGER, address TEXT, enabled INT);
+        CREATE TABLE domainlist(id INTEGER, type INT, domain TEXT, enabled INT);
+        INSERT INTO adlist VALUES (1,'https://example.com/hosts.txt',1);
+        INSERT INTO domainlist VALUES (1,1,'ads.bad.com',1),(2,0,'good.com',1),
+            (3,3,'^track.*',1);
+    """)
+    con.commit(); con.close()
+    return db
+
+
+def test_import_pihole_prints_loadable_yaml(tmp_path, capsys):
+    import yaml
+
+    from trench.cli.main import main
+    assert main(["import", "pihole", str(_pihole_db(tmp_path))]) == 0
+    out = capsys.readouterr().out
+    assert "# imported from pihole:" in out
+    parsed = yaml.safe_load(out)
+    assert parsed["filtering"]["sources"] == ["https://example.com/hosts.txt"]
+    assert "ads.bad.com" in parsed["filtering"]["deny"]
+    assert "good.com" in parsed["filtering"]["allow"]
+    assert "/^track.*/" in parsed["filtering"]["rules"]
+
+
+def test_import_adguard_through_the_cli(tmp_path, capsys):
+    import yaml
+
+    from trench.cli.main import main
+    yml = tmp_path / "AdGuardHome.yaml"
+    yml.write_text("filters:\n  - enabled: true\n    url: https://list.one/hosts\n")
+    assert main(["import", "adguard", str(yml)]) == 0
+    parsed = yaml.safe_load(capsys.readouterr().out)
+    assert parsed["filtering"]["sources"] == ["https://list.one/hosts"]
+
+
+def test_import_omits_the_rules_key_when_there_are_none(tmp_path, capsys):
+    import yaml
+
+    from trench.cli.main import main
+    yml = tmp_path / "AdGuardHome.yaml"
+    yml.write_text("filters: []\n")
+    assert main(["import", "adguard", str(yml)]) == 0
+    parsed = yaml.safe_load(capsys.readouterr().out)
+    assert "rules" not in parsed["filtering"]

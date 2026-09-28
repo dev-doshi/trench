@@ -24,14 +24,21 @@ def test_randomize_preserves_identity_not_case():
 
 
 def test_verify_and_restore():
-    q = Message(id=1)
-    q.questions.append(Question(Name.from_text("Example.COM"), Type.A, Class.IN))
-    fwd, orig = zerox20.apply(q)
+    """The randomized name is built here rather than by a helper in the module.
+
+    There used to be a `zerox20.apply` that cloned the query and swapped in the
+    randomized question, and this test was its only caller — the pipeline builds
+    the forwarded query itself, because it has to keep the clone it already made
+    for ECS rather than start a fresh one. Two implementations of the forward
+    path, and the test exercised the one the resolver does not use.
+    """
+    orig = Name.from_text("Example.COM")
+    randomized = zerox20.randomize_name(orig)
     # a compliant response echoes the randomized case exactly
     resp = Message(id=1)
-    resp.questions.append(Question(fwd.question.name, Type.A, Class.IN))
-    resp.answers.append(RR(fwd.question.name, Type.A, Class.IN, 60, R.A("1.2.3.4")))
-    assert zerox20.verify(resp, fwd.question.name)
+    resp.questions.append(Question(randomized, Type.A, Class.IN))
+    resp.answers.append(RR(randomized, Type.A, Class.IN, 60, R.A("1.2.3.4")))
+    assert zerox20.verify(resp, randomized)
     zerox20.restore(resp, orig)
     assert resp.question.name.labels == orig.labels       # client case restored
     assert resp.answers[0].name.labels == orig.labels

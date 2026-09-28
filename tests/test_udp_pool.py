@@ -170,3 +170,132 @@ async def test_the_pool_opens_every_socket_before_serving_anything():
     finally:
         pool.close()
     assert pool._socks == []
+
+
+# --- the dispatcher's own edges ---
+@pytest.mark.asyncio
+async def test_a_datagram_too_short_to_carry_an_id_is_dropped():
+    from trench.transport.upstream import _UdpSocket
+    pool = UdpPool("127.0.0.1", 53, size=1)
+    sock = _UdpSocket(pool)
+    sock.datagram_received(b"\x12", ("127.0.0.1", 53))   # must not raise
+    assert sock.pending == {}
+
+
+@pytest.mark.asyncio
+async def test_closing_a_socket_fails_everything_waiting_on_it():
+    """A pending future left unresolved is a query that never returns and never
+    times out at this layer."""
+    from trench.errors import UpstreamError
+    from trench.transport.upstream import _UdpSocket
+    pool = UdpPool("127.0.0.1", 53, size=1)
+    sock = _UdpSocket(pool)
+    loop = asyncio.get_running_loop()
+    fut = loop.create_future()
+    sock.pending[0x1234] = fut
+    sock.connection_lost(None)
+    assert sock.closed is True and sock.pending == {}
+    with pytest.raises(UpstreamError, match="socket closed"):
+        await fut
+
+
+@pytest.mark.asyncio
+async def test_a_socket_error_does_not_leave_queries_hanging():
+    from trench.transport.upstream import _UdpSocket
+    pool = UdpPool("127.0.0.1", 53, size=1)
+    sock = _UdpSocket(pool)
+    loop = asyncio.get_running_loop()
+    fut = loop.create_future()
+    sock.pending[0x1234] = fut
+    sock.error_received(OSError("connection refused"))
+    with pytest.raises(OSError, match="connection refused"):
+        await asyncio.wait_for(fut, 1)
+
+
+@pytest.mark.asyncio
+async def test_a_late_reply_for_an_already_settled_query_is_ignored():
+    from trench.transport.upstream import _UdpSocket
+    pool = UdpPool("127.0.0.1", 53, size=1)
+    sock = _UdpSocket(pool)
+    loop = asyncio.get_running_loop()
+    fut = loop.create_future()
+    fut.set_result(b"first")
+    sock.pending[0x1234] = fut
+    sock.datagram_received(b"\x12\x34rest", ("127.0.0.1", 53))
+    assert await fut == b"first"
+
+
+@pytest.mark.asyncio
+async def test_two_queries_with_the_same_id_do_not_share_a_socket():
+    """Otherwise two replies would be indistinguishable to the dispatcher."""
+    async with Echo() as echo:
+        pool = UdpPool("127.0.0.1", echo.port, size=4)
+        try:
+            await pool._ensure()
+            first, second = _query(qid=0x4242), _query(qid=0x4242)
+            a, b = await asyncio.gather(pool.query(first.to_wire(), 5),
+                                        pool.query(second.to_wire(), 5))
+            assert Message.parse(a).id == 0x4242
+            assert Message.parse(b).id == 0x4242
+        finally:
+            pool.close()
+
+
+@pytest.mark.asyncio
+async def test_a_pool_with_every_socket_busy_on_one_id_refuses():
+    from trench.errors import UpstreamError
+    async with Echo() as echo:
+        pool = UdpPool("127.0.0.1", echo.port, size=2)
+        try:
+            await pool._ensure()
+            loop = asyncio.get_running_loop()
+            for sock in pool._socks:
+                sock.pending[0x4242] = loop.create_future()
+            with pytest.raises(UpstreamError, match="no free upstream socket"):
+                await pool.query(_query(qid=0x4242).to_wire(), 1)
+        finally:
+            for sock in pool._socks:
+                sock.pending.clear()
+            pool.close()
+
+
+@pytest.mark.asyncio
+async def test_running_out_of_descriptors_caps_the_pool_rather_than_failing(caplog,
+                                                                           monkeypatch):
+    """A smaller pool is weaker, not broken."""
+    async with Echo() as echo:
+        pool = UdpPool("127.0.0.1", echo.port, size=8)
+        loop = asyncio.get_running_loop()
+        real = loop.create_datagram_endpoint
+        made = []
+
+        async def limited(factory, **kw):
+            if len(made) >= 3:
+                raise OSError(24, "Too many open files")
+            got = await real(factory, **kw)
+            made.append(got)
+            return got
+
+        monkeypatch.setattr(loop, "create_datagram_endpoint", limited)
+        try:
+            await pool._ensure()
+            assert 0 < len(pool._socks) <= 3
+            assert any("capped at" in r.getMessage() for r in caplog.records)
+            # And it still answers with what it has.
+            resp = await pool.query(_query().to_wire(), 5)
+            assert Message.parse(resp).id == 0x1234
+        finally:
+            pool.close()
+
+
+@pytest.mark.asyncio
+async def test_a_pool_that_cannot_open_its_first_socket_raises(monkeypatch):
+    pool = UdpPool("127.0.0.1", 53, size=4)
+    loop = asyncio.get_running_loop()
+
+    async def refuse(factory, **kw):
+        raise OSError(24, "Too many open files")
+
+    monkeypatch.setattr(loop, "create_datagram_endpoint", refuse)
+    with pytest.raises(OSError):
+        await pool._ensure()

@@ -19,6 +19,16 @@ def parse_server(spec: str) -> tuple[str, int]:
     return us.host, us.port
 
 
+def _retrieved(task) -> None:
+    """Consume a cancelled loser's outcome so asyncio does not report it.
+
+    A task cancelled *after* it already failed still holds that exception, and
+    the cancel does not clear it.
+    """
+    if not task.cancelled():
+        task.exception()
+
+
 class Forwarder:
     def __init__(self, servers: list[str], *, strategy: str = "parallel",
                  timeout: float = 4.0, verify: bool = True, trust_ad: str = "auto",
@@ -86,16 +96,40 @@ class Forwarder:
                     err = e
             raise UpstreamError(f"all upstreams failed: {err}")
         finally:
+            # Retrieve every loser's outcome. A race leaves tasks nobody awaits,
+            # and asyncio logs "Task exception was never retrieved" with a full
+            # traceback when one of them is collected — so an upstream that
+            # merely reset an idle TLS connection, while the other upstream
+            # answered the query perfectly well, printed a traceback into the
+            # log of a resolver that had done nothing wrong.
             for t in tasks:
-                if not t.done():
+                if t.done():
+                    if not t.cancelled():
+                        t.exception()
+                else:
                     t.cancel()
+                    t.add_done_callback(_retrieved)
 
     async def _fastest(self, group: list[Upstream], query: Message, note=None) -> Message:
+        """Ask the upstream that has been answering fastest; fall back to the rest.
+
+        The head used to be the *two* fastest, raced in parallel, with everything
+        after them as the fallback tier. At the group size people actually
+        configure — two upstreams — that made `fastest` an alias for `parallel`:
+        the head was the whole group, the fallback tier was empty, and the sort
+        above it decided nothing. Both servers were queried for every name, which
+        is the cost `parallel` exists to pay on purpose and `fastest` exists to
+        avoid; on the deployment this was found on it meant two resolver
+        operators saw every query instead of one.
+
+        One head and everyone else as fallback makes the strategy mean what it
+        says at every group size, and leaves the fallback tier non-empty whenever
+        there is anywhere to fall back to. `failures` leads the sort key, so an
+        upstream that just failed is tried last rather than being asked again
+        first.
+        """
         ordered = sorted(group, key=lambda u: (u.failures, u.rtt))
-        if len(ordered) == 1:
-            return self._won(await self._ask(ordered[0], query), note)
-        # try the two fastest in parallel, rest as fallback
-        head, tail = ordered[:2], ordered[2:]
+        head, tail = ordered[:1], ordered[1:]
         try:
             return await self._parallel(head, query, note)
         except UpstreamError:

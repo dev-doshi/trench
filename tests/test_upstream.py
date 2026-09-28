@@ -116,3 +116,68 @@ async def test_upstream_doq():
         await fwd.close()
     finally:
         await srv.stop()
+
+
+# --- stream reconnect behaviour ---------------------------------------------
+class _FlakyConn:
+    """Stands in for `_StreamConn`, failing the first `fail_first` attempts.
+
+    `_stream` owns the reconnect loop; the connection object only reports what
+    the peer did. Each failure must be followed by a close, or the next attempt
+    reuses a socket the peer has already dropped.
+    """
+
+    def __init__(self, fail_first: int, exc: BaseException | None = None):
+        self.fail_first = fail_first
+        self.exc = exc or ConnectionResetError(104, "Connection reset by peer")
+        self.attempts = 0
+        self.closes = 0
+
+    async def query(self, wire: bytes) -> bytes:
+        self.attempts += 1
+        if self.attempts <= self.fail_first:
+            raise self.exc
+        return b"answer"
+
+    async def close(self) -> None:
+        self.closes += 1
+
+
+def _upstream(spec: str = "tls://9.9.9.9#dns.quad9.net"):
+    from trench.transport.upstream import Upstream
+    return Upstream(parse_upstream(spec), timeout=4.0)
+
+
+@pytest.mark.asyncio
+async def test_a_reset_handshake_is_retried_rather_than_failing_the_query():
+    """Quad9 measured a 33-67% TLS accept rate from one deployment, resetting
+    during the handshake. A single retry is a coin flip, and with both
+    configured upstreams at one provider the pair lost the toss together often
+    enough to SERVFAIL real clients."""
+    up = _upstream()
+    up._conn = _FlakyConn(fail_first=2)
+    assert await up._stream(b"q") == b"answer"
+    assert up._conn.attempts == 3
+    assert up._conn.closes == 2, "each failed attempt must drop the dead connection"
+
+
+@pytest.mark.asyncio
+async def test_a_peer_that_never_accepts_reports_its_own_error():
+    up = _upstream()
+    up._conn = _FlakyConn(fail_first=99)
+    with pytest.raises(ConnectionResetError):
+        await up._stream(b"q")
+    assert up._conn.attempts == up._STREAM_ATTEMPTS
+
+
+@pytest.mark.asyncio
+async def test_a_timeout_is_not_retried():
+    """`upstream.timeout` is the budget for answering the query, not for each
+    attempt at it. TimeoutError subclasses OSError, so it used to fall into the
+    reconnect branch and a merely slow upstream cost two full timeouts."""
+    up = _upstream()
+    up._conn = _FlakyConn(fail_first=99, exc=TimeoutError())
+    with pytest.raises(TimeoutError):
+        await up._stream(b"q")
+    assert up._conn.attempts == 1
+    assert up._conn.closes == 0, "a timeout says nothing about the connection"

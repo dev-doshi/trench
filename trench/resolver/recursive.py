@@ -46,6 +46,7 @@ from dataclasses import dataclass, field
 
 from ..log import get
 from ..wire import Class, Message, Question, Type
+from ..wire import rdata as R
 from ..wire.name import Name
 from ..wire.rrtypes import Flags, Rcode
 from .roothints import ROOT_HINTS
@@ -550,7 +551,7 @@ class Recursive:
         return dz, tuple(dict.fromkeys(rr.rdata.name for rr in owned)), ttl
 
     @staticmethod
-    def _glue(msg: Message, dz: Name, nsnames: tuple[Name, ...]) -> dict[str, tuple[str, ...]]:
+    def _glue(msg: Message, dz: Name, nsnames: tuple[Name, ...]) -> dict[Name, tuple[str, ...]]:
         """Addresses from the additional section, keyed by nameserver name.
 
         `_scrub` has already removed anything outside the *parent* zone. The
@@ -567,7 +568,12 @@ class Recursive:
         want = set(nsnames)
         out: dict[Name, list[str]] = {}
         for rr in msg.additional:
-            if rr.rtype in (Type.A, Type.AAAA) and rr.name in want:
+            # A record that claims an address type but did not decode as one
+            # has no `.address` (see `parse_rdata`). Skipping it keeps the rest
+            # of the glue: reading it raised AttributeError, and the handler
+            # around this discarded every good address alongside the bad one.
+            if (rr.rtype in (Type.A, Type.AAAA) and rr.name in want
+                    and isinstance(rr.rdata, (R.A, R.AAAA))):
                 out.setdefault(rr.name, []).append(rr.rdata.address)
         return {k: tuple(v) for k, v in out.items()}
 
@@ -599,7 +605,8 @@ class Recursive:
             try:
                 msg, _ = await self._resolve_name(job, nm, Type.A, depth + 1)
                 got = tuple(rr.rdata.address for rr in msg.answers
-                            if rr.rtype == Type.A and rr.name == nm)
+                            if rr.rtype == Type.A and rr.name == nm
+                            and isinstance(rr.rdata, R.A))
                 if got:
                     ttl = min((rr.ttl for rr in msg.answers if rr.rtype == Type.A), default=300)
                     self.cache.put_addrs(nm, got, ttl)

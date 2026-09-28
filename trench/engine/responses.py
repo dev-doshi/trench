@@ -41,11 +41,21 @@ def build_block(query: Message, mode: str, ipv4: str, ipv6: str,
 
 
 def build_rewrite(query: Message, decision: Decision, ttl: int = 300) -> Message:
+    """The synthetic answer for a `$dnsrewrite` rule.
+
+    An rcode and an rdata are not alternatives. `$dnsrewrite=NOERROR;A;1.2.3.4`
+    is the explicit spelling of the common case — answer NOERROR, and here is
+    the record — and returning on the rcode alone dropped the forged record
+    from every rule written that way, so the rule answered an empty NOERROR
+    instead of the address it names. A non-NOERROR rcode still answers empty:
+    there is nothing to attach a record to.
+    """
     resp = query.reply(Rcode.NOERROR)
     q = query.question
     if decision.rcode is not None:
         resp.set_rcode(decision.rcode)
-        return resp
+        if decision.rcode != Rcode.NOERROR:
+            return resp
     if decision.rdata is not None and q is not None:
         from ..wire.rdata import rdata_type
         resp.answers.append(_answer_rr(query, rdata_type(decision.rdata), decision.rdata, ttl))

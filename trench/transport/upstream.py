@@ -38,10 +38,21 @@ class UpstreamSpec:
 
 
 def parse_upstream(spec: str) -> UpstreamSpec:
-    spec = spec.strip()
+    """Parse an upstream spec. Raises ValueError naming the spec as written.
+
+    `original` is threaded through the split below rather than reconstructed
+    afterwards: the scheme and the `[/domain/]` prefix are stripped as this goes,
+    so an error raised deeper would otherwise quote a fragment — `'9.9.9.9:xyz'`
+    for something the operator wrote as `tls://9.9.9.9:xyz` — and reversing the
+    stripping to fix that would be a second copy of it.
+    """
+    original = spec.strip()
+    spec = original
     domains: tuple[str, ...] = ()
     if spec.startswith("[/"):
-        end = spec.index("]")
+        end = spec.find("]")
+        if end < 0:
+            raise ValueError(f"unterminated '[/domain/]' prefix in upstream {original!r}")
         inner = spec[2:end].strip("/")
         domains = tuple(d for d in inner.split("/") if d)
         spec = spec[end + 1:].strip()
@@ -63,27 +74,47 @@ def parse_upstream(spec: str) -> UpstreamSpec:
             path = "/" + p
         else:
             hostport = rest
-        host, port = _split_hostport(hostport, 443)
+        host, port = _split_hostport(hostport, 443, original)
         sni = host
     else:
         if "#" in spec:
             spec, sni = spec.split("#", 1)
         default_port = 853 if scheme in ("tls", "quic") else 53
-        host, port = _split_hostport(spec, default_port)
+        host, port = _split_hostport(spec, default_port, original)
         if scheme in ("tls", "quic") and not sni:
             sni = host
     return UpstreamSpec(scheme, host, port, sni, path, domains)
 
 
-def _split_hostport(s: str, default_port: int) -> tuple[str, int]:
-    if s.startswith("["):  # [ipv6]:port
-        host, _, rest = s[1:].partition("]")
-        port = int(rest[1:]) if rest.startswith(":") else default_port
-        return host, port
-    if s.count(":") == 1:
+def _split_hostport(s: str, default_port: int, original: str = "") -> tuple[str, int]:
+    """`host[:port]`, or `[v6addr][:port]`. Raises ValueError on anything else.
+
+    An upstream spec is operator input, and a typo in the port used to reach
+    `int()` bare: the daemon died at start-up on
+    `invalid literal for int() with base 10: 'abc'`, which names neither the
+    setting nor the server. A port outside 1-65535 was accepted outright and
+    failed later, somewhere less obvious.
+    """
+    named = original or s
+    if s.startswith("["):                       # [ipv6]:port
+        host, close, rest = s[1:].partition("]")
+        if not close:
+            raise ValueError(f"unterminated '[' in upstream {named!r}")
+        return host, (_port(rest[1:], named) if rest.startswith(":") else default_port)
+    if s.count(":") == 1:                       # host:port (bare IPv6 has more)
         host, _, port = s.partition(":")
-        return host, int(port)
+        return host, _port(port, named)
     return s, default_port
+
+
+def _port(text: str, spec: str) -> int:
+    try:
+        port = int(text)
+    except ValueError:
+        raise ValueError(f"upstream {spec!r} has a non-numeric port {text!r}") from None
+    if not 1 <= port <= 65535:
+        raise ValueError(f"upstream {spec!r} has a port outside 1-65535: {port}")
+    return port
 
 
 class _UdpSocket(asyncio.DatagramProtocol):
@@ -451,16 +482,36 @@ class Upstream:
         finally:
             transport.close()
 
+    #: Times a stream query may (re)open the connection before giving up.
+    #: One reopen covers the ordinary case, a peer dropping an idle connection
+    #: between queries. It does not cover a peer that refuses connections
+    #: intermittently: Quad9 measured a 33-67% TLS accept rate from one
+    #: deployment, resetting during the handshake, which made a single retry a
+    #: coin flip. With both configured upstreams at that provider, the two lost
+    #: the toss together often enough to SERVFAIL real clients.
+    _STREAM_ATTEMPTS = 3
+
     async def _stream(self, wire: bytes) -> bytes:
-        """Query over the pooled TCP/DoT connection, reopening once if the peer
-        dropped an idle connection between queries."""
+        """Query over the pooled TCP/DoT connection, reopening if the peer drops
+        or refuses it."""
         if self._conn is None:
             self._conn = _StreamConn(self)
-        try:
-            return await self._conn.query(wire)
-        except (ConnectionError, asyncio.IncompleteReadError, ssl.SSLError, OSError):
-            await self._conn.close()
-            return await self._conn.query(wire)
+        last: Exception = UpstreamError("no attempt was made")
+        for _ in range(self._STREAM_ATTEMPTS):
+            try:
+                return await self._conn.query(wire)
+            except TimeoutError:
+                # `upstream.timeout` is the budget for answering this query, not
+                # for each attempt at it. TimeoutError subclasses OSError, so it
+                # fell into the reconnect branch below and a merely slow upstream
+                # cost the caller two full timeouts before it heard anything.
+                # Nothing about a timeout says the connection is broken, either.
+                raise
+            except (ConnectionError, asyncio.IncompleteReadError, ssl.SSLError,
+                    OSError) as e:
+                last = e
+                await self._conn.close()
+        raise last
 
     async def _tcp(self, wire: bytes, ssl_ctx=None) -> bytes:
         """One-shot TCP query on a dedicated connection (used for UDP truncation

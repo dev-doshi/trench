@@ -117,6 +117,24 @@ class ServerConfig(Section):
 
 class UpstreamConfig(Section):
     servers: list[str] = Field(default_factory=lambda: ["1.1.1.1:53", "8.8.8.8:53"])
+
+    @field_validator("servers", "groups")
+    @classmethod
+    def _parseable(cls, value):
+        """Reject an upstream spec the resolver could not use.
+
+        Checked with the parser the resolver itself calls, so the two cannot
+        disagree about what a spec means. Without this a typo in a port reached
+        `int()` at start-up and killed the daemon with
+        `invalid literal for int() with base 10: 'abc'` — naming neither the
+        setting nor the server — while a port of 99999 was accepted outright and
+        failed later somewhere less obvious.
+        """
+        from .transport.upstream import parse_upstream
+        for spec in (value if isinstance(value, list)
+                     else [s for group in value.values() for s in group]):
+            parse_upstream(spec)
+        return value
     strategy: Literal["sequential", "parallel", "fastest", "weighted"] = "parallel"
     timeout: float = 4.0
     mode: Literal["forward", "recursive"] = "forward"

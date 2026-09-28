@@ -90,6 +90,28 @@ class QueryLog:
         self._writer_task: asyncio.Task | None = None
         self._running = False
 
+    @property
+    def recording(self) -> bool:
+        """False when `enqueue` would discard everything it is handed.
+
+        Building the record is not free — the answer section is rendered to
+        text, which is a string per record — and at `NO_LOG` every bit of that
+        is thrown away inside `enqueue`. Callers ask first, so the work is not
+        done at all. Kept as a property rather than a flag so it cannot go stale
+        when the privacy level is changed at runtime.
+        """
+        return self.privacy_level < NO_LOG
+
+    @property
+    def records_answers(self) -> bool:
+        """False when the answer section would be stripped before it is written.
+
+        At `ANON_CLIENT_DOMAIN` the answer is discarded by `enqueue` — it
+        identifies the name as surely as the name does — so rendering it is
+        wasted too.
+        """
+        return self.privacy_level < ANON_CLIENT_DOMAIN
+
     def enqueue(self, rec: QueryRecord) -> None:
         """Queue one record, stripped to whatever the privacy level allows.
 

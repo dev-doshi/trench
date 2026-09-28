@@ -17,10 +17,27 @@ class Database:
     def __init__(self, path: str | Path):
         self.path = str(path)
         self._db: aiosqlite.Connection | None = None
+        self.readonly = False
 
-    async def connect(self) -> None:
+    async def connect(self, *, readonly: bool = False) -> None:
+        """Open the database. `readonly` is for the non-primary workers.
+
+        Only the primary may write — that is what keeps SQLite to one writer —
+        but the others still have to *read* the tables that carry policy, and
+        having no handle at all is why per-client policy applied in one worker
+        out of four. WAL lets those readers run alongside the writer, and the
+        read-only open means the rule is enforced by SQLite rather than by
+        remembering not to.
+        """
         parent = Path(self.path).parent
         parent.mkdir(parents=True, exist_ok=True)
+        if readonly:
+            import aiosqlite as _a
+            self.readonly = True
+            self._db = await _a.connect(f"file:{self.path}?mode=ro", uri=True)
+            self._db.row_factory = _a.Row
+            await self._db.execute("PRAGMA busy_timeout=5000")
+            return
         # This file holds scrypt password hashes, TOTP secrets, API-token
         # digests, the query-log salt and every name the household has looked
         # up. It was created at the process umask — world-readable on a default
@@ -118,13 +135,29 @@ class Database:
         It cannot run inside a transaction, and the shared connection nearly
         always has one open — the query-log flush loop writes every 250 ms — so
         issuing it there raised `cannot VACUUM from within a transaction`.
+
+        The dedicated connection is not enough on its own. `aiosqlite.execute`
+        hands back a live cursor, and an unfinalised cursor is a statement in
+        progress: the `busy_timeout` pragma above left one open on this very
+        connection, so every VACUUM Trench has ever issued failed with `cannot
+        VACUUM - SQL statements in progress` and was swallowed by the caller's
+        best-effort `except`. The privacy purge deleted the rows and then left
+        every one of them legible in the file's free pages.
         """
         await self.conn.commit()
         db = await aiosqlite.connect(self.path)
         try:
-            await db.execute("PRAGMA busy_timeout=30000")
-            await db.execute("VACUUM")
+            cur = await db.execute("PRAGMA busy_timeout=30000")
+            await cur.close()
+            cur = await db.execute("VACUUM")
+            await cur.close()
             await db.commit()
+            # In WAL mode VACUUM rebuilds into the write-ahead log, so the main
+            # file keeps its old size — and its old pages — until a checkpoint
+            # folds the log back in. For a privacy purge that difference is the
+            # whole point: the rows are meant to stop being on the disk.
+            cur = await db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            await cur.close()
         finally:
             await db.close()
 
@@ -132,13 +165,25 @@ class Database:
         await self.conn.executemany(sql, [tuple(r) for r in rows])
         await self.conn.commit()
 
+    # Both readers close their cursor. An unfinalised sqlite3 cursor holds the
+    # connection's read transaction open, and SQLite refuses to VACUUM while
+    # any statement is in progress — from *any* connection to the file. Since
+    # every read here left one behind, `vacuum()` failed every single time it
+    # was called, which is to say the privacy purge deleted the rows and never
+    # reclaimed the pages they were written on.
     async def fetchall(self, sql: str, params: Iterable[Any] = ()) -> list[aiosqlite.Row]:
         cur = await self.conn.execute(sql, tuple(params))
-        return await cur.fetchall()
+        try:
+            return await cur.fetchall()
+        finally:
+            await cur.close()
 
     async def fetchone(self, sql: str, params: Iterable[Any] = ()) -> aiosqlite.Row | None:
         cur = await self.conn.execute(sql, tuple(params))
-        return await cur.fetchone()
+        try:
+            return await cur.fetchone()
+        finally:
+            await cur.close()
 
     async def close(self) -> None:
         if self._db is not None:

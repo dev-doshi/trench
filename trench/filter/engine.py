@@ -18,6 +18,9 @@ from .shared import SharedBlockTable
 # rule sources that came from an operator rather than an imported blocklist
 OPERATOR_SOURCES = frozenset({"custom", "denylist", "allowlist"})
 
+#: Shared "no rules matched" result. Read-only — see `_candidates`.
+_NO_RULES: list[Rule] = []
+
 
 def _is_plain(r: Rule) -> bool:
     """True for a bare `||domain^` / hosts block rule carrying no modifiers.
@@ -193,24 +196,53 @@ class FilterEngine:
     #: walks below, which used to derive it independently.
     suffixes = staticmethod(name_suffixes)
 
-    @staticmethod
-    def _suffix_hits(cands: list[str], table: dict[str, list[Rule]]) -> list[Rule]:
-        out: list[Rule] = []
-        for cand in cands:
-            hit = table.get(cand)
-            if hit:
-                out.extend(hit)
-        return out
+    def _candidates(self, cands: list[str], name: str,
+                    suffix_table: dict[str, list[Rule]],
+                    exact_table: dict[str, list[Rule]],
+                    regexes: list[Rule], plain: bool) -> list[Rule]:
+        """Every rule of one polarity that could apply to this name, in the
+        order `_most_specific` expects: suffix, then plain, then exact, then
+        regex.
 
-    def _plain_hits(self, cands: list[str]) -> list[Rule]:
-        """Compact-table lookups, materialized into Rules only when they match."""
-        out: list[Rule] = []
-        get, tget = self.block_plain.get, self.block_table.get
-        for cand in cands:
-            src = get(cand) or tget(cand)
-            if src is not None:
-                out.append(Rule(raw=cand, block=True, suffix=cand, source=src))
-        return out
+        One pass, and no list at all until something actually matches. Almost
+        every query matches no rule — that is what a blocklist is mostly made
+        of — and the four separate `+`/`+=` steps this replaces allocated six
+        lists per query to hold nothing. `_NO_RULES` is shared and must stay
+        read-only; `match` never hands it anywhere that would mutate it.
+        """
+        out: list[Rule] | None = None
+        if suffix_table:
+            for cand in cands:
+                hit = suffix_table.get(cand)
+                if hit:
+                    if out is None:
+                        out = []
+                    out.extend(hit)
+        if plain:
+            # Operator rules shadow the imported table, so both are consulted —
+            # but `block_plain` holds only what someone typed and is empty on
+            # most installs, and the test for that belongs outside the loop.
+            tget = self.block_table.get
+            pget = self.block_plain.get if self.block_plain else None
+            for cand in cands:
+                src = tget(cand) if pget is None else (pget(cand) or tget(cand))
+                if src is not None:
+                    if out is None:
+                        out = []
+                    out.append(Rule(raw=cand, block=True, suffix=cand, source=src))
+        if exact_table:
+            hit = exact_table.get(name)
+            if hit:
+                if out is None:
+                    out = []
+                out.extend(hit)
+        if regexes:
+            for r in regexes:
+                if r.regex and r.regex.search(name):
+                    if out is None:
+                        out = []
+                    out.append(r)
+        return out if out is not None else _NO_RULES
 
     def plain_source_counts(self) -> dict[str, int]:
         """Domains contributed per source, for the blocklist-ROI report. The
@@ -245,19 +277,23 @@ class FilterEngine:
     def match(self, qname: str, qtype: int = 1,
               ctags: frozenset[str] = frozenset(), client: str = "",
               client_names: frozenset[str] = frozenset()) -> Decision:
-        name = qname.rstrip(".").lower()
-        if not name:
+        # `suffixes` normalizes the name itself and its first element *is* that
+        # normalized name, so taking it from there drops a second `rstrip` and
+        # `lower` off every query.
+        cands = self.suffixes(qname)
+        if not cands:
             return Decision()
-        cands = self.suffixes(name)
+        name = cands[0]
 
-        block = self._suffix_hits(cands, self.block_suffix) + self._plain_hits(cands)
-        allow = self._suffix_hits(cands, self.allow_suffix)
-        block += self.block_exact.get(name, [])
-        allow += self.allow_exact.get(name, [])
-        if self.block_regex:
-            block += [r for r in self.block_regex if r.regex and r.regex.search(name)]
-        if self.allow_regex:
-            allow += [r for r in self.allow_regex if r.regex and r.regex.search(name)]
+        block = self._candidates(cands, name, self.block_suffix, self.block_exact,
+                                 self.block_regex, plain=True)
+        allow = self._candidates(cands, name, self.allow_suffix, self.allow_exact,
+                                 self.allow_regex, plain=False)
+        # Checked before `_applicable` rather than after. It filters rule by
+        # rule, so with nothing to filter it can only return what it was given —
+        # two more empty lists, built on the path taken by almost every query.
+        if not block and not allow:
+            return Decision()
 
         block = self._applicable(block, name, qtype, ctags, client, client_names)
         allow = self._applicable(allow, name, qtype, ctags, client, client_names)

@@ -123,7 +123,10 @@ def _parse_adblock(line: str, source: str) -> Rule | None:
     if rule.suffix is None and rule.exact is None and rule.regex is None:
         return None
     if modstr:
-        _apply_modifiers(rule, modstr)
+        try:
+            _apply_modifiers(rule, modstr)
+        except _DropRule:
+            return None
     return rule
 
 
@@ -211,6 +214,10 @@ def _split_negated(value: str) -> tuple[list[str], list[str]]:
     return req, not_req
 
 
+class _DropRule(Exception):
+    """Raised by `_apply_modifiers` for a modifier that invalidates the rule."""
+
+
 def _apply_modifiers(rule: Rule, modstr: str) -> None:
     dnstypes: set[int] = set()
     dnstypes_not: set[int] = set()
@@ -238,7 +245,14 @@ def _apply_modifiers(rule: Rule, modstr: str) -> None:
                     except (KeyError, ValueError):
                         pass
         elif name == "dnsrewrite":
-            rule.rewrite = parse_dnsrewrite(value)
+            # A subscribed list is untrusted input, and `iter_list` is a
+            # generator feeding a streaming compile: an exception here did not
+            # drop one line, it abandoned the rest of the corpus behind it.
+            try:
+                rule.rewrite = parse_dnsrewrite(value)
+            except ValueError as e:
+                log.debug("dropping rule with unparseable $dnsrewrite: %s", e)
+                raise _DropRule from e
         elif name == "ctag":
             req, not_req = _split_negated(value)
             ctags |= set(req)

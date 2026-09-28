@@ -12,21 +12,15 @@ test its two halves have.
 from __future__ import annotations
 
 import asyncio
-import socket
 
 import aiohttp
 import pytest
+from support import free_port
 
 from trench.api import APIServer
 from trench.app import App
 from trench.config import Config
 from trench.security import totp
-
-
-def _free_port() -> int:
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close()
-    return p
 
 
 async def _app_with_api(tmp_path):
@@ -35,7 +29,7 @@ async def _app_with_api(tmp_path):
                                  "web": {"enabled": True, "admin_password": "pw"}})
     app = App(cfg)
     await app.setup_storage()
-    port = _free_port()
+    port = free_port()
     app.api = APIServer(app, "127.0.0.1", port)
     await app.api.start()
     return app, f"http://127.0.0.1:{port}"

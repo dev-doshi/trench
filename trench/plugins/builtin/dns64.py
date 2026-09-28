@@ -41,6 +41,7 @@ class Dns64Plugin(Plugin):
         sub.questions.append(Question(name, Type.A, Class.IN))
         try:
             up = await self.app.forwarder.resolve(sub)
-            return [rr.rdata.address for rr in up.answers if rr.rtype == Type.A]
+            return [rr.rdata.address for rr in up.answers
+                    if rr.rtype == Type.A and isinstance(rr.rdata, R.A)]
         except Exception:
             return []

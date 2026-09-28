@@ -120,16 +120,30 @@ class DhcpPacket:
 
 
 def _parse_options(data: bytes) -> dict[int, bytes]:
+    """Options as {code: value}. Raises ValueError on a packet that does not add up.
+
+    Both checks below are about matching what `parse` says it does. A code as
+    the final octet read the length from past the end — IndexError, not the
+    documented ValueError — and an option claiming more bytes than remain was
+    silently stored short, so a truncated hostname was registered in DNS as if
+    the client had sent it. A packet whose options do not add up is not one to
+    act on, the same rule the DNS side applies to rdlength.
+    """
     opts: dict[int, bytes] = {}
     i = 0
-    while i < len(data):
+    n = len(data)
+    while i < n:
         code = data[i]
         if code == OPT_END:
             break
         if code == 0:  # pad
             i += 1
             continue
+        if i + 1 >= n:
+            raise ValueError("DHCP option with no length octet")
         length = data[i + 1]
+        if i + 2 + length > n:
+            raise ValueError("DHCP option runs past the end of the packet")
         opts[code] = data[i + 2:i + 2 + length]
         i += 2 + length
     return opts

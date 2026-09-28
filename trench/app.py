@@ -42,6 +42,9 @@ if TYPE_CHECKING:                       # imports kept lazy at runtime: an
 
 log = get("app")
 
+#: Distinct from None, which is a legitimate value for several settings.
+_MISSING = object()
+
 
 def release_free_memory() -> None:
     """Hand freed heap arenas back to the OS (glibc `malloc_trim`).
@@ -98,6 +101,12 @@ class App:
         from .plugins import PluginManager
         self.plugins = PluginManager.from_config(self, config.plugins)
         self.db: Database | None = None
+        #: Read-only handle in the non-primary workers; see `setup_storage`.
+        self.db_ro: Database | None = None
+        #: The supervisor, when this process was forked from one. A policy
+        #: change lands in whichever worker holds the API, so that worker
+        #: has to ask the supervisor to fan it out to its siblings.
+        self.supervisor_pid: int | None = None
         self.querylog: QueryLog | None = None
         self.api: APIServer | None = None
         self.scheduler = Scheduler()
@@ -250,6 +259,12 @@ class App:
         # every worker's traffic rather than its own quarter of it.
         if not self.primary:
             await self._adopt_querylog()
+            # `reload_clients` opens the read-only handle itself. Without one,
+            # it found no rows and every console-managed client silently did not
+            # apply in this worker — which, split across `workers` listeners on
+            # one SO_REUSEPORT socket, made a per-client exemption govern about
+            # one query in `nworkers`.
+            await self.reload_clients()
             return
         self.db = Database(self.config.data_path / self.config.querylog.db)
         await self.db.connect()
@@ -259,18 +274,70 @@ class App:
         await self._adopt_querylog()
         await self.reload_clients()   # merge DB-managed clients over the config ones
 
+    async def _open_db_readonly(self) -> None:
+        """Non-primary workers read policy out of the primary's database.
+
+        Retried here rather than only at start-up: the workers are forked at the
+        same moment, so on a first run a sibling can look before the primary has
+        created the file. Opened once and kept; a miss simply tries again on the
+        next reload.
+        """
+        if self.db_ro is not None or self.primary:
+            return
+        path = self.config.data_path / self.config.querylog.db
+        if not path.exists():
+            return
+        db = Database(path)
+        try:
+            await db.connect(readonly=True)
+        except Exception:
+            log.debug("the database is not readable yet", exc_info=True)
+            return
+        self.db_ro = db
+
     async def reload_clients(self) -> None:
         """Rebuild the live client registry from config + the `client` DB table."""
         extra = []
-        if self.db is not None:
+        await self._open_db_readonly()
+        db = self.db if self.db is not None else self.db_ro
+        if db is not None:
             try:
-                rows = await self.db.fetchall(
+                rows = await db.fetchall(
                     "SELECT ident, ident_type, name, policy FROM client")
                 extra = [self.clients.client_from_row(self.config, r) for r in rows]
-            except Exception:
-                log.exception("loading managed clients failed")
+            except Exception as e:
+                # The primary creates the file before it migrates it, so a
+                # sibling can legitimately get here before the table exists.
+                # That is a race to wait out, not a fault to report.
+                if "no such table" in str(e):
+                    log.debug("the client table does not exist yet")
+                else:
+                    log.exception("loading managed clients failed")
         self.clients = ClientRegistry.from_config(self.config, extra)
         self.pipeline.clients = self.clients
+
+    def notify_workers(self) -> None:
+        """Ask the supervisor to fan a policy change out to every worker.
+
+        The API runs in one worker, so `apply_config` and `reload_clients` only
+        ever reached that one. With several workers behind one SO_REUSEPORT
+        socket the result was not "the change did not apply" — it was worse than
+        that: the change applied to a fraction of queries, which reads as
+        flapping rather than as a bug.
+
+        SIGUSR1 rather than SIGHUP because SIGHUP means a full reload, blocklist
+        refresh included; this has to be cheap enough to run on every save.
+        Best effort: a failure here leaves the other workers on the old policy
+        until the next restart, which is worth a log line and not a 500.
+        """
+        import os
+        import signal
+        if not self.supervisor_pid:
+            return          # single process: it has already applied it itself
+        try:
+            os.kill(self.supervisor_pid, signal.SIGUSR1)
+        except (ProcessLookupError, PermissionError, OSError):
+            log.exception("could not notify the other workers of a policy change")
 
     def _build_zones(self):
         from pathlib import Path
@@ -583,11 +650,48 @@ class App:
             "notary": self._adopt_notary,
             "updates": self._adopt_updates,
             "sources": self._adopt_sources,
+            "rules": self._adopt_rules,
             "log": self._adopt_log,
             "proxies": self._adopt_proxies,
         }
 
-    async def apply_config(self, changed=None) -> None:
+    @staticmethod
+    def _at_path(cfg, path: str):
+        """Read a dotted settings path out of a config tree, or `_MISSING`."""
+        node = cfg
+        for part in path.split("."):
+            node = getattr(node, part, _MISSING)
+            if node is _MISSING:
+                return _MISSING
+        return node
+
+    def _what_moved(self, old, new) -> list[str] | None:
+        """Which editable settings differ between two config trees.
+
+        `None` means "something outside the editable surface moved as well", and
+        the caller should fall back to running every applier — a hand-edited file
+        can change things the console never offers, and guessing that those do
+        not matter is how a setting gets saved and then ignored.
+        """
+        from .api import settings as st
+        moved = [f.path for f in st.FIELDS
+                 if self._at_path(old, f.path) != self._at_path(new, f.path)]
+        try:
+            before, after = old.model_dump(), new.model_dump()
+        except Exception:
+            return None
+        for path in (f.path for f in st.FIELDS):
+            for tree in (before, after):
+                node, parts = tree, path.split(".")
+                for part in parts[:-1]:
+                    node = node.get(part) if isinstance(node, dict) else None
+                    if node is None:
+                        break
+                if isinstance(node, dict):
+                    node.pop(parts[-1], None)
+        return moved if before == after else None
+
+    async def apply_config(self, changed=None, *, full: bool = False) -> None:
         """Re-read the config file and push it into the objects already running.
 
         Swapping `self.config` is not enough: the forwarder, the query log, the
@@ -597,14 +701,27 @@ class App:
 
         `changed` is the set of dotted paths the caller knows to have moved, and
         only the appliers those paths name are run — a log-level change has no
-        business tearing down upstream connections. `None` means "assume
-        everything moved", which is what SIGHUP means.
+        business tearing down upstream connections.
+
+        With no `changed`, the paths are worked out by *diffing* the file against
+        what is running. They used to be assumed to be all of them, and the two
+        callers that adopt a change — the sibling-worker sync and the API's
+        fan-out — therefore ran every applier on every save. Two of those are
+        expensive: one rebuilds the upstreams and flushes the cache, and one
+        re-downloads and recompiles the whole blocklist corpus. Saving an
+        unrelated setting, or flipping one device's filtering switch, cost a
+        900k-domain rebuild on a box with no memory ceiling to contain it.
+
+        `full=True` keeps the old meaning for SIGHUP, which is documented as
+        re-applying everything.
         """
         if self._config_path:
             try:
                 from .config import Config
                 new = Config.load(self._config_path)
                 new.allow_dhcp = self.config.allow_dhcp   # runtime-only flag
+                if changed is None and not full:
+                    changed = self._what_moved(self.config, new)
                 self.config = new
                 self.pipeline.config = new
             except Exception:
@@ -742,6 +859,8 @@ class App:
 
     async def _adopt_fastpath(self) -> None:
         s = self.config.server
+        if self.fast is not None:
+            self.fast.max_entries = s.fast_path_entries
         if s.fast_path and self.fast is None:
             from .engine.fastpath import FastPath
             self.fast = FastPath(self.pipeline, max_entries=s.fast_path_entries)
@@ -842,6 +961,23 @@ class App:
         else:
             self.scheduler.cancel("gravity-refresh")
 
+    async def _adopt_rules(self) -> None:
+        """Recompile the operator's own allow/deny on top of the corpus that is
+        already mapped.
+
+        Distinct from `_adopt_sources`, which fetches: changing one allowed
+        domain has no business re-downloading 900k of somebody else's.
+        """
+        table = getattr(self.filter, "block_table", None)
+        if table is not None:
+            self._adopt_table(table)
+        else:
+            self.filter = FilterEngine.compile(self._config_rules())
+            self.pipeline.filter = self.filter
+        if self._gravity is not None:
+            self._gravity = self._make_gravity(self.config.filtering.sources)
+        self.cache.flush()
+
     async def _adopt_sources(self) -> None:
         """The list of sources itself changed: fetch and recompile, in the background.
 
@@ -889,7 +1025,7 @@ class App:
         lists and data files — without dropping in-flight queries or rebinding
         sockets."""
         log.info("reload: re-reading config + refreshing lists")
-        await self.apply_config()
+        await self.apply_config(full=True)
         self.services = Services.load(self.config.data_path)
         self.safebrowse = SafeBrowse.load(self.config.data_path)
         self.pipeline.services = self.services
@@ -1104,6 +1240,8 @@ class App:
             await self.querylog.stop()
         if self.db is not None:
             await self.db.close()
+        if self.db_ro is not None:
+            await self.db_ro.close()
         self._stop.set()
 
     def _cache_file(self):

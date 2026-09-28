@@ -6,6 +6,7 @@ import asyncio
 import socket
 
 import pytest
+from support import free_port
 
 from trench.auth_zone import Zone, ZoneStore
 from trench.auth_zone.handler import AuthHandler
@@ -19,10 +20,6 @@ from trench.wire.rrtypes import Flags, Opcode, Rcode
 ORIGIN = Name.from_text("example.com.")
 
 
-def _free_port():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close()
-    return p
 
 
 def _zone():
@@ -67,7 +64,7 @@ async def _server(zone, *, allow_update=(), allow_transfer=("127.0.0.1",)):
     store = ZoneStore(); store.add(zone)
     auth = AuthHandler(store)
     auth.set_zone_policy(ORIGIN, allow_transfer=allow_transfer, allow_update=allow_update)
-    port = _free_port()
+    port = free_port()
     # Pipeline isn't exercised for auth ops, but Do53Server needs one.
     srv = Do53Server(pipeline=_DummyPipeline(), host="127.0.0.1", port=port, auth=auth)
     await srv.start()
@@ -167,7 +164,7 @@ async def test_notify_acked_over_udp():
     store = ZoneStore(); store.add(z)
     auth = AuthHandler(store)
     auth.register_secondary(SecondaryZone(ORIGIN, "127.0.0.1"))
-    port = _free_port()
+    port = free_port()
     srv = Do53Server(pipeline=_DummyPipeline(), host="127.0.0.1", port=port, auth=auth)
     await srv.start()
     try:
@@ -184,7 +181,7 @@ async def test_notify_acked_over_udp():
 async def test_notify_for_a_zone_we_do_not_slave_is_refused():
     store = ZoneStore(); store.add(_zone())
     auth = AuthHandler(store)                     # no secondary registered
-    port = _free_port()
+    port = free_port()
     srv = Do53Server(pipeline=_DummyPipeline(), host="127.0.0.1", port=port, auth=auth)
     await srv.start()
     try:

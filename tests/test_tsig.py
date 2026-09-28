@@ -123,3 +123,171 @@ def test_key_names_match_regardless_of_case_or_trailing_dot():
     wire, _ = sign_wire(msg.to_wire(), key)
     _, got, _ = verify_wire(wire, {"XFR-Key.": key})
     assert got is key
+
+
+# --- the replay window, directly ---
+def test_the_replay_window_refuses_the_same_mac_twice():
+    from trench.auth_zone.tsig import ReplayWindow
+    w = ReplayWindow()
+    w.check("k.", 1000, b"mac-a", window=300, now=1000)
+    with pytest.raises(TSIGError, match="replayed"):
+        w.check("k.", 1000, b"mac-a", window=300, now=1000)
+
+
+def test_a_legitimate_sender_may_sign_several_messages_in_one_second():
+    """The high-water mark alone would reject the second one."""
+    from trench.auth_zone.tsig import ReplayWindow
+    w = ReplayWindow()
+    w.check("k.", 1000, b"mac-a", window=300, now=1000)
+    w.check("k.", 1000, b"mac-b", window=300, now=1000)
+
+
+def test_a_mac_that_has_aged_out_of_the_window_is_forgotten():
+    from trench.auth_zone.tsig import ReplayWindow
+    w = ReplayWindow()
+    w.check("k.", 1000, b"mac-a", window=300, now=1000)
+    w.check("k.", 2000, b"mac-a", window=300, now=2000)      # far past the window
+
+
+def test_an_old_message_is_refused_once_a_newer_one_is_accepted():
+    """A captured UDP dynamic UPDATE could otherwise be resent for the whole
+    fudge window to revert a later legitimate change."""
+    from trench.auth_zone.tsig import ReplayWindow
+    w = ReplayWindow()
+    w.check("k.", 5000, b"new", window=300, now=5000)
+    with pytest.raises(TSIGError, match="older than the last one"):
+        w.check("k.", 1000, b"old", window=300, now=5000)
+
+
+def test_a_message_inside_the_window_of_the_watermark_is_accepted():
+    from trench.auth_zone.tsig import ReplayWindow
+    w = ReplayWindow()
+    w.check("k.", 5000, b"new", window=300, now=5000)
+    w.check("k.", 4900, b"slightly-older", window=300, now=5000)
+
+
+def test_keys_are_tracked_independently():
+    from trench.auth_zone.tsig import ReplayWindow
+    w = ReplayWindow()
+    w.check("a.", 1000, b"mac", window=300, now=1000)
+    w.check("b.", 1000, b"mac", window=300, now=1000)        # a different key
+
+
+def test_the_replay_table_is_bounded():
+    from trench.auth_zone.tsig import ReplayWindow
+    w = ReplayWindow(max_keys=8)
+    for i in range(40):
+        w.check(f"k{i}.", 1000, b"mac", window=300, now=1000)
+    assert len(w._seen) <= 8
+
+
+# --- algorithms and key material ---
+def test_an_unknown_algorithm_is_badkey():
+    key = TSIGKey.from_base64("k.", SECRET, algorithm="hmac-md5.")
+    with pytest.raises(TSIGError) as e:
+        _ = key._hashmod
+    assert e.value.tsig_error == 17
+
+
+def test_signing_with_an_unknown_algorithm_fails_rather_than_forging():
+    key = TSIGKey.from_base64("k.", SECRET, algorithm="hmac-nonsense.")
+    with pytest.raises(TSIGError):
+        sign_wire(_msg().to_wire(), key)
+
+
+def test_a_key_whose_algorithm_does_not_match_the_message_is_badkey():
+    signed, _ = sign_wire(_msg().to_wire(), _key("hmac-sha256."),
+                          time_signed=1_000_000)
+    other = TSIGKey.from_base64("xfr-key.", SECRET, algorithm="hmac-sha512.")
+    with pytest.raises(TSIGError) as e:
+        verify_wire(signed, {"xfr-key.": other}, now=1_000_000)
+    assert e.value.tsig_error == 17
+
+
+# --- locating the TSIG record ---
+def test_a_message_with_no_tsig_is_refused():
+    with pytest.raises(TSIGError, match="no TSIG"):
+        verify_wire(_msg().to_wire(), {"xfr-key.": _key()})
+
+
+def test_a_truncated_message_is_refused():
+    from trench.errors import WireError
+    with pytest.raises((WireError, TSIGError)):
+        verify_wire(b"\x00\x01", {"xfr-key.": _key()})
+
+
+def test_a_tsig_that_is_not_the_final_record_is_refused():
+    """RFC 8945 §5.1: anything after it is unauthenticated."""
+    key = _key()
+    signed, _ = sign_wire(_msg().to_wire(), key, time_signed=1_000_000)
+    msg = Message.parse(signed)
+    msg.additional.append(RR(Name.from_text("example.com"), Type.A, Class.IN, 300,
+                             R.A("6.6.6.6")))
+    with pytest.raises(TSIGError, match="final record"):
+        verify_wire(msg.to_wire(), {"xfr-key.": key}, now=1_000_000)
+
+
+# --- MAC handling ---
+def test_a_truncated_mac_within_the_legal_range_still_verifies():
+    """RFC 8945 §5.2.2.1 allows truncation to half length, floor 80 bits."""
+    key = _key()
+    signed, _ = sign_wire(_msg().to_wire(), key, time_signed=1_000_000)
+    msg = Message.parse(signed)
+    tsig = msg.additional[-1].rdata
+    tsig.mac = tsig.mac[:16]                       # 128 bits of a 256-bit MAC
+    verify_wire(msg.to_wire(), {"xfr-key.": key}, now=1_000_000)
+
+
+@pytest.mark.parametrize("length", [0, 4, 9])
+def test_a_mac_truncated_below_the_floor_is_refused(length):
+    key = _key()
+    signed, _ = sign_wire(_msg().to_wire(), key, time_signed=1_000_000)
+    msg = Message.parse(signed)
+    msg.additional[-1].rdata.mac = msg.additional[-1].rdata.mac[:length]
+    with pytest.raises(TSIGError, match="bad MAC length"):
+        verify_wire(msg.to_wire(), {"xfr-key.": key}, now=1_000_000)
+
+
+def test_a_mac_longer_than_the_algorithm_produces_is_refused():
+    key = _key()
+    signed, _ = sign_wire(_msg().to_wire(), key, time_signed=1_000_000)
+    msg = Message.parse(signed)
+    msg.additional[-1].rdata.mac += b"\x00" * 8
+    with pytest.raises(TSIGError, match="bad MAC length"):
+        verify_wire(msg.to_wire(), {"xfr-key.": key}, now=1_000_000)
+
+
+# --- error replies ---
+def test_a_badtime_error_reply_carries_our_own_clock():
+    """That 48-bit field is the whole mechanism by which a skewed peer
+    discovers the skew."""
+    from trench.auth_zone.tsig import sign_error
+    key = _key()
+    signed, _ = sign_wire(_msg().to_wire(), key, time_signed=1_000_000)
+    with pytest.raises(TSIGError) as e:
+        verify_wire(signed, {"xfr-key.": key}, now=2_000_000)
+    err = e.value
+    assert err.tsig_error == 18
+    reply = sign_error(_msg().to_wire(), err, now=2_000_000)
+    tsig = Message.parse(reply).additional[-1].rdata
+    assert tsig.error == 18
+    assert int.from_bytes(tsig.other, "big") == 2_000_000
+
+
+def test_an_error_with_no_identified_key_goes_back_unsigned():
+    """BADKEY means we never identified a key, so there is nothing to sign
+    with."""
+    from trench.auth_zone.tsig import sign_error
+    wire = _msg().to_wire()
+    assert sign_error(wire, TSIGError("unknown key", tsig_error=17)) == wire
+
+
+def test_signing_an_error_never_raises():
+    from trench.auth_zone.tsig import sign_error
+    key = _key()
+    signed, _ = sign_wire(_msg().to_wire(), key, time_signed=1_000_000)
+    with pytest.raises(TSIGError) as e:
+        verify_wire(signed, {"xfr-key.": key}, now=2_000_000)
+    err = e.value
+    err.key = TSIGKey.from_base64("k.", SECRET, algorithm="hmac-nonsense.")
+    assert sign_error(b"\x00" * 12, err) == b"\x00" * 12

@@ -17,6 +17,12 @@
  *     invites you to trust it
  *   · unidentified devices are not hidden at the bottom; they are a section with
  *     the evidence needed to name them, because that is a queue of work
+ *
+ * It is also the one place per-client policy can be *changed*. The API has had
+ * client CRUD all along and nothing in the console used it, so exempting a
+ * device from filtering — the single most common thing anyone wants to do to
+ * one device — meant hand-writing JSON. A page that shows a device's blocked
+ * share and cannot act on it is a report, not a console.
  */
 import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
@@ -34,6 +40,12 @@ const groups = ref<any[]>([]);
 const rows = ref<Row[]>([]);
 const loading = ref(true);
 const err = ref("");
+/** Addresses with a policy write in flight, so a row cannot be double-sent. */
+const busy = ref(new Set<string>());
+/** Per-row failure, shown in the line that is already there — a message that
+ *  adds a line would move every row below it, which is the one thing a table
+ *  being scanned must never do. */
+const note = ref<Record<string, string>>({});
 
 async function load() {
   loading.value = true; err.value = "";
@@ -78,6 +90,16 @@ const seen = computed(() => {
   return m;
 });
 
+/** The managed entry's policy, which the API hands back as a JSON string. */
+function policyOf(c: any): Record<string, any> {
+  if (!c) return {};
+  try {
+    return typeof c.policy === "string" ? JSON.parse(c.policy || "{}") : (c.policy || {});
+  } catch {
+    return {};
+  }
+}
+
 const byIdent = computed(() => {
   const m = new Map<string, any>();
   for (const c of managed.value) {
@@ -92,6 +114,9 @@ const table = computed(() => {
     const c = byIdent.value.get(e.ip.toLowerCase());
     return {
       ...e,
+      managed: c || null,
+      // No entry at all means the household policy applies, which is filtered.
+      filtered: c ? policyOf(c).block !== false : true,
       name: c?.name || "",
       identBy: c?.ident_type || "",
       group: c?.group_name || c?.group || "",
@@ -132,6 +157,39 @@ const ago = (us: number) => {
   return `${Math.floor(d / 86400)}d ago`;
 };
 
+/**
+ * Turn filtering on or off for one device.
+ *
+ * A device with no managed entry gets one; a device that has one keeps it, and
+ * the rest of its policy with it — turning filtering back on by deleting the
+ * row would throw away its name, its group and every other override it carries.
+ */
+async function setFiltering(d: any, on: boolean) {
+  const ip = d.ip;
+  if (busy.value.has(ip)) return;
+  busy.value = new Set(busy.value).add(ip);
+  note.value = { ...note.value, [ip]: "" };
+  try {
+    if (d.managed) {
+      await api.put(`/clients/manage/${d.managed.id}`,
+                    { policy: { ...policyOf(d.managed), block: on } });
+    } else {
+      await api.post("/clients/manage",
+                     { ident: ip, ident_type: "ip", name: d.name || "",
+                       policy: { block: on } });
+    }
+    const fresh = await api.get("/clients/manage");
+    managed.value = fresh.clients || [];
+  } catch (e: any) {
+    // The switch is bound to the loaded state, so it springs back on its own.
+    note.value = { ...note.value, [ip]: e?.message || "could not be saved" };
+  } finally {
+    const s = new Set(busy.value);
+    s.delete(ip);
+    busy.value = s;
+  }
+}
+
 function browse(ip: string) {
   router.push({ path: "/", query: { p: "device,domain,name", s: ip } });
 }
@@ -161,6 +219,7 @@ function browse(ip: string) {
               <th style="width:124px">Looks like</th>
               <th>What it asks for</th>
               <th style="width:22%">Outcomes</th>
+              <th style="width:112px">Filtering</th>
             </tr>
           </thead>
           <tbody>
@@ -181,6 +240,16 @@ function browse(ip: string) {
               <td>
                 <Spine :by="d.by" :total="d.total" :max="max" />
                 <span class="sub">{{ d.blockedPct }}% blocked</span>
+              </td>
+              <td class="filt" @click.stop>
+                <label class="sw-cell" :title="d.filtered
+                    ? 'Filtering is on for this device'
+                    : 'This device is exempt: blocklists, CNAME-cloak inspection and address lists are all skipped for it'">
+                  <input type="checkbox" class="sw" :checked="d.filtered"
+                         :disabled="busy.has(d.ip)"
+                         @change="setFiltering(d, ($event.target as HTMLInputElement).checked)" />
+                  <span class="sub">{{ note[d.ip] || (d.filtered ? "on" : "exempt") }}</span>
+                </label>
               </td>
             </tr>
           </tbody>
@@ -204,6 +273,7 @@ function browse(ip: string) {
               <th class="r" style="width:96px">Domains</th>
               <th>What it asks for</th>
               <th style="width:26%">Outcomes</th>
+              <th style="width:112px">Filtering</th>
             </tr>
           </thead>
           <tbody>
@@ -220,6 +290,16 @@ function browse(ip: string) {
               <td>
                 <Spine :by="d.by" :total="d.total" :max="max" />
                 <span class="sub">{{ d.blockedPct }}% blocked</span>
+              </td>
+              <td class="filt" @click.stop>
+                <label class="sw-cell" :title="d.filtered
+                    ? 'Filtering is on for this device'
+                    : 'This device is exempt: blocklists, CNAME-cloak inspection and address lists are all skipped for it'">
+                  <input type="checkbox" class="sw" :checked="d.filtered"
+                         :disabled="busy.has(d.ip)"
+                         @change="setFiltering(d, ($event.target as HTMLInputElement).checked)" />
+                  <span class="sub">{{ note[d.ip] || (d.filtered ? "on" : "exempt") }}</span>
+                </label>
               </td>
             </tr>
           </tbody>

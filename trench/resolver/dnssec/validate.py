@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import enum
 import time
+from collections.abc import Sequence
 
 from ...wire import rdata as R
 from ...wire.name import Name
@@ -63,7 +64,7 @@ def _canon_name_bytes(name: Name) -> bytes:
 
 
 def _signed_data(owner: Name, rtype: int, rclass: int, rrsig: R.RRSIG,
-                 rdatas: list[R.Rdata]) -> bytes:
+                 rdatas: Sequence[R.Rdata]) -> bytes:
     # RRSIG RDATA without the signature field
     w = Writer()
     w.u16(rrsig.type_covered)
@@ -93,7 +94,7 @@ def _signed_data(owner: Name, rtype: int, rclass: int, rrsig: R.RRSIG,
     return bytes(out)
 
 
-def verify_rrset(owner: Name, rtype: int, rclass: int, rdatas: list[R.Rdata],
+def verify_rrset(owner: Name, rtype: int, rclass: int, rdatas: Sequence[R.Rdata],
                  rrsig: R.RRSIG, dnskey: R.DNSKEY, *, now: float | None = None) -> bool:
     """True iff `rrsig` is a valid signature over the RRset by `dnskey`,
     and within its validity period."""

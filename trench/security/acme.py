@@ -95,11 +95,6 @@ def dns01_txt(token: str, thumbprint: str) -> str:
     return b64url(hashlib.sha256(key_auth).digest())
 
 
-def http01_keyauth(token: str, thumbprint: str) -> str:
-    """The body served at /.well-known/acme-challenge/<token> for http-01."""
-    return f"{token}.{thumbprint}"
-
-
 def make_csr(domains: list[str], key=None):
     """Generate a PKCS#10 CSR (SAN list) and its private key. Returns
     (csr_der, key_pem)."""

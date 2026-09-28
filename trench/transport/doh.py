@@ -124,15 +124,22 @@ class DoHServer(Frontend):
                             headers={"Cache-Control": f"max-age={ttl}"})
 
     async def _json(self, request: web.Request, client_ip: str, client_id: str) -> web.Response:
-        name = request.query["name"]
         qtype = request.query.get("type", "A")
         try:
             rtype = int(qtype) if qtype.isdigit() else type_from_text(qtype)
         except Exception:
             return web.json_response({"error": "bad type"}, status=400)
+        try:
+            # Guarded for the same reason `type` is, and it was not: this is an
+            # open resolver endpoint and the name is a query parameter, so a
+            # name that does not parse is a client error. Unguarded it was a
+            # 500 and a traceback per request.
+            qname = Name.from_text(request.query["name"])
+        except Exception:
+            return web.json_response({"error": "bad name"}, status=400)
         q = Message(id=0)
         q.set_flag(0x0100, True)  # RD
-        q.questions.append(Question(Name.from_text(name), rtype, Class.IN))
+        q.questions.append(Question(qname, rtype, Class.IN))
         q.edns = Edns(udp_size=1232)
         q.edns.do = request.query.get("do", "").lower() in ("1", "true")
         if request.query.get("cd", "").lower() in ("1", "true"):

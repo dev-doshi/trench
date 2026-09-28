@@ -67,9 +67,24 @@ _BIND_ENTRY = re.compile(
 )
 
 
+#: The digest length each DS type is defined to have (RFC 4034 §5.1.4,
+#: RFC 4509, RFC 6605). Anything else is not that digest.
+_DS_DIGEST_LEN = {1: 20, 2: 32, 4: 48}
+
+
 def _ds_from_fields(tag: str, alg: str, dtype: str, digest_hex: str) -> R.DS | None:
     digest = bytes.fromhex(re.sub(r"[\s\"']", "", digest_hex))
     if not digest:
+        return None
+    # A digest of the wrong length for its type is not a usable anchor, and
+    # accepting one is worse than having none: a presentation-form line wrapped
+    # across two lines parsed as a *truncated* digest, which matches no real key
+    # — so every signed name under the root would validate as BOGUS and the
+    # resolver would SERVFAIL the internet, with nothing in the log to say why.
+    want = _DS_DIGEST_LEN.get(int(dtype))
+    if want is not None and len(digest) != want:
+        log.warning("ignoring a trust anchor whose digest is %d bytes; digest "
+                    "type %s is %d", len(digest), dtype, want)
         return None
     return R.DS(key_tag=int(tag), algorithm=int(alg), digest_type=int(dtype),
                 digest=digest)

@@ -706,3 +706,482 @@ async def test_the_api_exposes_status_and_refuses_an_unsafe_install(tmp_path):
     finally:
         await app.api.stop()
         await app.stop()
+
+
+# ─────────────────────────────────────────────── install detection ──
+
+
+def test_a_container_is_never_self_updatable(tmp_path, monkeypatch):
+    """Installing over an image produces a box whose state nobody can predict
+    from the outside."""
+    monkeypatch.setattr("trench.ops.update._in_container", lambda: True)
+    inst = detect_install(tmp_path / "site-packages" / "trench")
+    assert inst.method == "container" and inst.can_apply is False
+    assert "rebuild or pull the image" in inst.reason
+
+
+def test_a_source_checkout_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr("trench.ops.update._in_container", lambda: False)
+    root = tmp_path / "checkout" / "trench"
+    root.mkdir(parents=True)
+    (tmp_path / "checkout" / "pyproject.toml").write_text("[project]\n")
+    inst = detect_install(root)
+    assert inst.method == "source" and inst.can_apply is False
+    assert "source checkout" in inst.reason
+
+
+def test_a_git_working_tree_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr("trench.ops.update._in_container", lambda: False)
+    root = tmp_path / "checkout" / "trench"
+    root.mkdir(parents=True)
+    (tmp_path / "checkout" / ".git").mkdir()
+    assert detect_install(root).method == "source"
+
+
+def test_a_distribution_package_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr("trench.ops.update._in_container", lambda: False)
+    root = tmp_path / "usr" / "lib" / "python3" / "dist-packages" / "trench"
+    root.mkdir(parents=True)
+    inst = detect_install(root)
+    assert inst.method == "system"
+    assert "system package manager" in inst.reason
+
+
+def test_running_outside_a_virtualenv_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr("trench.ops.update._in_container", lambda: False)
+    monkeypatch.setattr(sys, "prefix", sys.base_prefix)
+    root = tmp_path / "lib" / "site-packages" / "trench"
+    root.mkdir(parents=True)
+    inst = detect_install(root)
+    assert inst.method == "unknown" and inst.can_apply is False
+
+
+def test_an_unwritable_virtualenv_is_reported_as_such(tmp_path, monkeypatch):
+    monkeypatch.setattr("trench.ops.update._in_container", lambda: False)
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "venv"))
+    monkeypatch.setattr(sys, "base_prefix", str(tmp_path / "base"))
+    root = tmp_path / "venv" / "lib" / "site-packages" / "trench"
+    root.mkdir(parents=True)
+    monkeypatch.setattr("trench.ops.update.os.access", lambda p, m: False)
+    inst = detect_install(root)
+    assert inst.method == "venv" and inst.writable is False
+    assert "not writable" in inst.reason
+    assert inst.can_apply is False
+
+
+def test_a_writable_virtualenv_can_apply(tmp_path, monkeypatch):
+    monkeypatch.setattr("trench.ops.update._in_container", lambda: False)
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "venv"))
+    monkeypatch.setattr(sys, "base_prefix", str(tmp_path / "base"))
+    root = tmp_path / "venv" / "lib" / "site-packages" / "trench"
+    root.mkdir(parents=True)
+    monkeypatch.setattr("trench.ops.update.os.access", lambda p, m: True)
+    inst = detect_install(root)
+    assert inst.method == "venv" and inst.can_apply is True
+    assert inst.reason == ""
+
+
+def test_container_detection_reads_the_marker_files(monkeypatch, tmp_path):
+    from trench.ops import update as up
+
+    seen = {}
+
+    class FakePath:
+        def __init__(self, p):
+            self.p = str(p)
+
+        def exists(self):
+            return self.p in seen.get("present", ())
+
+        def read_text(self):
+            if "cgroup" in self.p:
+                return seen.get("cgroup", "")
+            raise OSError
+
+    monkeypatch.setattr(up, "Path", FakePath)
+    seen["present"] = ("/.dockerenv",)
+    assert up._in_container() is True
+    seen["present"] = ("/run/.containerenv",)
+    assert up._in_container() is True
+    seen["present"] = ()
+    seen["cgroup"] = "0::/kubepods/besteffort/pod123"
+    assert up._in_container() is True
+    seen["cgroup"] = "0::/user.slice/user-1000.slice"
+    assert up._in_container() is False
+
+
+def test_an_unreadable_cgroup_file_is_not_a_container(monkeypatch):
+    from trench.ops import update as up
+
+    class FakePath:
+        def __init__(self, p):
+            pass
+
+        def exists(self):
+            return False
+
+        def read_text(self):
+            raise OSError("no /proc here")
+
+    monkeypatch.setattr(up, "Path", FakePath)
+    assert up._in_container() is False
+
+
+# ───────────────────────────────────────────────────── why-not / window ──
+
+
+@pytest.mark.asyncio
+async def test_the_status_explains_why_it_cannot_install(tmp_path):
+    off = _updater(tmp_path, _index("2.0.0"), mode="off")
+    assert off._why_not() == "updates.mode is off"
+
+    blocked = _updater(tmp_path, _index("2.0.0"), can_apply=False)
+    assert "container" in blocked._why_not()
+
+    fine = _updater(tmp_path, _index("2.0.0"))
+    assert fine._why_not() == ""
+
+
+@pytest.mark.asyncio
+async def test_a_venv_that_cannot_apply_without_a_reason_still_explains(tmp_path):
+    up = _updater(tmp_path, _index("2.0.0"))
+    up.install = Install("venv", str(tmp_path), sys.executable, False)
+    assert "cannot self-update" in up._why_not() or "venv" in up._why_not()
+
+
+def test_an_unparseable_window_is_treated_as_always_open(tmp_path, caplog):
+    up = _updater(tmp_path, _index("2.0.0"), window="whenever")
+    assert up._in_window() is True
+    assert any("always-open" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("window,hour,inside", [
+    ("02:00-05:00", 3, True), ("02:00-05:00", 6, False),
+    ("22:00-02:00", 23, True), ("22:00-02:00", 1, True), ("22:00-02:00", 12, False),
+    ("00:00-00:00", 13, True),          # an empty span means always
+])
+def test_the_maintenance_window(window, hour, inside):
+    when = datetime(2026, 1, 1, hour, 30)
+    assert window_contains(window, when) is inside
+
+
+@pytest.mark.parametrize("window", ["25:00-02:00", "02:00-99:00", "02:70-03:00",
+                                    "nonsense", "02:00"])
+def test_a_window_that_is_not_a_time_of_day_is_refused(window):
+    with pytest.raises(ValueError):
+        window_contains(window)
+
+
+# ────────────────────────────────────────────────────────── check paths ──
+
+
+@pytest.mark.asyncio
+async def test_a_check_in_off_mode_does_nothing(tmp_path):
+    up = _updater(tmp_path, _index("2.0.0", "2.1.0"), mode="off")
+    assert await up.check() is None
+    assert up.state.latest_version == ""
+
+
+@pytest.mark.asyncio
+async def test_a_failing_check_records_the_error_rather_than_raising(tmp_path,
+                                                                     caplog):
+    def boom(url):
+        raise RuntimeError("index unreachable")
+
+    up = _updater(tmp_path, {})
+    up._fetch_json = boom
+    assert await up.check() is None
+    assert up.state.last_error == "index unreachable"
+    assert up.state.last_check > 0
+    assert any("update check failed" in r.getMessage() for r in caplog.records)
+    # And it survives a restart.
+    reloaded = UpdateState.load(up.state_path)
+    assert reloaded.last_error == "index unreachable"
+
+
+@pytest.mark.asyncio
+async def test_a_check_that_finds_nothing_newer_clears_the_candidate(tmp_path):
+    up = _updater(tmp_path, _index("2.0.0"))
+    up.state.latest_url = "https://stale/x.whl"
+    up.state.latest_sha256 = "deadbeef"
+    assert await up.check() is None
+    assert up.state.latest_version == "2.0.0"
+    assert up.state.latest_url == "" and up.state.latest_sha256 == ""
+
+
+@pytest.mark.asyncio
+async def test_a_successful_check_clears_a_previous_error(tmp_path):
+    up = _updater(tmp_path, _index("2.0.0", "2.1.0"))
+    up.state.last_error = "index unreachable"
+    await up.check()
+    assert up.state.last_error == ""
+
+
+@pytest.mark.asyncio
+async def test_an_async_fetch_json_is_accepted(tmp_path):
+    index = _index("2.0.0", "2.1.0")
+
+    async def fetch(url):
+        return index
+
+    up = _updater(tmp_path, index)
+    up._fetch_json = fetch
+    found = await up.check()
+    assert found is not None and found.version == "2.1.0"
+
+
+@pytest.mark.asyncio
+async def test_an_implausibly_large_index_is_refused(tmp_path, monkeypatch):
+    from trench.ops.update import MAX_ARTIFACT_BYTES
+
+    class _Content:
+        async def read(self, n):
+            return b"x" * (MAX_ARTIFACT_BYTES + 1)
+
+    class _Resp:
+        content = _Content()
+
+        def raise_for_status(self):
+            return None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class _Session:
+        def __init__(self, *a, **k):
+            pass
+
+        def get(self, url):
+            return _Resp()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    import aiohttp
+    monkeypatch.setattr(aiohttp, "ClientSession", _Session)
+    up = _updater(tmp_path, {})
+    up._fetch_json = None
+    with pytest.raises(UpdateError, match="implausibly large"):
+        await up._get_index()
+
+
+# ──────────────────────────────────────────────────────────── the tick ──
+
+
+@pytest.mark.asyncio
+async def test_the_tick_is_a_no_op_when_there_is_nothing_new(tmp_path):
+    applied = []
+    up = _updater(tmp_path, _index("2.0.0"), mode="auto")
+    up.apply = lambda *a, **kw: applied.append(1)
+    await up.tick()
+    assert applied == []
+
+
+@pytest.mark.asyncio
+async def test_the_tick_reports_an_update_it_may_not_install(tmp_path, caplog):
+    import logging
+    caplog.set_level(logging.INFO)
+    up = _updater(tmp_path, _index("2.0.0", "2.1.0"), mode="auto", can_apply=False)
+    await up.tick()
+    assert any("not applied" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_an_automatic_apply_failure_is_logged_not_raised(tmp_path, caplog):
+    up = _updater(tmp_path, _index("2.0.0", "2.1.0"), mode="auto")
+
+    async def boom(release=None, **kw):
+        raise UpdateError("pip exploded")
+
+    up.apply = boom
+    await up.tick()                      # must not raise
+    assert any("automatic update" in r.getMessage() for r in caplog.records)
+
+
+# ───────────────────────────────────────────────────────── apply gates ──
+
+
+@pytest.mark.asyncio
+async def test_applying_in_off_mode_is_refused(tmp_path):
+    up = _updater(tmp_path, _index("2.0.0", "2.1.0"), mode="off")
+    with pytest.raises(UpdateError, match="updates.mode is off"):
+        await up.apply()
+
+
+@pytest.mark.asyncio
+async def test_applying_a_version_the_index_does_not_have_is_refused(tmp_path):
+    up = _updater(tmp_path, _index("2.0.0", "2.1.0"), mode="notify")
+    with pytest.raises(UpdateError, match="no installable release"):
+        await up.apply(version="9.9.9")
+
+
+@pytest.mark.asyncio
+async def test_a_rollback_targets_the_previous_version(tmp_path):
+    up = _updater(tmp_path, _index("1.9.0", "2.0.0"), current="2.0.0")
+    up.state.previous_version = "1.9.0"
+    asked = {}
+
+    async def fake_apply(release=None, *, version=None, allow_downgrade=False):
+        asked.update(version=version, allow_downgrade=allow_downgrade)
+        return {}
+
+    up.apply = fake_apply
+    await up.rollback()
+    assert asked == {"version": "1.9.0", "allow_downgrade": True}
+
+
+# ───────────────────────────────────────────────────────── subprocesses ──
+
+
+@pytest.mark.asyncio
+async def test_a_subprocess_that_fails_folds_its_output_into_the_error(tmp_path):
+    """pip is chatty on success and essential on failure."""
+    up = _updater(tmp_path, _index("2.0.0"))
+    with pytest.raises(UpdateError) as e:
+        await up._run([sys.executable, "-c",
+                       "import sys; print('boom on stdout'); sys.exit(3)"],
+                      timeout=30, what="do the thing")
+    assert "exit 3" in str(e.value) and "boom on stdout" in str(e.value)
+
+
+@pytest.mark.asyncio
+async def test_a_subprocess_that_hangs_is_killed(tmp_path):
+    up = _updater(tmp_path, _index("2.0.0"))
+    with pytest.raises(UpdateError, match="timed out"):
+        await up._run([sys.executable, "-c", "import time; time.sleep(30)"],
+                      timeout=0.5, what="do the slow thing")
+
+
+@pytest.mark.asyncio
+async def test_a_successful_subprocess_returns_its_output(tmp_path):
+    up = _updater(tmp_path, _index("2.0.0"))
+    out = await up._run([sys.executable, "-c", "print('hello')"],
+                        timeout=30, what="say hello")
+    assert "hello" in out
+
+
+# ──────────────────────────────────────────────────────────── download ──
+
+
+@pytest.mark.asyncio
+async def test_a_transport_failure_becomes_an_update_error(tmp_path, monkeypatch):
+    """The API only catches UpdateError; anything else escapes as a 500 with no
+    audit entry. A stale index listing a removed artifact is the ordinary case."""
+    import aiohttp
+
+    class _Session:
+        def __init__(self, *a, **k):
+            pass
+
+        def get(self, url):
+            raise aiohttp.ClientError("404 Not Found")
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    monkeypatch.setattr(aiohttp, "ClientSession", _Session)
+    up = _updater(tmp_path, _index("2.0.0", "2.1.0"))
+    release = Release(version="2.1.0", sha256="ab" * 32,
+                      url="https://x/trench_dns-2.1.0-py3-none-any.whl", size=1)
+    with pytest.raises(UpdateError, match="could not download"):
+        await up._download(release, tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_an_artifact_past_the_size_ceiling_is_refused(tmp_path, monkeypatch):
+    from trench.ops.update import MAX_ARTIFACT_BYTES
+    payload = b"x" * 4096
+    _serve(monkeypatch, payload)
+    monkeypatch.setattr("trench.ops.update.MAX_ARTIFACT_BYTES", 1024)
+    up = _updater(tmp_path, _index("2.0.0", "2.1.0"))
+    release = Release(version="2.1.0",
+                      sha256=hashlib.sha256(payload).hexdigest(),
+                      url="https://x/trench_dns-2.1.0-py3-none-any.whl",
+                      size=len(payload))
+    with pytest.raises(UpdateError, match="size ceiling"):
+        await up._download(release, tmp_path)
+    assert MAX_ARTIFACT_BYTES > 1024
+
+
+# ──────────────────────────────────────────────────────────── restart ──
+
+
+@pytest.mark.asyncio
+async def test_no_restart_is_scheduled_unless_configured(tmp_path):
+    up = _updater(tmp_path, _index("2.0.0"), restart="manual")
+    ran = []
+    up._run = lambda argv, **kw: ran.append(argv)
+    await up._maybe_restart()
+    assert ran == []
+
+
+@pytest.mark.asyncio
+async def test_a_restart_is_scheduled_through_systemd_run(tmp_path, monkeypatch):
+    """Never `os.execv` and never a kill: systemd already knows how to stop and
+    start this unit."""
+    up = _updater(tmp_path, _index("2.0.0"), restart="systemd", unit="trench")
+    monkeypatch.setattr("trench.ops.update.shutil.which",
+                        lambda name: "/usr/bin/systemd-run" if name == "systemd-run" else None)
+    ran = []
+
+    async def note(argv, **kw):
+        ran.append(argv)
+        return ""
+
+    up._run = note
+    await up._maybe_restart()
+    assert ran[0][0] == "systemd-run"
+    assert ran[0][-2:] == ["restart", "trench"]
+    assert any(a.startswith("--on-active") for a in ran[0])
+
+
+@pytest.mark.asyncio
+async def test_a_restart_falls_back_to_systemctl(tmp_path, monkeypatch):
+    up = _updater(tmp_path, _index("2.0.0"), restart="systemd", unit="trench")
+    monkeypatch.setattr("trench.ops.update.shutil.which",
+                        lambda name: "/bin/systemctl" if name == "systemctl" else None)
+    ran = []
+
+    async def note(argv, **kw):
+        ran.append(argv)
+        return ""
+
+    up._run = note
+    await up._maybe_restart()
+    assert ran == [["systemctl", "restart", "trench"]]
+
+
+@pytest.mark.asyncio
+async def test_without_systemd_the_operator_is_told_to_restart(tmp_path,
+                                                               monkeypatch, caplog):
+    up = _updater(tmp_path, _index("2.0.0"), restart="systemd", unit="trench")
+    monkeypatch.setattr("trench.ops.update.shutil.which", lambda name: None)
+    await up._maybe_restart()
+    assert any("restart trench yourself" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_a_restart_it_is_not_privileged_to_schedule_is_reported(tmp_path,
+                                                                      monkeypatch,
+                                                                      caplog):
+    """Trench sheds root after binding, so it cannot talk to systemd unless the
+    operator arranged it — and the update is installed either way."""
+    up = _updater(tmp_path, _index("2.0.0"), restart="systemd", unit="trench")
+    monkeypatch.setattr("trench.ops.update.shutil.which", lambda name: "/bin/systemctl")
+
+    async def denied(argv, **kw):
+        raise UpdateError("failed to schedule a restart of trench (exit 1)")
+
+    up._run = denied
+    await up._maybe_restart()              # must not raise
+    assert any("take effect on the next restart" in r.getMessage()
+               for r in caplog.records)

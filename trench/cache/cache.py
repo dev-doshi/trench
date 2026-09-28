@@ -28,6 +28,7 @@ from typing import NamedTuple
 from ..wire import RR, Message, Type
 from ..wire.name import wire_key
 from ..wire.rrtypes import Rcode
+from .shared import key64
 
 
 class CacheKey(NamedTuple):
@@ -152,7 +153,6 @@ class Cache:
     def _shared_get(self, key: CacheKey, now: float):
         if self.shared is None:
             return None
-        from .shared import key64
         got = self.shared.get(key64(*key))
         if got is None:
             return None
@@ -199,7 +199,6 @@ class Cache:
             self.stats["evictions"] += 1
         # write through to the shared L2 so other workers benefit
         if self.shared is not None:
-            from .shared import key64
             try:
                 self.shared.put(key64(*key), msg.to_wire(), ttl)
             except Exception:
@@ -273,7 +272,6 @@ class Cache:
             # also drop it from the shared L2, or the next miss reads the
             # flushed answer straight back in
             if self.shared is not None:
-                from .shared import key64
                 self.shared.delete(key64(*k))
         if self.shared is not None:
             # The victim list comes from *this* worker's L1, but L2 is shared:
@@ -320,8 +318,14 @@ class Cache:
             return 0
         now = time.monotonic()
         n = 0
-        for key_list, wire_hex, ttl in items:
+        for item in items:
+            # The unpack is inside the guard, not outside it. A truncated or
+            # hand-edited file gives an item of the wrong shape, and unpacking
+            # in the `for` clause raised straight out of `load` — discarding
+            # every remaining entry over one bad row, which is the opposite of
+            # what the per-item guard below exists to do.
             try:
+                key_list, wire_hex, ttl = item
                 key = CacheKey(bytes.fromhex(key_list[0]), *key_list[1:])
                 msg = Message.parse(bytes.fromhex(wire_hex))
             except Exception:

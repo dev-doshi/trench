@@ -76,3 +76,57 @@ def test_shared_flush():
     c.flush()                                               # clears local + shared
     c3 = Cache(shared=sc)
     assert c3.get(key) is None
+
+
+def test_a_read_mostly_worker_still_evicts():
+    """Regression: a worker fed entirely by a sibling's L2 never inserts through
+    `put`, so `max_entries` was never enforced on it at all and its local cache
+    grew without limit."""
+    sc = SharedCache.create(slots=1024, payload=1232)
+    writer = Cache(shared=sc)
+    reader = Cache(shared=sc, max_entries=4)
+    keys = []
+    for i in range(20):
+        q = mkquery(f"h{i}.example.com")
+        key = Cache.key_for(q)
+        keys.append(key)
+        writer.put(key, mkanswer(q, ip=f"93.184.216.{i + 1}"))
+
+    for key in keys:
+        assert reader.get(key) is not None       # every one comes from L2
+    assert reader.stats["shared_hits"] == 20
+    assert reader.size <= 4, "the promotion path must trim like `put` does"
+    assert reader.stats["evictions"] >= 16
+
+
+def test_a_promoted_entry_is_served_locally_next_time():
+    sc = SharedCache.create(slots=1024, payload=1232)
+    writer = Cache(shared=sc)
+    reader = Cache(shared=sc)
+    q = mkquery("promoted.example.com")
+    key = Cache.key_for(q)
+    writer.put(key, mkanswer(q, ip="93.184.216.34"))
+
+    assert reader.get(key) is not None
+    assert reader.stats["shared_hits"] == 1 and reader.stats["hits"] == 0
+    assert reader.get(key) is not None
+    assert reader.stats["shared_hits"] == 1, "the second read must not touch L2"
+    assert reader.stats["hits"] == 1
+
+
+def test_an_unparseable_l2_entry_is_a_miss_not_a_crash():
+    """The L2 is shared memory another process writes."""
+    sc = SharedCache.create(slots=1024, payload=1232)
+    reader = Cache(shared=sc)
+    q = mkquery("corrupt.example.com")
+    key = Cache.key_for(q)
+    sc.put(key64(*key), b"\x00\x01not a message", 60)
+    assert reader.get(key) is None
+    assert reader.size == 0
+
+
+def test_a_cache_with_no_shared_backend_never_consults_one():
+    c = Cache()
+    q = mkquery("local.example.com")
+    assert c.get(Cache.key_for(q)) is None
+    assert c.stats["shared_hits"] == 0

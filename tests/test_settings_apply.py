@@ -341,3 +341,203 @@ async def test_removing_every_source_drops_the_imported_rules(tmp_path):
     await _save(app, path, {"filtering.sources": []})
     assert app.filter.match("gone.example").action.name == "NONE"
     assert app.filter.match("mine.example").action.name == "BLOCK"   # hand-written stays
+
+
+# --- coercion ---------------------------------------------------------------
+def test_a_boolean_sent_as_a_string_can_be_turned_off():
+    """`bool("false")` is True, and so is `bool("0")`.
+
+    The console's checkbox sends a real JSON boolean, so it was never affected.
+    Every other client of this API — curl, a token-authenticated script — could
+    only ever turn a setting *on*: the wrong value was written and the endpoint
+    reported success, because it really had saved something.
+    """
+    from trench.api.settings import coerce
+    for off in ("false", "False", "FALSE", "no", "off", "0", "", "  false  "):
+        assert coerce("filtering.enabled", off) is False, off
+    for on in ("true", "True", "yes", "on", "1"):
+        assert coerce("filtering.enabled", on) is True, on
+    # real JSON booleans keep working
+    assert coerce("filtering.enabled", True) is True
+    assert coerce("filtering.enabled", False) is False
+
+
+def test_a_boolean_that_is_neither_is_rejected_rather_than_guessed():
+    """Silently reading 'maybe' as one or the other is how the original bug
+    stayed invisible: the caller is told, instead."""
+    import pytest
+
+    from trench.api.settings import coerce
+    with pytest.raises(ValueError, match="is not a boolean"):
+        coerce("filtering.enabled", "maybe")
+
+
+# --- adopting a change must cost only what that change is worth ---------------
+@pytest.mark.asyncio
+async def test_adopting_a_change_runs_only_the_appliers_that_changed(tmp_path):
+    """`apply_config()` with no argument used to mean "run every applier".
+
+    Two of them are expensive: `upstream` rebuilds the forwarders and flushes the
+    cache, and `sources` re-downloads and recompiles the whole blocklist corpus.
+    Both callers that adopt a change — the sibling-worker sync and the API's
+    fan-out — call it with no argument, so saving *any* setting, or flipping one
+    device's filtering switch, triggered a full 900k-domain rebuild.
+    """
+    import yaml
+
+    from trench.app import App
+    from trench.config import Config
+    path = tmp_path / "t.yaml"
+    base = {"data_dir": str(tmp_path), "server": {"do53": {"enabled": False}},
+            "log": {"level": "info"}}
+    path.write_text(yaml.safe_dump(base))
+    app = App(Config.model_validate(base), config_path=str(path))
+
+    ran: list[str] = []
+    real = app.adopters()
+
+    def spy():
+        async def noop():
+            pass
+        return {name: (lambda n=name: (ran.append(n), noop())[1]) for name in real}
+
+    app.adopters = spy                      # type: ignore[method-assign]
+
+    # one cheap setting moves
+    base["log"]["level"] = "debug"
+    path.write_text(yaml.safe_dump(base))
+    await app.apply_config()
+    assert ran == ["log"], f"expected only the log applier, got {ran}"
+    assert app.config.log.level == "debug", "the new value still has to be in force"
+
+    # nothing moves at all
+    ran.clear()
+    await app.apply_config()
+    assert ran == [], f"nothing changed, so nothing should be adopted: {ran}"
+
+    # SIGHUP keeps its documented meaning
+    ran.clear()
+    await app.apply_config(full=True)
+    assert "upstream" in ran and "sources" in ran, "full=True must run everything"
+
+
+@pytest.mark.asyncio
+async def test_a_change_outside_the_editable_surface_falls_back_to_everything(tmp_path):
+    """A hand-edited file can move things the console never offers. Assuming
+    those need no applier is the same mistake in the other direction."""
+    import yaml
+
+    from trench.app import App
+    from trench.config import Config
+    path = tmp_path / "t.yaml"
+    base = {"data_dir": str(tmp_path), "server": {"do53": {"enabled": False}},
+            "upstream": {"groups": {}}}
+    path.write_text(yaml.safe_dump(base))
+    app = App(Config.model_validate(base), config_path=str(path))
+    ran: list[str] = []
+    real = app.adopters()
+
+    def spy():
+        async def noop():
+            pass
+        return {name: (lambda n=name: (ran.append(n), noop())[1]) for name in real}
+
+    app.adopters = spy                      # type: ignore[method-assign]
+    base["upstream"]["groups"] = {"kids": ["9.9.9.9"]}   # not in FIELDS
+    path.write_text(yaml.safe_dump(base))
+    await app.apply_config()
+    assert "upstream" in ran, "an unrecognised change must not be silently skipped"
+
+
+def test_every_field_lands_in_a_group_the_form_renders():
+    """The form draws one tab per entry in `GROUPS` and puts each field in its
+    own. A field naming a group that is not in that list is declared, saved and
+    shown by nothing — which is what three notary settings did."""
+    missing = sorted({f.group for f in st.FIELDS} - set(st.GROUPS))
+    assert not missing, f"these groups have fields but no tab: {missing}"
+
+
+def test_a_secret_is_never_sent_to_the_browser():
+    """`GET /settings` is a viewer-role endpoint. Echoing the console password
+    back into it would hand the credential to anyone who can read the page."""
+    from trench.config import Config
+    cfg = Config.model_validate({"web": {"admin_password": "hunter2"}})
+    values = st.current(cfg)
+    assert "hunter2" not in repr(values)
+    assert values["web.admin_password"] == ""
+    assert any(f.secret for f in st.FIELDS), "the flag must actually be in use"
+
+
+# --- structured collections --------------------------------------------------
+def test_every_collection_declares_how_it_is_applied_and_where_it_shows():
+    app_methods = set(App(Config()).adopters())
+    for c in st.COLLECTIONS:
+        assert c.applies in ("live", "adopt", "restart"), c.path
+        assert c.group in st.GROUPS, f"{c.path} has no tab"
+        assert c.shape in ("list", "map"), c.path
+        assert c.columns, c.path
+        if c.applies == "adopt":
+            assert c.adopter in app_methods, f"{c.path} names a missing adopter"
+        if not c.scalar:
+            assert all(col.name for col in c.columns), c.path
+
+
+def test_the_whole_config_is_reachable_from_the_console():
+    """The point of the exercise: no setting that only a text editor can reach.
+
+    `allow_dhcp` is the single exception and is declared read-only — it is a
+    command-line interlock that `apply_config` restores from the running process
+    on every reload, so a control for it would be ignored.
+    """
+    from pydantic import BaseModel
+    have = {f.path for f in st.FIELDS} | {c.path for c in st.COLLECTIONS}
+
+    def walk(model, prefix=""):
+        for name, fi in model.model_fields.items():
+            path = f"{prefix}{name}"
+            if path in have:
+                yield path
+                continue
+            sub = next((c for c in [fi.annotation, *getattr(fi.annotation, "__args__", ())]
+                        if isinstance(c, type) and issubclass(c, BaseModel)), None)
+            if sub is not None and not str(fi.annotation).startswith(("list[", "dict[")):
+                yield from walk(sub, path + ".")
+            else:
+                yield path
+
+    unreachable = [p for p in walk(Config) if p not in have]
+    assert unreachable == [], f"only a text editor can set: {unreachable}"
+    assert st._BY_PATH["allow_dhcp"].readonly
+
+
+def test_a_collection_round_trips_through_the_save_path(tmp_path):
+    """Written the way the API writes it, and read back as real config."""
+    zones = [{"origin": "home.example.", "file": "/data/z", "dnssec": True,
+              "nsec3": False, "nsec3_iterations": 0, "nsec3_salt": "",
+              "allow_transfer": ["192.0.2.1"], "also_notify": [],
+              "allow_update": [], "tsig_key": None}]
+    tree = {"data_dir": str(tmp_path)}
+    st.merge(tree, "zones", st.coerce_collection("zones", zones))
+    cfg = Config.model_validate(tree)
+    assert cfg.zones[0].origin == "home.example."
+    assert cfg.zones[0].allow_transfer == ["192.0.2.1"]
+    # …and comes back out in the shape the editor sent
+    assert st.collection_values(cfg)["zones"][0]["origin"] == "home.example."
+
+
+def test_a_collection_of_the_wrong_shape_is_refused():
+    import pytest as _p
+    with _p.raises(ValueError, match="must be a list"):
+        st.coerce_collection("zones", {"origin": "x."})
+    with _p.raises(ValueError, match="must be an object"):
+        st.coerce_collection("filtering.groups", [])
+    with _p.raises(ValueError, match="every zones entry"):
+        st.coerce_collection("zones", ["home.example."])
+    with _p.raises(KeyError):
+        st.coerce_collection("not.a.collection", [])
+
+
+def test_a_readonly_setting_is_refused_rather_than_silently_ignored():
+    import pytest as _p
+    with _p.raises(ValueError, match="cannot be set here"):
+        st.coerce("allow_dhcp", True)

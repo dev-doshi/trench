@@ -116,14 +116,24 @@ def _targets(rrs: list[RR]) -> set[Name]:
     return out
 
 
-def sanitize(resp: Message, qname: str) -> Sanitized:
-    """Strip unsolicited records from `resp` in place. Returns what was removed."""
+def sanitize(resp: Message, qname: str | Name) -> Sanitized:
+    """Strip unsolicited records from `resp` in place. Returns what was removed.
+
+    `qname` is the name the *client* asked about, which is why it is taken from
+    the caller rather than from the response's echoed question. Passing the
+    query's own `Name` skips re-parsing it out of text, which is what the query
+    path does — everything below compares names through `Name.key`, so the
+    letter case a text form would have lost was never consulted anyway.
+    """
     dropped = Sanitized()
     q = resp.question
-    try:
-        owner = Name.from_text(qname) if qname else (q.name if q else None)
-    except Exception:
-        owner = q.name if q else None
+    if isinstance(qname, Name):
+        owner: Name | None = qname
+    else:
+        try:
+            owner = Name.from_text(qname) if qname else (q.name if q else None)
+        except Exception:
+            owner = q.name if q else None
     if owner is None:
         # No question and no caller-supplied name: nothing can be shown to be in
         # bailiwick for anything, so every record here is unsolicited. Returning

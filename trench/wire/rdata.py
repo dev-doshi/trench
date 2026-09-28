@@ -584,7 +584,15 @@ _NAME_BEARING = frozenset(
 
 
 def parse_rdata(r: Reader, rtype: int, rdlen: int) -> Rdata:
-    """Parse rdata of `rdlen` bytes. Unknown / undecodable types fall back to raw."""
+    """Parse rdata of `rdlen` bytes. Unknown / undecodable types fall back to raw.
+
+    The fallback means `rr.rtype` and the class of `rr.rdata` can disagree: a
+    truncated A record keeps rtype 1 and comes back as `Unknown`. So `rtype`
+    says what a record *claims* to be, and only the rdata's own class says what
+    it *is*. Code that reads a typed field — `.address`, `.flags`, `.salt` —
+    after testing `rtype` alone raises AttributeError on one of these, which a
+    remote server chooses whether to send. Test the rdata, not the claim.
+    """
     codec = _REGISTRY.get(rtype)
     if codec is None:
         return Unknown(rtype, r.read(rdlen))

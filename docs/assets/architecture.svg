@@ -1,107 +1,88 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" role="img" aria-label="How a query moves through Trench">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#0B1220"/><stop offset="1" stop-color="#101D31"/>
-    </linearGradient>
-    <style>
-      .f { font-family: ui-sans-serif, -apple-system, "Segoe UI", Inter, Helvetica, Arial, sans-serif; }
-      .mono { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
-    </style>
-  </defs>
-  <rect width="1200" height="700" fill="url(#bg)"/>
-  <rect x="60" y="40" width="300" height="62" rx="14" fill="#0F1B2D" stroke="#2DD4BF" stroke-opacity="0.30"/>
-  <text class="f" x="80" y="66" font-size="15" fill="#E9F1F7" text-anchor="start" font-weight="700">Clients</text>
-  <text class="f" x="80" y="88" font-size="12" fill="#93A7C0" text-anchor="start" font-weight="400">phones · laptops · IoT · servers</text>
-  <rect x="800" y="40" width="340" height="62" rx="14" fill="#0F1B2D" stroke="#60A5FA" stroke-opacity="0.30" stroke-dasharray="6 5"/>
-  <text class="f" x="820" y="66" font-size="15" fill="#E9F1F7" text-anchor="start" font-weight="700">DHCP  — off by default</text>
-  <text class="f" x="820" y="88" font-size="12" fill="#93A7C0" text-anchor="start" font-weight="400">leases give clients their names and their resolver</text>
-  <path d="M800 71H380" stroke="#60A5FA" stroke-opacity="0.30" stroke-width="2" stroke-dasharray="6 5"/>
-  <path d="M210 102L210 136" stroke="#2DD4BF" stroke-opacity="0.55" stroke-width="2"/>
-  <path d="M204 128L210 136L216 128" fill="none" stroke="#2DD4BF" stroke-opacity="0.55" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-  <rect x="60" y="140" width="1080" height="86" rx="14" fill="#0F1B2D" stroke="#2DD4BF" stroke-opacity="0.30"/>
-  <text class="f" x="80" y="166" font-size="12" font-weight="700" letter-spacing="1.6" fill="#6E839E">FRONTENDS  —  EVERY TRANSPORT, IN</text>
-  <rect x="80" y="178" width="88" height="28" rx="14.0" fill="#2DD4BF" fill-opacity="0.10" stroke="#2DD4BF" stroke-opacity="0.45"/>
-  <text class="mono" x="124" y="196" font-size="13" fill="#2DD4BF" text-anchor="middle">Do53 UDP</text>
-  <rect x="178" y="178" width="88" height="28" rx="14.0" fill="#2DD4BF" fill-opacity="0.10" stroke="#2DD4BF" stroke-opacity="0.45"/>
-  <text class="mono" x="222" y="196" font-size="13" fill="#2DD4BF" text-anchor="middle">Do53 TCP</text>
-  <rect x="276" y="178" width="49" height="28" rx="14.0" fill="#2DD4BF" fill-opacity="0.10" stroke="#2DD4BF" stroke-opacity="0.45"/>
-  <text class="mono" x="300" y="196" font-size="13" fill="#2DD4BF" text-anchor="middle">DoT</text>
-  <rect x="335" y="178" width="182" height="28" rx="14.0" fill="#2DD4BF" fill-opacity="0.10" stroke="#2DD4BF" stroke-opacity="0.45"/>
-  <text class="mono" x="426" y="196" font-size="13" fill="#2DD4BF" text-anchor="middle">DoH  RFC 8484 + JSON</text>
-  <rect x="527" y="178" width="49" height="28" rx="14.0" fill="#2DD4BF" fill-opacity="0.10" stroke="#2DD4BF" stroke-opacity="0.45"/>
-  <text class="mono" x="552" y="196" font-size="13" fill="#2DD4BF" text-anchor="middle">DoQ</text>
-  <rect x="586" y="178" width="57" height="28" rx="14.0" fill="#2DD4BF" fill-opacity="0.10" stroke="#2DD4BF" stroke-opacity="0.45"/>
-  <text class="mono" x="614" y="196" font-size="13" fill="#2DD4BF" text-anchor="middle">DoH3</text>
-  <text class="f" x="1120" y="197" font-size="12" fill="#6E839E" text-anchor="end" font-weight="400">DDR / DNR advertise the encrypted ones</text>
-  <path d="M600.0 226L600.0 258" stroke="#2DD4BF" stroke-opacity="0.55" stroke-width="2"/>
-  <path d="M594.0 250L600.0 258L606.0 250" fill="none" stroke="#2DD4BF" stroke-opacity="0.55" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-  <rect x="60" y="262" width="1080" height="118" rx="14" fill="#0F1B2D" stroke="#2DD4BF" stroke-opacity="0.30"/>
-  <text class="f" x="80" y="288" font-size="12" font-weight="700" letter-spacing="1.6" fill="#6E839E">PIPELINE  —  IN ORDER, EVERY QUERY</text>
-  <rect x="80" y="300" width="88" height="28" rx="14.0" fill="#2DD4BF" fill-opacity="0.10" stroke="#2DD4BF" stroke-opacity="0.45"/>
-  <text class="mono" x="124" y="318" font-size="13" fill="#2DD4BF" text-anchor="middle">validate</text>
-  <path d="M172 314h12" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2"/>
-  <path d="M180 310l5 4-5 4" fill="none" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-  <rect x="190" y="300" width="104" height="28" rx="14.0" fill="#2DD4BF" fill-opacity="0.10" stroke="#2DD4BF" stroke-opacity="0.45"/>
-  <text class="mono" x="242" y="318" font-size="13" fill="#2DD4BF" text-anchor="middle">rate-limit</text>
-  <path d="M298 314h12" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2"/>
-  <path d="M306 310l5 4-5 4" fill="none" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-  <rect x="316" y="300" width="143" height="28" rx="14.0" fill="#2DD4BF" fill-opacity="0.10" stroke="#2DD4BF" stroke-opacity="0.45"/>
-  <text class="mono" x="388" y="318" font-size="13" fill="#2DD4BF" text-anchor="middle">identify client</text>
-  <path d="M463 314h12" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2"/>
-  <path d="M471 310l5 4-5 4" fill="none" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-  <rect x="481" y="300" width="111" height="28" rx="14.0" fill="#2DD4BF" fill-opacity="0.10" stroke="#2DD4BF" stroke-opacity="0.45"/>
-  <text class="mono" x="536" y="318" font-size="13" fill="#2DD4BF" text-anchor="middle">local zones</text>
-  <path d="M596 314h12" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2"/>
-  <path d="M604 310l5 4-5 4" fill="none" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-  <rect x="614" y="300" width="72" height="28" rx="14.0" fill="#2DD4BF" fill-opacity="0.10" stroke="#2DD4BF" stroke-opacity="0.45"/>
-  <text class="mono" x="650" y="318" font-size="13" fill="#2DD4BF" text-anchor="middle">filter</text>
-  <path d="M690 314h12" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2"/>
-  <path d="M698 310l5 4-5 4" fill="none" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-  <rect x="708" y="300" width="65" height="28" rx="14.0" fill="#2DD4BF" fill-opacity="0.10" stroke="#2DD4BF" stroke-opacity="0.45"/>
-  <text class="mono" x="740" y="318" font-size="13" fill="#2DD4BF" text-anchor="middle">cache</text>
-  <path d="M777 314h12" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2"/>
-  <path d="M785 310l5 4-5 4" fill="none" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-  <rect x="795" y="300" width="80" height="28" rx="14.0" fill="#2DD4BF" fill-opacity="0.10" stroke="#2DD4BF" stroke-opacity="0.45"/>
-  <text class="mono" x="835" y="318" font-size="13" fill="#2DD4BF" text-anchor="middle">resolve</text>
-  <path d="M879 314h12" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2"/>
-  <path d="M887 310l5 4-5 4" fill="none" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-  <rect x="897" y="300" width="143" height="28" rx="14.0" fill="#2DD4BF" fill-opacity="0.10" stroke="#2DD4BF" stroke-opacity="0.45"/>
-  <text class="mono" x="968" y="318" font-size="13" fill="#2DD4BF" text-anchor="middle">rebinding guard</text>
-  <text class="f" x="80" y="358" font-size="12" fill="#93A7C0" text-anchor="start" font-weight="400">rules · groups · per-client policy · safe search · blocked services · LRU + negative + serve-stale + prefetch</text>
-  <rect x="60" y="420" width="346" height="124" rx="14" fill="#0F1B2D" stroke="#60A5FA" stroke-opacity="0.30"/>
-  <text class="f" x="80" y="450" font-size="15" fill="#E9F1F7" text-anchor="start" font-weight="700">Authoritative</text>
-  <text class="f" x="80" y="474" font-size="12.5" fill="#93A7C0" text-anchor="start" font-weight="400">zones, all common RR types,</text>
-  <text class="f" x="80" y="493" font-size="12.5" fill="#93A7C0" text-anchor="start" font-weight="400">BIND zonefile import,</text>
-  <text class="f" x="80" y="512" font-size="12.5" fill="#93A7C0" text-anchor="start" font-weight="400">online DNSSEC signing</text>
-  <path d="M600.0 380V398.0H233.0V416" fill="none" stroke="#60A5FA" stroke-opacity="0.45" stroke-width="2"/>
-  <path d="M227.0 408L233.0 416L239.0 408" fill="none" stroke="#60A5FA" stroke-opacity="0.45" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-  <rect x="426" y="420" width="346" height="124" rx="14" fill="#0F1B2D" stroke="#2DD4BF" stroke-opacity="0.30"/>
-  <text class="f" x="446" y="450" font-size="15" fill="#E9F1F7" text-anchor="start" font-weight="700">Forwarding</text>
-  <text class="f" x="446" y="474" font-size="12.5" fill="#93A7C0" text-anchor="start" font-weight="400">plain / TCP / DoT / DoH / DoQ,</text>
-  <text class="f" x="446" y="493" font-size="12.5" fill="#93A7C0" text-anchor="start" font-weight="400">per-domain routing, per-group</text>
-  <text class="f" x="446" y="512" font-size="12.5" fill="#93A7C0" text-anchor="start" font-weight="400">upstreams, fastest-of-N</text>
-  <path d="M600.0 380V398.0H599.0V416" fill="none" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2"/>
-  <path d="M593.0 408L599.0 416L605.0 408" fill="none" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-  <rect x="792" y="420" width="346" height="124" rx="14" fill="#0F1B2D" stroke="#2DD4BF" stroke-opacity="0.30"/>
-  <text class="f" x="812" y="450" font-size="15" fill="#E9F1F7" text-anchor="start" font-weight="700">Recursive</text>
-  <text class="f" x="812" y="474" font-size="12.5" fill="#93A7C0" text-anchor="start" font-weight="400">iterative from the root,</text>
-  <text class="f" x="812" y="493" font-size="12.5" fill="#93A7C0" text-anchor="start" font-weight="400">QNAME minimisation,</text>
-  <text class="f" x="812" y="512" font-size="12.5" fill="#93A7C0" text-anchor="start" font-weight="400">DNSSEC validation</text>
-  <path d="M600.0 380V398.0H965.0V416" fill="none" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2"/>
-  <path d="M959.0 408L965.0 416L971.0 408" fill="none" stroke="#2DD4BF" stroke-opacity="0.45" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-  <rect x="60" y="584" width="1080" height="96" rx="14" fill="#0F1B2D" stroke="#60A5FA" stroke-opacity="0.30"/>
-  <text class="f" x="80" y="610" font-size="12" font-weight="700" letter-spacing="1.6" fill="#6E839E">PLATFORM  —  WHAT IT RECORDS, AND WHAT YOU DRIVE IT WITH</text>
-  <rect x="80" y="620" width="150" height="28" rx="14.0" fill="#60A5FA" fill-opacity="0.10" stroke="#60A5FA" stroke-opacity="0.45"/>
-  <text class="mono" x="155" y="638" font-size="13" fill="#60A5FA" text-anchor="middle">SQLite query log</text>
-  <rect x="240" y="620" width="174" height="28" rx="14.0" fill="#60A5FA" fill-opacity="0.10" stroke="#60A5FA" stroke-opacity="0.45"/>
-  <text class="mono" x="327" y="638" font-size="13" fill="#60A5FA" text-anchor="middle">Prometheus /metrics</text>
-  <rect x="424" y="620" width="197" height="28" rx="14.0" fill="#60A5FA" fill-opacity="0.10" stroke="#60A5FA" stroke-opacity="0.45"/>
-  <text class="mono" x="522" y="638" font-size="13" fill="#60A5FA" text-anchor="middle">REST /api/v1 + OpenAPI</text>
-  <rect x="631" y="620" width="174" height="28" rx="14.0" fill="#60A5FA" fill-opacity="0.10" stroke="#60A5FA" stroke-opacity="0.45"/>
-  <text class="mono" x="718" y="638" font-size="13" fill="#60A5FA" text-anchor="middle">WebSocket live feed</text>
-  <rect x="815" y="620" width="127" height="28" rx="14.0" fill="#60A5FA" fill-opacity="0.10" stroke="#60A5FA" stroke-opacity="0.45"/>
-  <text class="mono" x="878" y="638" font-size="13" fill="#60A5FA" text-anchor="middle">admin console</text>
-  <rect x="952" y="620" width="104" height="28" rx="14.0" fill="#60A5FA" fill-opacity="0.10" stroke="#60A5FA" stroke-opacity="0.45"/>
-  <text class="mono" x="1004" y="638" font-size="13" fill="#60A5FA" text-anchor="middle">trench CLI</text>
-  <text class="f" x="80" y="668" font-size="12" fill="#93A7C0" text-anchor="start" font-weight="400">retention and privacy levels · CSV / JSON-lines export · RBAC, API tokens, TOTP · Grafana dashboard</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="802" viewBox="0 0 1180 802" role="img" aria-labelledby="t d">
+  <title id="t">How a query moves through Trench</title>
+  <desc id="d">One ordered path down a single process. Validation, rate limiting and the rebinding guard can refuse a query; local zones, encrypted-DNS discovery, the filter and the cache can answer it outright and stop it going further. What survives every stage is forwarded to an upstream or resolved iteratively from the root with DNSSEC validation.</desc>
+  <style>
+    text { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+           "DejaVu Sans Mono", monospace; font-size: 14px; }
+    .h  { font-size: 15px; font-weight: 600; }
+    .lg { font-size: 12px; }
+    .bg   { fill: #ffffff; }
+    .ink  { fill: #1b1f24; }
+    .dim  { fill: #6a737d; }
+    .halt { fill: #a8474c; }  .s-halt { stroke: #a8474c; }
+    .here { fill: #35618e; }  .s-here { stroke: #35618e; }
+    .on   { fill: #4a7c3f; }  .s-on   { stroke: #4a7c3f; }
+    .rule { stroke: #d5dae0; }
+    @media (prefers-color-scheme: dark) {
+      .bg   { fill: #12151a; }
+      .ink  { fill: #e6eaf0; }
+      .dim  { fill: #8b95a3; }
+      .halt { fill: #d97c7e; }  .s-halt { stroke: #d97c7e; }
+      .here { fill: #7fa8d4; }  .s-here { stroke: #7fa8d4; }
+      .on   { fill: #85ad76; }  .s-on   { stroke: #85ad76; }
+      .rule { stroke: #2a2f38; }
+    }
+  </style>
+  <rect class="bg" width="1180" height="802"/>
+  <text class="h ink" x="56" y="50">how a query moves through it</text>
+  <text class="dim" x="56" y="74">one process, one ordered path, and every stage can be asked afterwards what it decided.</text>
+  <circle cx="60" cy="96" r="3.5" class="halt"/>
+  <text class="lg dim" x="72" y="100">refused here</text>
+  <circle cx="200.8" cy="96" r="3.5" class="here"/>
+  <text class="lg dim" x="212.8" y="100">answered here</text>
+  <circle cx="349.0" cy="96" r="3.5" class="on"/>
+  <text class="lg dim" x="361.0" y="100">carries on</text>
+  <text class="ink" x="296" y="132" text-anchor="end">a query arrives</text>
+  <text class="dim" x="352" y="132">over Do53, DoT, DoH, DoQ or DoH3</text>
+  <path class="rule" d="M318 138V735" fill="none" stroke-width="1.5"/>
+  <circle cx="318" cy="173" r="3.5" class="halt"/>
+  <path class="s-halt" d="M323 173h20" fill="none" stroke-width="1.5"/>
+  <text class="ink"  x="296" y="178" text-anchor="end">validate</text>
+  <text class="halt" x="352" y="178">malformed, or not a question</text>
+  <text class="dim"  x="748" y="178">FORMERR, or nothing at all</text>
+  <circle cx="318" cy="231" r="3.5" class="halt"/>
+  <path class="s-halt" d="M323 231h20" fill="none" stroke-width="1.5"/>
+  <text class="ink"  x="296" y="236" text-anchor="end">rate limit</text>
+  <text class="halt" x="352" y="236">over this client&#x27;s budget</text>
+  <text class="dim"  x="748" y="236">REFUSED, and counted</text>
+  <circle cx="318" cy="289" r="3.5" class="on"/>
+  <path class="s-on" d="M323 289h20" fill="none" stroke-width="1.5"/>
+  <text class="ink"  x="296" y="294" text-anchor="end">identify client</text>
+  <text class="on" x="352" y="294">by IP, CIDR, MAC or ClientID</text>
+  <text class="dim"  x="748" y="294">picks the group, the lists, the upstream</text>
+  <circle cx="318" cy="347" r="3.5" class="here"/>
+  <path class="s-here" d="M323 347h20" fill="none" stroke-width="1.5"/>
+  <text class="ink"  x="296" y="352" text-anchor="end">local zones</text>
+  <text class="here" x="352" y="352">a name you are authoritative for</text>
+  <text class="dim"  x="748" y="352">your own record, signed if the zone is</text>
+  <circle cx="318" cy="405" r="3.5" class="here"/>
+  <path class="s-here" d="M323 405h20" fill="none" stroke-width="1.5"/>
+  <text class="ink"  x="296" y="410" text-anchor="end">discovery</text>
+  <text class="here" x="352" y="410">_dns.resolver.arpa</text>
+  <text class="dim"  x="748" y="410">the encrypted endpoints, per RFC 9462</text>
+  <circle cx="318" cy="463" r="3.5" class="here"/>
+  <path class="s-here" d="M323 463h20" fill="none" stroke-width="1.5"/>
+  <text class="ink"  x="296" y="468" text-anchor="end">filter</text>
+  <text class="here" x="352" y="468">a rule, a list, a blocked service,</text>
+  <text class="dim"  x="748" y="468">0.0.0.0, NXDOMAIN, or a rewrite</text>
+  <text class="here" x="352" y="488">safe search, parental controls, a schedule</text>
+  <circle cx="318" cy="541" r="3.5" class="here"/>
+  <path class="s-here" d="M323 541h20" fill="none" stroke-width="1.5"/>
+  <text class="ink"  x="296" y="546" text-anchor="end">cache</text>
+  <text class="here" x="352" y="546">a hit, or a stale one while it refreshes</text>
+  <text class="dim"  x="748" y="546">the stored answer</text>
+  <circle cx="318" cy="599" r="3.5" class="on"/>
+  <path class="s-on" d="M323 599h20" fill="none" stroke-width="1.5"/>
+  <text class="ink"  x="296" y="604" text-anchor="end">resolve</text>
+  <text class="on" x="352" y="604">forward: an upstream, routed per domain</text>
+  <text class="dim"  x="748" y="604">over plain, TCP, DoT, DoH or DoQ</text>
+  <text class="on" x="352" y="624">recurse: from the root, QNAME minimised, DNSSEC validated</text>
+  <circle cx="318" cy="677" r="3.5" class="halt"/>
+  <path class="s-halt" d="M323 677h20" fill="none" stroke-width="1.5"/>
+  <text class="ink"  x="296" y="682" text-anchor="end">rebinding guard</text>
+  <text class="halt" x="352" y="682">an answer pointing into your LAN</text>
+  <text class="dim"  x="748" y="682">stripped before it reaches the client</text>
+  <circle cx="318" cy="735" r="3.5" class="ink"/>
+  <text class="ink" x="296" y="740" text-anchor="end">the answer</text>
+  <text class="dim" x="352" y="740">logged, counted, and named stage by stage by trench why</text>
 </svg>

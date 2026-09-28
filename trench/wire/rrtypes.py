@@ -50,11 +50,16 @@ class Type(IntEnum):
         return None
 
 
+#: Numeric type -> mnemonic, built once. `Type(t).name` is an enum lookup that
+#: runs `_missing_` and raises for anything unregistered, and this is called
+#: once per query (and once per record the query log writes): a dict `get` is
+#: the same answer for about half the cost, and none of the exception.
+_TYPE_TEXT: dict[int, str] = {int(t): t.name for t in Type}
+
+
 def type_to_text(t: int) -> str:
-    try:
-        return Type(t).name
-    except ValueError:
-        return f"TYPE{t}"
+    name = _TYPE_TEXT.get(t)
+    return name if name is not None else f"TYPE{t}"
 
 
 def type_from_text(s: str) -> int:

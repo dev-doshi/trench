@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 
+from support import blocked_engine
+
 from trench.cache import Cache
 from trench.clients import Client, ClientRegistry, Policy
 from trench.config import Config
@@ -51,3 +53,45 @@ def test_clientid_threaded_to_policy():
     # no ClientID -> default policy -> forwarded
     allowed = asyncio.run(pipe.resolve(mkquery(), "8.8.8.8", "https", ""))
     assert allowed.answers[0].rdata.to_text() == "1.2.3.4"
+
+
+# --- an exempted client must be exempt from *every* blocking path ---
+class CloakingForwarder:
+    """Answers with a CNAME onto a blocked tracker, the way a first-party
+    subdomain delegated to an analytics vendor does."""
+
+    async def resolve(self, query: Message, note=None) -> Message:
+        resp = query.reply(Rcode.NOERROR)
+        name = query.question.name
+        resp.answers.append(RR(name, Type.CNAME, Class.IN, 60,
+                               R.CNAME(Name.from_text("tracker.example."))))
+        resp.answers.append(RR(Name.from_text("tracker.example."), Type.A,
+                               Class.IN, 60, R.A("1.2.3.4")))
+        return resp
+
+
+def _cloak_pipe(policy: Policy) -> Pipeline:
+    cfg = Config()
+    cfg.filtering.cname_inspect = True
+    reg = ClientRegistry([Client("10.0.0.7", "ip", "host", policy)],
+                         default=Policy(name="default"))
+    return Pipeline(filter_engine=blocked_engine("tracker.example"),
+                    cache=Cache(), forwarder=CloakingForwarder(),
+                    counters=Counters(), config=cfg, clients=reg)
+
+
+def test_cname_cloak_still_blocks_a_normal_client():
+    pipe = _cloak_pipe(Policy(name="host", block=True))
+    resp = asyncio.run(pipe.resolve(mkquery("metrics.shop.example"), "10.0.0.7", "udp"))
+    assert resp.answers[0].rdata.to_text() == "0.0.0.0"
+
+
+def test_a_client_exempt_from_filtering_is_exempt_from_cloak_inspection_too():
+    """`block: false` used to turn off only the half of filtering that matches
+    on the question. The CNAME-cloak check and the answer-address check ran
+    regardless, so an exempted client was still sinkholed by them — which is
+    not what "filtering is off for this client" says."""
+    pipe = _cloak_pipe(Policy(name="host", block=False))
+    resp = asyncio.run(pipe.resolve(mkquery("metrics.shop.example"), "10.0.0.7", "udp"))
+    assert resp.answers[0].rdata.to_text() != "0.0.0.0"
+    assert resp.answers[-1].rdata.to_text() == "1.2.3.4"
