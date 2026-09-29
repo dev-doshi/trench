@@ -22,6 +22,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { api } from "../lib/api";
+import { nameOf, nameTitle, useNames } from "../lib/names";
 import { align, answerList } from "../lib/dnsname";
 import { isAuthored, isStale, kindOf, meta, outcomeOf } from "../lib/outcome";
 import {
@@ -56,7 +57,8 @@ const queryText = ref((route.query.q as string) || "");
 const ast = ref<Node>({ t: "all" });
 const qErr = ref("");
 
-const qctx: Ctx = { registrable };
+useNames();
+const qctx: Ctx = { registrable, deviceName: nameOf };
 watch(queryText, (v) => {
   try { ast.value = compile(v); qErr.value = ""; }
   catch (e) { qErr.value = e instanceof QueryError ? e.message : String(e); }
@@ -139,7 +141,7 @@ const ms = (us?: number) => (!us ? "—" : us >= 1000 ? `${(us / 1000).toFixed(1
 
 function exportCsv() {
   download("querylog.csv", toCsv(kept.value.map((r) => ({
-    ts: stamp(r.ts), client: r.client_ip, name: r.qname, type: r.qtype,
+    ts: stamp(r.ts), client: r.client_ip, device: nameOf(r.client_ip), name: r.qname, type: r.qtype,
     outcome: kindOf(r), rcode: r.rcode, ms: (r.elapsed_us || 0) / 1000,
     rule: r.rule || "", source: r.source || "", upstream: r.upstream || "",
   }))), "text/csv");
@@ -214,7 +216,7 @@ function exportNdjson() {
                   :aria-expanded="open === keyOf(r)" @click="toggle(r)"
                   @keydown.enter.prevent="toggle(r)" @keydown.space.prevent="toggle(r)">
                 <td :title="stamp(r.ts)" style="color:var(--b-ink-3)">{{ ago(r.ts) }}</td>
-                <td class="id">{{ r.client_id || r.client_ip }}</td>
+                <td class="id" :title="nameTitle(r.client_ip)">{{ nameOf(r.client_ip) || r.client_id || r.client_ip }}</td>
                 <td class="id">
                   <span class="dim">{{ align(r.qname).sub }}{{ align(r.qname).sub ? "." : "" }}</span>{{ align(r.qname).reg }}
                 </td>

@@ -684,6 +684,26 @@ class Pipeline:
         ctx = QueryContext(query=query, client_ip="127.0.0.1", proto="internal")
         return (await self._fetch(ctx, self.cache.key_for(query))).resp
 
+    async def ask_privately(self, query: Message) -> Message | None:
+        """Answer a question about this network, for the resolver's own use.
+
+        The console naming a device (clients/rdns.py): a PTR lookup of a LAN
+        address. It answers only names that stay on this network — our DHCP
+        names, or a special-use zone (engine/localonly.py) the operator has
+        routed, such as the router's reverse zone — and returns None for
+        anything else, so no caller can use it to send the household's
+        addresses to a public upstream. No client, so no query-log line and no
+        statistic; `_fetch` still hardens and caches the answer.
+        """
+        ctx = QueryContext(query=query, client_ip="127.0.0.1", proto="internal")
+        if self.hostnames is not None:
+            learned = self.hostnames.resolve(query)
+            if learned is not None:
+                return learned
+        if not (is_local_only(ctx.qname, self.local_suffixes) and self._routed(ctx)):
+            return None
+        return (await self._fetch_coalesced(ctx, self.cache.key_for(query))).resp
+
     async def _fetch_coalesced(self, ctx: QueryContext, key) -> _Answer:
         """One upstream query per distinct question in flight.
 

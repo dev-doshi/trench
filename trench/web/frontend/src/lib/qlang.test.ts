@@ -30,6 +30,7 @@ const ctx: Ctx = {
   registrable,
   clientsFor: (n) => (n.includes("shared") ? 4 : 1),
   firstSeen: (n) => (n.includes("novel") ? 1_000_000_000_000_000 - 60_000_000 : 1),
+  deviceName: (ip) => (ip === "10.0.4.71" ? "Dev-iPhone-13" : ""),
 };
 
 const row = (over: Partial<Row> = {}): Row => ({
@@ -243,6 +244,14 @@ eq("explain an empty query", explain(compile("")), "Everything.");
   ok("matcher accepts a matching row", f(row()));
   ok("matcher rejects a non-matching row", !f(row({ action: "cached" })));
 }
+
+// ------------------------------------------------------------------ device names
+ok("device: matches the name, case-insensitively", m("device:dev-iphone*", row()));
+ok("device: does not match another device", !m("device:dev-iphone*", row({ client_ip: "10.0.4.72" })));
+ok("device= is exact on the lower-cased name", m("device=dev-iphone-13", row()));
+ok("free text finds a device by its name", m("iphone", row()));
+ok("device: is never pushed to the server", !Object.keys(pushdown(compile("device=x"))).length);
+ok("without names in the context nothing matches", !evaluate(compile("device:dev*"), row(), { registrable }));
 
 // -------------------------------------------------------------------- report
 if (fails.length) {

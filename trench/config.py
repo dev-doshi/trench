@@ -298,6 +298,38 @@ class ClientCfg(Section):
     group: str = ""                   # filtering group from `filtering.groups`
 
 
+class ClientNamesConfig(Section):
+    """How the console puts names to the addresses in the query log.
+
+    A name you give a device always wins, then a DHCP lease of ours. Failing
+    both, the device's own network can usually say: a home router that hands
+    out addresses also answers reverse (PTR) lookups for them. Those lookups
+    are made only for private addresses, only where they cannot leave the
+    network — through a route configured for the reverse zone, or to `server`,
+    which must itself be a private address — and never on the query path.
+    """
+
+    reverse_lookup: bool = True
+    # Ask this server (typically the router) directly, instead of relying on
+    # an upstream route for the reverse zone. Empty uses the resolver's own
+    # routing. Private and loopback addresses only.
+    server: str = ""
+    refresh_hours: float = 6.0          # how long a looked-up name is trusted
+    # Apple's private Wi-Fi addresses and some Android builds register as a
+    # UUID or a bare hex string, which names nothing a person would recognise.
+    hide_random: bool = True
+
+    @field_validator("server")
+    @classmethod
+    def _private_server(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            return v
+        from .clients.rdns import parse_server
+        parse_server(v)                 # raises ValueError with the reason
+        return v
+
+
 class DhcpScopeCfg(Section):
     network: str
     range_start: str
@@ -495,6 +527,7 @@ class Config(Section):
     cache: CacheConfig = Field(default_factory=CacheConfig)
     filtering: FilterConfig = Field(default_factory=FilterConfig)
     clients: list[ClientCfg] = Field(default_factory=list)
+    client_names: ClientNamesConfig = Field(default_factory=ClientNamesConfig)
     zones: list[ZoneCfg] = Field(default_factory=list)
     tsig_keys: list[TSIGKeyCfg] = Field(default_factory=list)
     secondaries: list[SecondaryCfg] = Field(default_factory=list)

@@ -45,7 +45,7 @@ from ..clients.model import mask_ident
 #: appliers themselves; `App.adopters()` maps each to the method that runs it.
 ADOPTERS = ("upstream", "cache", "pipeline", "clients", "querylog", "fastpath",
             "prewarm", "gravity", "notary", "sources", "rules", "log", "proxies",
-            "updates")
+            "updates", "names")
 
 
 @dataclass
@@ -233,6 +233,26 @@ FIELDS: list[Field_] = [
                 "answers dropped · 3 nothing on disk."),
     Field_("querylog.retention_days", "Keep records for", "int", "Privacy",
            unit="days", min=0, max=3650, adopter="querylog"),
+
+    # ── devices ─────────────────────────────────────────────────────────────
+    Field_("client_names.reverse_lookup", "Name devices from the network", "bool",
+           "Devices", adopter="names",
+           help="Ask the router what each private address is called (a PTR "
+                "lookup). Only private addresses, never sent to a public "
+                "resolver. A name set on the Devices page always wins. Off "
+                "while the log keeps no client addresses (privacy level 1+)."),
+    Field_("client_names.server", "Ask this server", "text", "Devices",
+           adopter="names", placeholder="192.168.1.1",
+           help="Usually the router. Empty uses the upstream route for the "
+                "reverse zone, e.g. [/1.168.192.in-addr.arpa/]192.168.1.1; "
+                "with neither, devices keep their addresses. Private "
+                "addresses only."),
+    Field_("client_names.refresh_hours", "Look names up again after", "float",
+           "Devices", unit="h", min=0.1, max=168, adopter="names"),
+    Field_("client_names.hide_random", "Ignore random-looking names", "bool",
+           "Devices", adopter="names",
+           help="UUIDs, MAC-style and bare hex names, as registered by phones "
+                "with private Wi-Fi addresses."),
 
     # ── server ──────────────────────────────────────────────────────────────
     Field_("server.workers", "Worker processes", "int", "Server", min=0, max=64,
@@ -512,7 +532,7 @@ _TRI = ["inherit", "on", "off"]
 
 COLLECTIONS: list[Collection] = [
     Collection(
-        "clients", "Devices and their policy", "Filtering", "list",
+        "clients", "Devices and their policy", "Devices", "list",
         adopter="clients",
         help="A device may also be exempted with the switch on the Devices "
              "page; this is the same policy, written out in full.",
@@ -609,7 +629,7 @@ _COL_BY_PATH = {c.path: c for c in COLLECTIONS}
 #: Tab order. A field whose group is missing here renders nowhere at all, so
 #: `test_every_field_lands_in_a_group_the_form_renders` holds the two together —
 #: three notary settings were declared, saved and displayed by nothing.
-GROUPS = ["Resolution", "Filtering", "Cache", "Protection", "Security", "Privacy",
+GROUPS = ["Resolution", "Filtering", "Devices", "Cache", "Protection", "Security", "Privacy",
           "Listeners", "Server", "Zones", "DHCP", "Certificates", "Console",
           "Updates", "Deployment"]
 

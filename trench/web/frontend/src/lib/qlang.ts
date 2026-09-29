@@ -147,6 +147,8 @@ export interface Ctx {
   clientsFor?: (name: string) => number;
   /** epoch microseconds when this network first ever asked this name */
   firstSeen?: (name: string) => number | undefined;
+  /** the name a client address is known by (manual, DHCP or the router's) */
+  deviceName?: (ip: string) => string;
 }
 
 const lower = (v: string | undefined) => (v || "").toLowerCase();
@@ -156,7 +158,8 @@ export const FIELDS: Record<string, FieldDef> = {
   reg: { kind: "text", get: (r, c) => c.registrable(r.qname), help: "registrable domain (eTLD+1)", noun: "the registrable domain" },
   tld: { kind: "text", get: (r) => lower(r.qname).replace(/\.$/, "").split(".").pop() || "", help: "top-level domain", noun: "the suffix" },
   client: { kind: "text", get: (r) => lower(r.client_ip), param: "client", help: "client address", noun: "the device address" },
-  id: { kind: "text", get: (r) => lower(r.client_id), help: "client identity label", noun: "the device name" },
+  id: { kind: "text", get: (r) => lower(r.client_id), help: "client identity label", noun: "the client identity" },
+  device: { kind: "text", get: (r, c) => lower(c.deviceName?.(r.client_ip)), help: "device name (yours, DHCP's or the router's)", noun: "the device name" },
   action: { kind: "text", get: (r) => lower(r.action), param: "action", help: "outcome: blocked, cached, forwarded, failed, authoritative…", noun: "the outcome" },
   rcode: { kind: "text", get: (r) => lower(r.rcode), param: "rcode", help: "response code", noun: "the response code" },
   upstream: { kind: "text", get: (r) => lower(r.upstream), param: "upstream", help: "resolver that answered", noun: "the upstream" },
@@ -403,7 +406,7 @@ export function evaluate(n: Node, r: Row, ctx: Ctx): boolean {
     case "kind": return kindOf(r) === n.kind;
     case "free": {
       const hay = lower(r.qname) + " " + lower(r.client_ip) + " " + lower(r.client_id) +
-        " " + lower(r.rule) + " " + lower(r.reason);
+        " " + lower(ctx.deviceName?.(r.client_ip)) + " " + lower(r.rule) + " " + lower(r.reason);
       return globMatch(hay, n.value);
     }
     case "cmp": {

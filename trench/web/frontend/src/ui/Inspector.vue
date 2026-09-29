@@ -13,6 +13,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { api } from "../lib/api";
+import { SOURCE_TEXT as SOURCE, entryOf, nameOf, nameTitle, useNames } from "../lib/names";
 import { align } from "../lib/dnsname";
 import { KINDS, kindOf, meta } from "../lib/outcome";
 import { term, type Row } from "../lib/qlang";
@@ -24,6 +25,7 @@ import Spine from "./Spine.vue";
 const router = useRouter();
 const s = store.state;
 const nf = new Intl.NumberFormat();
+useNames();
 const hist = ref<{ rows: Row[]; total: number }>({ rows: [], total: 0 });
 const loading = ref(false);
 
@@ -149,7 +151,12 @@ const ms = (us?: number) => (!us ? "—" : us >= 1000 ? `${(us / 1000).toFixed(1
           <span class="t" style="display:block" v-if="isDomain">
             <span style="color:var(--b-ink-3)">{{ align(ent.value).sub }}{{ align(ent.value).sub ? "." : "" }}</span>{{ align(ent.value).reg }}
           </span>
-          <span class="t" style="display:block" v-else>{{ ent.value }}</span>
+          <template v-else>
+            <span class="t" style="display:block" :title="nameTitle(ent.value)">{{ nameOf(ent.value) || ent.value }}</span>
+            <span class="b-cap" v-if="entryOf(ent.value)" style="display:block;color:var(--b-ink-3)">
+              {{ ent.value }} · {{ SOURCE[entryOf(ent.value)!.source] }}
+            </span>
+          </template>
         </div>
         <span class="x">
           <button class="btn" @click="store.closeInspector()" aria-label="Close" title="Close (Esc)">
@@ -220,7 +227,7 @@ const ms = (us?: number) => (!us ? "—" : us >= 1000 ? `${(us / 1000).toFixed(1
             <tbody>
               <tr v-for="(r, i) in all.slice(0, 14)" :key="r.ts + '-' + i">
                 <td style="color:var(--b-ink-3)">{{ stamp(r.ts) }}</td>
-                <td class="id">{{ isDomain ? (r.client_id || r.client_ip) : r.qname }}</td>
+                <td class="id" :title="isDomain ? nameTitle(r.client_ip) : undefined">{{ isDomain ? (nameOf(r.client_ip) || r.client_id || r.client_ip) : r.qname }}</td>
                 <td>
                   <span class="oc">
                     <i :style="kindOf(r) === 'unknown' ? '' : `background:var(--o-${kindOf(r)})`" />

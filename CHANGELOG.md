@@ -8,6 +8,22 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Device names instead of bare addresses.** Trench now asks the router for
+  the name of each device in the query log with a reverse (PTR) lookup, the
+  way Pi-hole does, and every view that shows a client shows its name: Overview,
+  Browse, Log, Live, Devices, History, the inspector and the evidence panel.
+  The address stays beside the name, and hovering tells you where the name came
+  from. A name you gave a device beats Trench's DHCP lease, which beats the
+  router. The query language gains `device:` and free text also matches device
+  names. The settings are under **Settings → Devices** (`client_names.*`).
+  Only private addresses are looked up, and only against the router's own
+  reverse zone when you have routed it (`[/178.168.192.in-addr.arpa/]…`) or a
+  `client_names.server` that must itself be a private address, so the list of
+  household devices never reaches a public resolver. Lookups run in a bounded
+  background sweep, never on the query path. The name a device reports is
+  reduced to one plain label, and random-looking names such as Apple's
+  per-network UUIDs and MAC-derived names are hidden. At privacy level 1 or
+  higher nothing is looked up and only names you set are shown.
 - **Overview, the console's front page.** The last 24 hours or 7 days as
   Pi-hole and Technitium show them: totals with sparklines, queries per hour
   stacked by outcome, outcome, record-type and upstream shares, the busiest

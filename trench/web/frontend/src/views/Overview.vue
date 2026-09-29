@@ -10,6 +10,7 @@
  */
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { api } from "../lib/api";
+import { nameOf, nameTitle, useNames } from "../lib/names";
 import { KINDS, fillVar, kindOf, meta, type Kind } from "../lib/outcome";
 import { term, type Row } from "../lib/qlang";
 import Bars from "../ui/Bars.vue";
@@ -39,7 +40,7 @@ const activity = ref<Grouped[]>([]);
 const names = ref<Ranked>([]);
 const blocked = ref<Ranked>([]);
 const devices = ref<Ranked>([]);
-const deviceNames = ref<Map<string, string>>(new Map());
+useNames();
 const stats = ref<{ enabled: boolean; blocklist_size: number; version: string } | null>(null);
 const span = ref({ since: 0, until: 0 });
 const loading = ref(true);
@@ -66,10 +67,9 @@ async function load() {
       an({ group: "qname", action: "blocked", top: 10 }),
       an({ group: "client_ip", top: 10 }),
       api.get("/stats"),
-      api.get("/clients/manage").catch(() => ({ clients: [] })),
     ]);
     if (mine !== seq) return;           // a newer range was asked for meanwhile
-    const [h, lat, latAll, qt, up, act, n, b, d, st, cl] = r;
+    const [h, lat, latAll, qt, up, act, n, b, d, st] = r;
     hourly.value = h.series || [];
     latency.value = lat.series?.[0]?.points || [];
     latencyAll.value = latAll.rows?.[0]?.[1] ?? null;
@@ -81,9 +81,6 @@ async function load() {
     blocked.value = b.rows || [];
     devices.value = d.rows || [];
     stats.value = st;
-    deviceNames.value = new Map((cl.clients || [])
-      .filter((x: any) => x.name && x.ident)
-      .map((x: any) => [String(x.ident).toLowerCase(), x.name]));
     span.value = { since, until };
     updated.value = new Date();
     err.value = "";
@@ -159,7 +156,7 @@ const stacks = computed(() => KINDS.filter((k) => byKind.value.has(k)).map((k) =
 const outcomeParts = computed(() => KINDS.filter((k) => totals.value.by[k]).map((k) => ({
   name: meta(k).label, value: totals.value.by[k], colour: colourOf(k),
 })));
-const who = (ip: string) => deviceNames.value.get(ip.toLowerCase()) || "";
+const who = nameOf;
 /* Small multiples, not overlaid lines: one row per device, each its own line
  * on a shared scale, so the name sits beside the shape it belongs to. */
 const activityRows = computed(() => {
@@ -281,7 +278,7 @@ const clock = computed(() => updated.value?.toLocaleTimeString([], { hour: "2-di
           <table class="tb ov-tb ov-mult" v-if="activityRows.length">
             <tbody>
               <tr v-for="r in activityRows" :key="r.ip">
-                <td class="id"><RouterLink :to="browse('client', r.ip)" class="lnk" :title="r.ip">{{ who(r.ip) || r.ip }}</RouterLink></td>
+                <td class="id"><RouterLink :to="browse('client', r.ip)" class="lnk" :title="nameTitle(r.ip)">{{ who(r.ip) || r.ip }}</RouterLink></td>
                 <td class="ov-sp"><Spark :values="r.values" :colour="LINE" :max="r.top" /></td>
                 <td class="r">{{ nf.format(r.total) }}</td>
               </tr>
@@ -330,7 +327,7 @@ const clock = computed(() => updated.value?.toLocaleTimeString([], { hour: "2-di
           <table class="tb ov-tb">
             <tbody>
               <tr v-for="[ip, v] in devices" :key="ip">
-                <td class="id"><RouterLink :to="browse('client', ip)" class="lnk" :title="ip">{{ who(ip) || ip }}</RouterLink>
+                <td class="id"><RouterLink :to="browse('client', ip)" class="lnk" :title="nameTitle(ip)">{{ who(ip) || ip }}</RouterLink>
                   <span class="dim" v-if="who(ip)"> {{ ip }}</span></td>
                 <td class="ov-m"><div class="mtr"><i :style="{ width: width(v, devices), background: 'var(--b-ink-3)' }" /></div></td>
                 <td class="r">{{ nf.format(v) }}</td>

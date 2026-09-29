@@ -22,6 +22,7 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { align } from "../lib/dnsname";
+import { nameOf, nameTitle, useNames } from "../lib/names";
 import { KINDS, kindOf, meta } from "../lib/outcome";
 import { term, type Row } from "../lib/qlang";
 import { store, type QueryEvent } from "../lib/store";
@@ -31,6 +32,7 @@ const router = useRouter();
 const s = store.state;
 const frozen = ref(false);
 const nf = new Intl.NumberFormat();
+useNames();
 
 /** WS events carry seconds; everything else in this app is microseconds. */
 const asRow = (e: QueryEvent): Row => ({
@@ -200,7 +202,7 @@ function open(r: Row) {
             <span class="tape-n">
               <span class="dim">{{ align(r.qname).sub }}{{ align(r.qname).sub ? "." : "" }}</span>{{ align(r.qname).reg }}
             </span>
-            <span class="tape-d">{{ r.client_ip }}</span>
+            <span class="tape-d" :title="nameTitle(r.client_ip)">{{ nameOf(r.client_ip) || r.client_ip }}</span>
             <span class="tape-ms">{{ ms(r.elapsed_us) }}</span>
           </div>
           <p class="b-void-state" v-if="!tape.length">

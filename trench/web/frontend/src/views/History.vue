@@ -22,6 +22,7 @@
  */
 import { computed, onMounted, ref } from "vue";
 import { api } from "../lib/api";
+import { label, nameOf, nameTitle, useNames } from "../lib/names";
 import Rhythm from "../ui/Rhythm.vue";
 import Spine from "../ui/Spine.vue";
 import Trend from "../ui/Trend.vue";
@@ -63,6 +64,9 @@ const data = ref<any>(null);
 const loading = ref(false);
 const err = ref("");
 const nf = new Intl.NumberFormat();
+useNames();
+/* the group data came back for: device rows are keyed by address */
+const byDevice = computed(() => data.value?.group === "client_ip" || group.value === "client_ip");
 
 const unit = computed(() => METRICS.find((m) => m.key === metric.value)!.unit);
 
@@ -87,7 +91,7 @@ const series = computed(() => {
   const s = data.value?.series;
   if (!Array.isArray(s)) return [];
   return s.map((x: any) => ({
-    name: String(x.group ?? "all"),
+    name: byDevice.value && x.group ? label(String(x.group)) : String(x.group ?? "all"),
     points: (x.points || []) as [number, number][],
     kind: ["blocked", "blocked", "failed", "cached"].includes(String(x.group))
       ? String(x.group) === "blocked" ? "blocked" : String(x.group)
@@ -167,7 +171,10 @@ const shape = computed(() => {
           </thead>
           <tbody>
             <tr v-for="r in ranked" :key="r.name">
-              <td class="id">{{ r.name }}</td>
+              <td class="id" v-if="byDevice" :title="nameTitle(r.name)">
+                {{ nameOf(r.name) || r.name }}<span class="dim" v-if="nameOf(r.name)"> {{ r.name }}</span>
+              </td>
+              <td class="id" v-else>{{ r.name }}</td>
               <td class="r">{{ nf.format(r.v) }}</td>
               <td>
                 <Spine :by="{ cache: 0, upstream: r.v, local: 0, blocked: 0, failed: 0, unknown: 0 }"

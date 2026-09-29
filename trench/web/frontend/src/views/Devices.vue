@@ -28,12 +28,14 @@ import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { api } from "../lib/api";
 import { registrable } from "../lib/dnsname";
+import { entryOf, nameTitle, useNames } from "../lib/names";
 import { kindOf } from "../lib/outcome";
 import type { Row } from "../lib/qlang";
 import Spine from "../ui/Spine.vue";
 
 const router = useRouter();
 const nf = new Intl.NumberFormat();
+useNames();
 
 const managed = ref<any[]>([]);
 const groups = ref<any[]>([]);
@@ -112,13 +114,17 @@ const byIdent = computed(() => {
 const table = computed(() => {
   const out = [...seen.value.values()].map((e) => {
     const c = byIdent.value.get(e.ip.toLowerCase());
+    // A name you gave wins; otherwise Trench's lease or the router's reverse
+    // lookup. Those are the device's own claim, so the row says so.
+    const found = c?.name ? undefined : entryOf(e.ip);
     return {
       ...e,
       managed: c || null,
       // No entry at all means the household policy applies, which is filtered.
       filtered: c ? policyOf(c).block !== false : true,
-      name: c?.name || "",
-      identBy: c?.ident_type || "",
+      name: c?.name || found?.name || "",
+      manualName: c?.name || "",
+      identBy: c?.name ? c.ident_type || "" : found ? FOUND_BY[found.source] || "" : c?.ident_type || "",
       group: c?.group_name || c?.group || "",
       vocabN: e.vocab.size,
       blockedPct: Math.round((e.blocked / Math.max(1, e.total)) * 100),
@@ -128,6 +134,9 @@ const table = computed(() => {
   });
   return out.sort((a, b) => b.total - a.total);
 });
+
+/** How a name that you did not type was learned. */
+const FOUND_BY: Record<string, string> = { dhcp: "DHCP lease", network: "named by the router" };
 
 const max = computed(() => Math.max(1, ...table.value.map((t) => t.total)));
 const named = computed(() => table.value.filter((t) => t.name));
@@ -175,7 +184,7 @@ async function setFiltering(d: any, on: boolean) {
                     { policy: { ...policyOf(d.managed), block: on } });
     } else {
       await api.post("/clients/manage",
-                     { ident: ip, ident_type: "ip", name: d.name || "",
+                     { ident: ip, ident_type: "ip", name: d.manualName || "",
                        policy: { block: on } });
     }
     const fresh = await api.get("/clients/manage");
@@ -224,7 +233,7 @@ function browse(ip: string) {
           </thead>
           <tbody>
             <tr v-for="d in named" :key="d.ip" class="click" @click="browse(d.ip)">
-              <td class="id">
+              <td class="id" :title="nameTitle(d.ip)">
                 {{ d.name }}
                 <span class="sub">
                   {{ d.ip }}<template v-if="d.group"> · {{ d.group }}</template>

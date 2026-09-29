@@ -184,6 +184,17 @@ clients: []
   #    group: kids, upstream_group: family}
   # - {ident: 192.168.1.0/24, type: cidr, name: lan, tags: [household]}
 
+# --- device names in the console, from reverse lookups to the router ---
+# Only private addresses are looked up, and only against the router's reverse
+# zone when upstream.servers routes it ([/1.168.192.in-addr.arpa/]192.168.1.1)
+# or against `server`, which must itself be a private address. Nothing is
+# looked up at querylog.privacy_level 1 or higher. Names you set above win.
+client_names:
+  reverse_lookup: true
+  server: ""             # e.g. 192.168.1.1; empty = use the routed reverse zone
+  refresh_hours: 6.0     # how long a name is kept before it is asked again
+  hide_random: true      # hide UUID/MAC-like names (Apple private addresses)
+
 # --- authoritative zones + local DNS ---
 zones: []
 # Shared secrets for authenticating zone transfers, NOTIFY and dynamic UPDATE.

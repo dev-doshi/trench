@@ -22,6 +22,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { api } from "../lib/api";
+import { nameOf, nameTitle, useNames } from "../lib/names";
 import {
   aggregate, asQuery, FACETS, histogram, narrow, PLANS, SORTS, sortNodes,
   summarise, type FacetKey, type Node, type SortKey,
@@ -65,7 +66,7 @@ const rows = ref<Row[]>([]);
 const total = ref(0);
 const loading = ref(true);
 const err = ref("");
-const labels = ref<Record<string, string>>({});
+useNames();
 
 const queryText = ref((route.query.q as string) || "");
 const ast = ref<Ast>({ t: "all" });
@@ -88,6 +89,7 @@ const qctx: Ctx = {
   registrable,
   clientsFor: (n) => clientsPerName.value.get(n) ?? 1,
   firstSeen: (n) => firstSeenPerName.value.get(n),
+  deviceName: nameOf,
 };
 const clientsPerName = computed(() => {
   const m = new Map<string, Set<string>>();
@@ -360,16 +362,6 @@ onMounted(() => {
   const w = route.query.w as string | undefined;
   if (w && Number(w) >= 0 && Number(w) < WINDOWS.length) winIdx.value = Number(w);
 
-  api.get("/clients").then((d: any) => {
-    const list = Array.isArray(d) ? d : d?.clients || d?.rows || [];
-    const out: Record<string, string> = {};
-    for (const c of list) {
-      const ip = c.ip || c.client_ip || c.address || c.client;
-      const nm = c.name || c.label || c.hostname || c.id;
-      if (ip && nm && ip !== nm) out[String(ip)] = String(nm);
-    }
-    labels.value = out;
-  }).catch(() => {});
   load();
 });
 onUnmounted(() => window.removeEventListener("keydown", onKey));
@@ -378,7 +370,7 @@ watch(queryText, () => { nextTick(syncUrl); });
 
 /** A device row shows its name and its address; both are identifiers. */
 function rowLabel(key: FacetKey, value: string) {
-  if (key === "device") return { dim: labels.value[value] ? value + " " : "", main: labels.value[value] || value };
+  if (key === "device") { const n = nameOf(value); return { dim: n ? value + " " : "", main: n || value }; }
   if (key === "name" || key === "domain") {
     const a = align(value);
     return { dim: a.sub ? a.sub + "." : "", main: a.reg };
@@ -468,7 +460,7 @@ const planName = computed(() =>
                :class="{ on: picked[ci] === n.value, cursor: cursor[0] === ci && cursor[1] === ri }"
                @click="pick(ci, n.value)">
             <span class="bw-row-mk" v-if="n.authored" :title="`${n.authored} decided by your own rules`" />
-            <span class="bw-row-v">
+            <span class="bw-row-v" :title="col.key === 'device' ? nameTitle(n.value) : undefined">
               <span class="dim">{{ rowLabel(col.key, n.value).dim }}</span>{{ rowLabel(col.key, n.value).main }}
             </span>
             <span class="bw-row-t b-num">{{ nf.format(n.total) }}</span>

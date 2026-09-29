@@ -267,6 +267,7 @@ class APIServer:
         r.add_post(f"{API}/update/apply", self.update_apply)
         r.add_post(f"{API}/update/rollback", self.update_rollback)
         r.add_get(f"{API}/clients", self.clients)
+        r.add_get(f"{API}/clients/names", self.device_names)
         r.add_get(f"{API}/clients/manage", self.clients_list)
         r.add_post(f"{API}/clients/manage", self.clients_create)
         r.add_put(f"{API}/clients/manage/{{cid}}", self.clients_update)
@@ -949,6 +950,29 @@ class APIServer:
         top = self.app.counters.clients.most_common(50)
         return web.json_response({"top_clients": top})
 
+    async def device_names(self, request: web.Request) -> web.Response:
+        """What each client address is called, and who said so.
+
+        `source` is `manual` (set on the Devices page or in the config), `dhcp`
+        (a lease of ours) or `network` (the router's answer to a reverse
+        lookup). Only reads: the lookups run on their own schedule, so this
+        never waits on DNS. When the log keeps no client addresses (privacy
+        level 1 and up) the network's names are withheld as well — putting a
+        name to every address is exactly what that level turns off.
+        """
+        self._require(request, "viewer")
+        names = self.app.device_names()
+        if self.app.config.querylog.privacy_level >= 1:
+            names = {ip: n for ip, n in names.items() if n["source"] == "manual"}
+        c = self.app.config.client_names
+        return web.json_response({
+            "names": names,
+            "lookup": {
+                "enabled": bool(c.reverse_lookup and self.app.client_names is not None),
+                "via": c.server or ("route" if c.reverse_lookup else ""),
+            },
+        })
+
     async def whatif(self, request: web.Request) -> web.Response:
         """Dry-run a proposed rule change against the recorded query history:
         which domains would flip block/allow, weighted by how often they were
@@ -1453,6 +1477,8 @@ _OPENAPI = {
 
         # --- clients ------------------------------------------------------------
         f"{API}/clients": {"get": {"summary": "Clients seen on the network (viewer)"}},
+        f"{API}/clients/names": {
+            "get": {"summary": "The name each client address is known by (viewer)"}},
         f"{API}/clients/manage": {
             "get": {"summary": "Configured per-client policies (viewer)"},
             "post": {"summary": "Create a per-client policy (editor)"}},

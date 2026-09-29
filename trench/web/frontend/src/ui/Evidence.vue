@@ -14,6 +14,7 @@
  */
 import { computed } from "vue";
 import { align, answerList, classifyAddr, isSinkhole, shape } from "../lib/dnsname";
+import { nameOf, nameTitle, useNames } from "../lib/names";
 import { KINDS, isAuthored, isStale, meta, outcomeOf } from "../lib/outcome";
 import type { Summary } from "../lib/facets";
 import { term, type Row } from "../lib/qlang";
@@ -22,6 +23,7 @@ import { copyText } from "../lib/util";
 import Ico from "./Ico.vue";
 import Percentiles from "./Percentiles.vue";
 
+useNames();
 const props = defineProps<{
   /** what the columns have narrowed to */
   rows: Row[];
@@ -96,7 +98,7 @@ function copyChain() {
   if (!r || !oc.value) return;
   const L = (k: string, v: string) => k.padEnd(9) + v;
   copyText([
-    L("WHO", `${r.client_ip}${r.client_id ? "  " + r.client_id : ""}`),
+    L("WHO", `${r.client_ip}${nameOf(r.client_ip) ? "  " + nameOf(r.client_ip) : ""}${r.client_id ? "  " + r.client_id : ""}`),
     L("ASKED", `${name.value}  ${r.qtype}  ${when.value}`),
     L("VERDICT", `${oc.value.sentence} — ${decided.value}`),
     L("SOURCE", r.source || "—"),
@@ -131,7 +133,8 @@ function copyChain() {
       <dl class="dep">
         <dt>Who</dt>
         <dd>
-          <button type="button" class="lnk" @click="store.inspect('client', row.client_ip)">{{ row.client_ip }}</button>
+          <button type="button" class="lnk" @click="store.inspect('client', row.client_ip)" :title="nameTitle(row.client_ip)">{{ nameOf(row.client_ip) || row.client_ip }}</button>
+          <span v-if="nameOf(row.client_ip)" class="note">{{ row.client_ip }}</span>
           <span v-if="row.client_id" class="note">{{ row.client_id }}</span>
           <span v-else class="none">unnamed — known only by address</span>
         </dd>

@@ -140,6 +140,11 @@ class App:
         self.contract_failures: list = []
         # Set when DHCP starts with `register_dns` on (primary worker only).
         self.hostnames: HostNames | None = None
+        # Reverse-looked-up device names for the console, armed in
+        # `_adopt_names` (primary only: the API runs there).
+        self.client_names: Any = None
+        self._names_ask: Any = None           # a Forwarder for `client_names.server`
+        self._names_boot: asyncio.Task | None = None
         self.pipeline.ledger = self.ledger
         # Encrypted-DNS discovery: what we tell clients about our own DoT/DoH/
         # DoQ endpoints, over DNS (DDR) and over DHCP (DNR).
@@ -676,6 +681,7 @@ class App:
             "rules": self._adopt_rules,
             "log": self._adopt_log,
             "proxies": self._adopt_proxies,
+            "names": self._adopt_names,
         }
 
     @staticmethod
@@ -918,6 +924,98 @@ class App:
             self.scheduler.every(c.prewarm_interval, self._prewarm_sweep, name="prewarm")
         else:
             self.scheduler.cancel("prewarm")
+
+    async def _adopt_names(self) -> None:
+        """Arm, re-arm or drop the device-name sweep (clients/rdns.py).
+
+        Rebuilt from scratch on any change: a different server or a switch of
+        `hide_random` makes every name already held a possibly wrong one.
+        """
+        c = self.config.client_names
+        self.scheduler.cancel("client-names")
+        if self._names_boot is not None and not self._names_boot.done():
+            self._names_boot.cancel()
+        old, self._names_ask = self._names_ask, None
+        if old is not None:
+            try:
+                await old.close()
+            except Exception:
+                log.debug("closing the device-name forwarder failed", exc_info=True)
+        self.client_names = None
+        if not (self.primary and c.reverse_lookup):
+            return
+        from .clients.rdns import ClientNames, parse_server
+        if c.server:
+            host, port = parse_server(c.server)
+            spec = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+            self._names_ask = Forwarder([spec], strategy="sequential", timeout=2.0)
+            fwd = self._names_ask
+
+            async def ask(q):
+                return await fwd.resolve(q)
+        else:
+            ask = self.pipeline.ask_privately
+        self.client_names = ClientNames(ask, ttl=c.refresh_hours * 3600,
+                                        hide_random=c.hide_random)
+        # Often enough that a new device is named within a couple of minutes;
+        # a round only asks about addresses that are new or past their time.
+        self.scheduler.every(120.0, self._names_sweep, name="client-names")
+        self._names_boot = asyncio.ensure_future(self._names_first())
+
+    async def _names_first(self) -> None:
+        await asyncio.sleep(5.0)
+        try:
+            await self._names_sweep()
+        except Exception:
+            log.exception("naming devices failed")
+
+    async def _names_sweep(self) -> None:
+        names = self.client_names
+        if names is None or self.config.querylog.privacy_level >= 1:
+            return
+        ips = [ip for ip, _ in self.counters.clients.most_common(256)]
+        if self.db is not None:
+            # The log sees every worker's clients; the counters only this one's.
+            # From the hourly rollups, so this costs a few hundred rows.
+            since = int(time.time()) // 3600 * 3600 - 24 * 3600
+            try:
+                rows = await self.db.fetchall(
+                    "SELECT client_ip, SUM(n) FROM querylog_hour WHERE hour >= ?"
+                    " GROUP BY client_ip ORDER BY 2 DESC LIMIT 512", (since,))
+                ips = [r[0] for r in rows if r[0]] + ips
+            except Exception:
+                log.debug("reading recent clients for naming failed", exc_info=True)
+        asked = await names.sweep(ips)
+        if asked:
+            log.debug("asked the network for %d device names", asked)
+
+    def device_names(self) -> dict[str, dict]:
+        """Every name the console can put to an address, best source first.
+
+        A name the operator gave wins, then a lease of ours, then what the
+        router reported. CIDR entries are left out: a network's name labelling
+        each device on it would read as that device's name.
+        """
+        out: dict[str, dict] = {}
+        if self.client_names is not None:
+            for ip, (name, fqdn) in self.client_names.known().items():
+                out[ip] = {"name": name, "source": "network", "fqdn": fqdn}
+        if self.hostnames is not None:
+            for e in self.hostnames.entries():
+                out[e["ip"]] = {"name": e["name"].split(".", 1)[0], "source": "dhcp",
+                                "fqdn": e["name"]}
+        reg = self.clients
+        if reg is not None:
+            from .clients.registry import _NEIGHBOURS
+            for c in reg.exact.values():
+                if c.name:
+                    out[c.ident] = {"name": c.name, "source": "manual", "fqdn": ""}
+            if reg.by_mac:
+                for ip, mac in _NEIGHBOURS.items():
+                    c = reg.by_mac.get(mac)
+                    if c is not None and c.name:
+                        out[ip] = {"name": c.name, "source": "manual", "fqdn": ""}
+        return out
 
     async def _adopt_notary(self) -> None:
         """Re-arm the quorum checks for the pinned names (empty list disables)."""
@@ -1241,7 +1339,7 @@ class App:
 
     async def stop(self) -> None:
         self.scheduler.stop()
-        for task in (self._bootstrap, self._bootstrap_cert):
+        for task in (self._bootstrap, self._bootstrap_cert, self._names_boot):
             if task is not None and not task.done():
                 task.cancel()
         if self.primary and self.config.cache.persist:
@@ -1261,6 +1359,11 @@ class App:
         # unclosed database is worse than a lost write: aiosqlite's worker
         # thread is not a daemon, so the interpreter would never exit.
         stoppers: list = []
+        if self._names_ask is not None:
+            try:
+                await self._names_ask.close()
+            except Exception:
+                log.debug("closing the device-name forwarder failed", exc_info=True)
         if self.api is not None:
             stoppers.append(self.api)
         if self.auth is not None:
@@ -1337,6 +1440,7 @@ class App:
         await self._adopt_notary()
         await self._adopt_updates()
         await self._adopt_prewarm()
+        await self._adopt_names()
         # The retention sweep belongs to the query log and is armed by its
         # applier (`_adopt_querylog`), which runs during `setup_storage`.
         if not self.primary and self.nworkers > 1:
