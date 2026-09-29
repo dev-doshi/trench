@@ -30,6 +30,7 @@ from ..wire.edns import ECS, Edns
 from ..wire.name import Name
 from ..wire.rrtypes import EDNSOption, Flags, Opcode, Rcode, type_to_text
 from . import zerox20
+from .access import PLAINTEXT, RecursionAcl
 from .context import QueryContext
 from .cookies import COOKIE
 from .rebinding import scrub
@@ -152,6 +153,7 @@ class Pipeline:
         self.ratelimiter = RateLimiter(getattr(sec, "rate_limit", 0.0),
                                        getattr(sec, "rate_burst", 0),
                                        workers=self.workers)
+        self.recursion_acl = RecursionAcl(getattr(sec, "recursion_clients", ()))
         self.rebinding = bool(getattr(sec, "rebinding_protection", False))
         self.local_suffixes = tuple(getattr(sec, "local_suffixes", ()))
         self.use_0x20 = bool(getattr(sec, "use_0x20", False))
@@ -395,6 +397,15 @@ class Pipeline:
                 ctx.response = auth
                 ctx.action = "authoritative"
                 return
+
+        # 2b-0. Everything past this point is recursion or names that are ours
+        # to keep (device names, discovery): plaintext DNS from outside the
+        # local networks stops here. See engine/access.py.
+        if ctx.proto in PLAINTEXT and not self.recursion_acl.allows(ctx.client_ip):
+            ctx.response = ctx.query.reply(Rcode.REFUSED)
+            ctx.action = "refused"
+            ctx.reason = "recursion not allowed for this client"
+            return
 
         # 2b-i. Encrypted-DNS discovery (RFC 9462). Before everything else that
         # could answer for it: `_dns.resolver.arpa` is a special-use name that

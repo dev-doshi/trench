@@ -95,3 +95,14 @@ async def shutdown_api(app):
     await app.api.stop()
     if app.db is not None:
         await app.db.close()
+
+
+def open_resolver(config):
+    """`config`, answering recursion for any client over plain DNS.
+
+    Suites that exercise the pipeline pass arbitrary public addresses as the
+    client — ECS needs one — and by default those are refused before anything
+    under test runs. `test_recursion_acl` covers the refusal itself.
+    """
+    config.security.recursion_clients = ["0.0.0.0/0", "::/0"]
+    return config

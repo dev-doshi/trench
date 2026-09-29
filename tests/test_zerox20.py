@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 
+from support import open_resolver
+
 from trench.cache import Cache
 from trench.config import Config
 from trench.engine import Pipeline, zerox20
@@ -60,7 +62,7 @@ class CaseForwarder:
 def _pipe(forwarder):
     cfg = Config.model_validate({"security": {"use_0x20": True}})
     return Pipeline(filter_engine=FilterEngine.compile([]), cache=Cache(),
-                    forwarder=forwarder, counters=Counters(), config=cfg)
+                    forwarder=forwarder, counters=Counters(), config=open_resolver(cfg))
 
 
 def mkquery(name="bigexampledomainname.com"):

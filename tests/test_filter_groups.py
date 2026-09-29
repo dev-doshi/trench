@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 
+from support import open_resolver
+
 from trench.cache import Cache
 from trench.clients import Client, ClientRegistry, Policy
 from trench.config import Config
@@ -83,7 +85,7 @@ def build() -> Pipeline:
         Client("10.0.0.6", "ip", "guest", Policy(name="guest", group="guest")),
     ], default=Policy(name="default"))
     pipe = Pipeline(filter_engine=eng("||ads.example^"), cache=Cache(enabled=False),
-                    forwarder=Fwd(), counters=Counters(), config=Config(), clients=reg)
+                    forwarder=Fwd(), counters=Counters(), config=open_resolver(Config()), clients=reg)
     pipe.set_group_filters({
         "kids": (eng("||social.example^"), True),
         "guest": (eng(), False),

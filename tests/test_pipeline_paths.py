@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from support import blocked_engine
+from support import blocked_engine, open_resolver
 
 from trench.cache import Cache
 from trench.config import Config
@@ -68,7 +68,7 @@ def build(forwarder=None, blocked=("doubleclick.net",), **cfg):
     config = Config.model_validate(cfg) if cfg else Config()
     return Pipeline(filter_engine=blocked_engine(*blocked), cache=Cache(),
                     forwarder=forwarder or Fwd(), counters=Counters(),
-                    config=config)
+                    config=open_resolver(config))
 
 
 # --- pause ---

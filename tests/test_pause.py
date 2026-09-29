@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 
+from support import open_resolver
+
 from trench.cache import Cache
 from trench.clients import Client, ClientRegistry, Policy
 from trench.config import Config
@@ -36,7 +38,7 @@ def build() -> Pipeline:
     rules = [parse_line("||ads.example^", "test")]
     return Pipeline(filter_engine=FilterEngine.compile(rules),
                     cache=Cache(enabled=False), forwarder=Fwd(), counters=Counters(),
-                    config=Config(), clients=reg)
+                    config=open_resolver(Config()), clients=reg)
 
 
 def answer(pipe: Pipeline, client: str) -> str:

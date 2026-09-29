@@ -204,6 +204,10 @@ FIELDS: list[Field_] = [
            adopter="pipeline",
            help="Extra spoofing resistance; a few upstreams mishandle it."),
     Field_("security.dns_cookies", "DNS cookies", "bool", "Protection", adopter="pipeline"),
+    Field_("security.recursion_clients", "Who may use plain DNS", "list", "Protection",
+           placeholder="local", adopter="pipeline",
+           help="CIDRs allowed to resolve over port 53. Empty means local networks "
+                "only; 0.0.0.0/0 and ::/0 make an open resolver."),
     Field_("security.trusted_proxies", "Trusted reverse proxies", "list", "Protection",
            placeholder="10.0.0.0/24", adopter="proxies",
            help="Only these peers' X-Forwarded-For is believed. Empty ignores the header."),

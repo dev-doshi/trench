@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from support import open_resolver
 
 from trench.cache import Cache
 from trench.clients import Client, ClientRegistry, Policy
@@ -91,7 +92,7 @@ def build_pipeline():
         Client("10.0.0.6", "ip", "filtered", Policy(name="filtered", safe_search=True)),
     ], default=Policy(name="default"))
     return Pipeline(filter_engine=FilterEngine.compile([]), cache=Cache(),
-                    forwarder=FakeForwarder(), counters=Counters(), config=Config(),
+                    forwarder=FakeForwarder(), counters=Counters(), config=open_resolver(Config()),
                     clients=reg, services=Services(), safebrowse=SafeBrowse())
 
 

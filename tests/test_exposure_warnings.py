@@ -30,10 +30,20 @@ def test_shipped_defaults_warn_about_nothing(caplog):
     assert _warnings(caplog, lambda c: None) == ""
 
 
-def test_lan_do53_without_rate_limit_warns(caplog):
+def test_lan_do53_limited_to_local_clients_is_quiet(caplog):
+    """The default recursion ACL refuses outsiders with an answer no larger
+    than the question, so there is nothing to amplify."""
     def lan(c):
         c.server.do53.host = "0.0.0.0"
         c.server.do53.port = 53
+    assert "rate_limit" not in _warnings(caplog, lan)
+
+
+@pytest.mark.parametrize("clients", [["0.0.0.0/0", "::/0"], ["203.0.113.0/24"]])
+def test_do53_open_beyond_local_without_rate_limit_warns(caplog, clients):
+    def lan(c):
+        c.server.do53.host = "0.0.0.0"
+        c.security.recursion_clients = clients
     out = _warnings(caplog, lan)
     assert "rate_limit" in out and "amplification" in out
 

@@ -802,6 +802,8 @@ class App:
         p.use_0x20 = bool(sec.use_0x20)
         from .engine.ratelimit import RateLimiter
         p.ratelimiter = RateLimiter(sec.rate_limit, sec.rate_burst, workers=self.nworkers)
+        from .engine.access import RecursionAcl
+        p.recursion_acl = RecursionAcl(sec.recursion_clients)
         if sec.dns_cookies and p.cookies is None:
             from .engine.cookies import CookieJar
             p.cookies = CookieJar()
@@ -1181,12 +1183,18 @@ class App:
         """
         s, sec = self.config.server, self.config.security
         if s.do53.enabled and self._is_exposed(s.do53.host):
-            if not sec.rate_limit:
+            from .engine.access import RecursionAcl
+            acl = RecursionAcl(sec.recursion_clients, routes=list)
+            if not sec.rate_limit and (acl.open or not acl.auto):
+                # With the local-only default an outsider gets REFUSED, which is
+                # no larger than the question. Past that, only the rate limit
+                # stands between this port and a reflection flood.
                 log.warning(
-                    "do53 is listening on %s with security.rate_limit disabled: "
-                    "anything that can reach this port can use it for "
+                    "do53 is listening on %s for %s with security.rate_limit "
+                    "disabled: anything that can reach this port can use it for "
                     "amplification. Set security.rate_limit (100 is a sane "
-                    "starting point for a home LAN).", s.do53.host)
+                    "starting point).", s.do53.host,
+                    "everyone" if acl.open else "security.recursion_clients")
             if os.geteuid() == 0 and not s.user:
                 log.warning(
                     "running as root with server.user unset: Trench will keep "

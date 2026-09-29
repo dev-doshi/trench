@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 
+from support import open_resolver
+
 from trench.cache import Cache
 from trench.config import Config
 from trench.engine import Pipeline
@@ -52,7 +54,7 @@ def mkquery(name="example.com", cookie=False, do=False):
 def test_pipeline_emits_cookie():
     cfg = Config.model_validate({"security": {"dns_cookies": True}})
     pipe = Pipeline(filter_engine=FilterEngine.compile([]), cache=Cache(),
-                    forwarder=FakeForwarder(), counters=Counters(), config=cfg)
+                    forwarder=FakeForwarder(), counters=Counters(), config=open_resolver(cfg))
     resp = asyncio.run(pipe.resolve(mkquery(cookie=True), "9.9.9.9"))
     ck = resp.edns.get_option(COOKIE)
     assert ck is not None and len(ck) == 16 and ck[:8] == b"CLIENTAA"
@@ -62,7 +64,7 @@ def test_ecs_forwarded_and_scoped_cache():
     cfg = Config.model_validate({"upstream": {"ecs": "forward"}})
     fwd = FakeForwarder()
     pipe = Pipeline(filter_engine=FilterEngine.compile([]), cache=Cache(),
-                    forwarder=fwd, counters=Counters(), config=cfg)
+                    forwarder=fwd, counters=Counters(), config=open_resolver(cfg))
     asyncio.run(pipe.resolve(mkquery(), "203.0.113.45"))
     assert fwd.last_ecs is not None and fwd.last_ecs.network_text().startswith("203.0.113")
     # a client in a different /24 must NOT share the cached answer (separate ECS scope)
@@ -76,7 +78,7 @@ def test_ecs_strip_removes_subnet():
     cfg = Config.model_validate({"upstream": {"ecs": "strip"}})
     fwd = FakeForwarder()
     pipe = Pipeline(filter_engine=FilterEngine.compile([]), cache=Cache(),
-                    forwarder=fwd, counters=Counters(), config=cfg)
+                    forwarder=fwd, counters=Counters(), config=open_resolver(cfg))
     q = mkquery(do=True)
     q.edns.set_ecs(__import__("trench.wire.edns", fromlist=["ECS"]).ECS.from_client("1.2.3.4"))
     asyncio.run(pipe.resolve(q, "1.2.3.4"))

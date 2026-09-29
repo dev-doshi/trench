@@ -342,6 +342,8 @@ class FastPath:
         if remaining <= 0:
             return None                     # let the normal path refresh it
         p = self.pipeline
+        if not p.recursion_acl.allows(client_ip):
+            return None                     # the normal path decides (zones or REFUSED)
         rl = p.ratelimiter
         if rl.enabled and not rl.allow(client_ip):
             return None                     # the normal path owes them a REFUSED

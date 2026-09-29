@@ -385,6 +385,13 @@ class WebConfig(Section):
 
 class SecurityConfig(Section):
     rate_limit: float = 0.0           # queries/sec per client; 0 disables
+    # Who may recurse over plain UDP/TCP DNS, as CIDRs. Empty: loopback,
+    # private ranges and the networks attached to this host ("local") — enough
+    # for any LAN, including one on global IPv6 — so a listener the internet
+    # can reach is not an open resolver. ["local", "203.0.113.0/24"] adds a
+    # network; ["0.0.0.0/0", "::/0"] opts into an open resolver. Authoritative
+    # zones and DoT/DoH/DoQ are not restricted. See engine/access.py.
+    recursion_clients: list[str] = Field(default_factory=list)
     rate_burst: int = 0
     rebinding_protection: bool = True
     local_suffixes: list[str] = Field(

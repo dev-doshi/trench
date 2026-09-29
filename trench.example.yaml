@@ -12,7 +12,7 @@ server:
   do53:
     enabled: true
     host: 127.0.0.1      # use 0.0.0.0 to serve the whole LAN (needs root for :53)
-                         # -> if you do, set security.rate_limit below
+                         # -> if you do, see security.recursion_clients below
     port: 5354           # set 53 in production
     udp: true
     tcp: true
@@ -211,11 +211,17 @@ plugins: []
 
 # --- security hardening ---
 security:
-  # Queries/sec per client (0 = off). Off is fine while do53 is on loopback,
-  # which is how this file ships. The moment you set server.do53.host to
-  # 0.0.0.0, turn this on: an unlimited resolver reachable by anything on the
-  # network is an amplification source. 100/200 suits a home LAN. Trench
-  # warns at startup if it finds this at 0 on a non-loopback listener.
+  # Who may resolve through plain DNS (port 53, UDP and TCP), as CIDRs. Empty
+  # means "local": loopback, the private ranges, CGNAT/Tailscale and every
+  # network attached to this host (so a LAN on global IPv6 works). Anyone else
+  # gets REFUSED, so a listener the internet can reach is not an open resolver.
+  # Add networks with ["local", "203.0.113.0/24"]; ["0.0.0.0/0", "::/0"] opts
+  # into an open resolver. Authoritative zones answer everyone, and DoT/DoH/DoQ
+  # are not restricted (they cannot be used for reflection).
+  recursion_clients: []
+  # Queries/sec per client (0 = off). A good idea on any LAN listener, and
+  # essential if recursion_clients reaches beyond the local networks: Trench
+  # warns at startup if it finds this at 0 then. 100/200 suits a home LAN.
   rate_limit: 0
   rate_burst: 0
   # Peers whose X-Forwarded-For header may be believed, as IPs or CIDRs.

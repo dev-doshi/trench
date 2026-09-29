@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from support import open_resolver
 
 from trench.cache import Cache
 from trench.clients import Client, ClientRegistry, Policy
@@ -50,7 +51,7 @@ def build(default: Fixed, groups: dict) -> Pipeline:
     ], default=Policy(name="default"))
     return Pipeline(filter_engine=FilterEngine.compile([]), cache=Cache(),
                     forwarder=default, forwarders=groups, counters=Counters(),
-                    config=Config(), clients=reg)
+                    config=open_resolver(Config()), clients=reg)
 
 
 def answer_for(pipe: Pipeline, client: str, name: str = "example.com") -> str:

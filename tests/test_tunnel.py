@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 
+from support import open_resolver
+
 from trench.cache import Cache
 from trench.config import Config
 from trench.engine import Pipeline
@@ -53,7 +55,7 @@ def mkquery(name, rtype=Type.TXT):
 
 def _pipe(cfg):
     return Pipeline(filter_engine=FilterEngine.compile([]), cache=Cache(),
-                    forwarder=FakeForwarder(), counters=Counters(), config=cfg)
+                    forwarder=FakeForwarder(), counters=Counters(), config=open_resolver(cfg))
 
 
 def test_pipeline_tunnel_flag():
