@@ -20,6 +20,23 @@ log = get("forwarder")
 #: next upstream will answer.
 _FAILOVER_RCODES = frozenset({Rcode.SERVFAIL, Rcode.REFUSED})
 
+#: How long a failure demotes an upstream in the `fastest` ranking, in seconds.
+#: A failure has to be forgotten eventually: a demoted upstream is only asked
+#: when the head fails, so nothing else would ever clear it.
+_FAILURE_MEMORY = 30.0
+
+
+def _rank(up, now: float) -> tuple[int, float]:
+    """Sort key for `fastest`: recent failures first, then smoothed RTT.
+
+    An upstream that does not say when it last failed is taken to have failed
+    just now — the conservative reading.
+    """
+    failures = getattr(up, "failures", 0)
+    if failures and now - getattr(up, "failed_at", now) >= _FAILURE_MEMORY:
+        failures = 0
+    return failures, up.rtt
+
 
 def parse_server(spec: str) -> tuple[str, int]:
     """Back-compat helper: return (host, port) for a plain spec."""
@@ -84,6 +101,7 @@ class Forwarder:
             # a stale copy it could have served. Counted as a failure too, so
             # `fastest` stops ranking a server that only ever refuses.
             up.failures = getattr(up, "failures", 0) + 1
+            up.failed_at = asyncio.get_running_loop().time()
             raise UpstreamError(f"{up!r} answered rcode {resp.rcode}")
         return resp, repr(up)
 
@@ -142,11 +160,18 @@ class Forwarder:
 
         One head and everyone else as fallback makes the strategy mean what it
         says at every group size, and leaves the fallback tier non-empty whenever
-        there is anywhere to fall back to. `failures` leads the sort key, so an
-        upstream that just failed is tried last rather than being asked again
-        first.
+        there is anywhere to fall back to. Recent failures lead the sort key
+        (see `_rank`), so an upstream that just failed is tried last rather than
+        being asked again first.
         """
-        ordered = sorted(group, key=lambda u: (u.failures, u.rtt))
+        # Recent failures only. Ranked on the lifetime count, one timeout left an
+        # upstream behind a peer that never failed for good — however slow that
+        # peer became — because the demoted one was never asked again and so
+        # never had the success that resets the count. Once its failure is old
+        # it competes on RTT again: one query probes it, and a second failure
+        # demotes it for another window.
+        now = asyncio.get_running_loop().time()
+        ordered = sorted(group, key=lambda u: _rank(u, now))
         head, tail = ordered[:1], ordered[1:]
         try:
             return await self._parallel(head, query, note)

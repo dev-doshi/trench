@@ -151,6 +151,16 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The persisted cache is written atomically, restored within `max_entries`, and
   a malformed TTL in it is skipped rather than raising on every later lookup of
   that name.
+- Under the `fastest` strategy a single failure demoted an upstream for good:
+  it was only asked again when the new head failed, so nothing ever cleared
+  the count. A failure now demotes it for 30 seconds.
+- A TCP or DoT connection that stopped answering without closing (a dropped NAT
+  mapping, a vanished peer) stayed pooled, and every later query to that
+  upstream timed out on it. A connection with no reply at all within a query's
+  timeout is now closed and reopened, and a peer that stops reading can no
+  longer hold a query in an unbounded send.
+- The TCP fallback for a truncated UDP reply gave connect, length prefix and
+  body a full timeout each; the exchange now has one.
 - The container healthcheck probed a hardcoded port 53 while both `Config`'s
   default and `trench.example.yaml` listen on 5354, so the general-purpose
   Compose deployment marked a container unhealthy while it was resolving

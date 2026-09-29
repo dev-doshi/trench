@@ -202,3 +202,77 @@ def test_the_dump_leaves_no_partial_file(tmp_path):
     path = _dump(tmp_path, 3)
     assert not (tmp_path / "cache.json.tmp").exists()
     assert len(json.loads(path.read_text())) == 3
+
+
+# --- fastest: a failure is forgotten ---
+@pytest.mark.asyncio
+async def test_an_old_failure_no_longer_demotes_the_faster_upstream():
+    from trench.resolver import forwarder as fwdmod
+
+    now = asyncio.get_running_loop().time()
+    quick = FakeUpstream("quick", failures=1, rtt=0.001)
+    quick.failed_at = now - fwdmod._FAILURE_MEMORY - 1
+    slow = FakeUpstream("slow", rtt=0.5)
+    seen: list[str] = []
+    await _forwarder([slow, quick], "fastest").resolve(_query(), seen.append)
+    assert seen == ["quick"], "one old failure demoted the faster upstream for good"
+
+    quick.failed_at = now
+    seen.clear()
+    await _forwarder([slow, quick], "fastest").resolve(_query(), seen.append)
+    assert seen == ["slow"], "a recent failure did not demote"
+
+
+# --- TCP / DoT: bounded, and a silent connection is dropped ---
+async def _silent_server():
+    """Accepts, reads, never answers."""
+    held = []
+
+    async def handle(reader, writer):
+        held.append(writer)
+        with contextlib.suppress(Exception):
+            while await reader.read(4096):
+                pass
+
+    srv = await asyncio.start_server(handle, "127.0.0.1", 0)
+    return srv, srv.sockets[0].getsockname()[1], held
+
+
+@pytest.mark.asyncio
+async def test_a_silent_stream_connection_is_closed_and_reopened():
+    srv, port, held = await _silent_server()
+    up = Upstream(parse_upstream(f"tcp://127.0.0.1:{port}"), timeout=0.2)
+    try:
+        with pytest.raises(TimeoutError):
+            await up.query(_query())
+        assert up._conn is not None and up._conn.closed, "silent connection kept"
+        with pytest.raises(TimeoutError):
+            await up.query(_query())
+        await asyncio.sleep(0.05)
+        assert len(held) == 2, "the second query did not reconnect"
+    finally:
+        await up.close()
+        srv.close()
+
+
+@pytest.mark.asyncio
+async def test_the_truncation_fallback_has_one_budget():
+    async def trickle(reader, writer):
+        await reader.read(4096)
+        # each step inside one timeout, the whole well past it
+        for b in (b"\x00\x40", b"\x00"):       # length prefix, then part of the body
+            await asyncio.sleep(0.15)
+            writer.write(b)
+            await writer.drain()
+        await asyncio.sleep(3600)
+
+    srv = await asyncio.start_server(trickle, "127.0.0.1", 0)
+    port = srv.sockets[0].getsockname()[1]
+    up = Upstream(parse_upstream(f"127.0.0.1:{port}"), timeout=0.2)
+    t0 = time.monotonic()
+    try:
+        with pytest.raises(TimeoutError):
+            await up._tcp(_query().to_wire())
+        assert time.monotonic() - t0 < 0.3, "each read got its own timeout"
+    finally:
+        srv.close()

@@ -286,6 +286,7 @@ class _StreamConn:
         self._lock = asyncio.Lock()
         self._next_id = 0
         self.closed = True
+        self.last_rx = 0.0      # loop time of the latest reply read off the wire
 
     async def _open(self) -> None:
         spec = self.up.spec
@@ -304,6 +305,7 @@ class _StreamConn:
                 hdr = await self.reader.readexactly(2)          # type: ignore[union-attr]
                 n = int.from_bytes(hdr, "big")
                 data = await self.reader.readexactly(n)         # type: ignore[union-attr]
+                self.last_rx = asyncio.get_running_loop().time()
                 if len(data) >= 2:
                     fut = self._pending.pop(int.from_bytes(data[:2], "big"), None)
                     if fut is not None and not fut.done():
@@ -335,16 +337,36 @@ class _StreamConn:
                 await self._open()
         mid = self._alloc_id()
         out = mid.to_bytes(2, "big") + wire[2:]         # rewrite id for multiplexing
-        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future = loop.create_future()
         self._pending[mid] = fut
+        sent = loop.time()
+        writer = self.writer
         try:
             self.writer.write(len(out).to_bytes(2, "big") + out)   # type: ignore[union-attr]
-            # Bounded like the answer is: an upstream that stops reading fills
-            # the socket buffer, and an unbounded drain waited on it forever.
-            await asyncio.wait_for(self.writer.drain(), self.up.timeout)  # type: ignore[union-attr]
-            return await asyncio.wait_for(fut, self.up.timeout)
+            # `drain` is inside the budget: a peer that stops reading fills the
+            # send buffer, and an unbounded drain then held the query forever.
+            return await asyncio.wait_for(self._send_and_wait(fut), self.up.timeout)
+        except TimeoutError:
+            # Only the connection this query went out on: another query may
+            # already have replaced it with a fresh one.
+            if self.last_rx < sent and self.writer is writer:
+                # Not one reply on this connection in a whole timeout, to this
+                # query or any other. That is a dead path — a NAT that dropped
+                # the mapping, a peer that vanished without a FIN — not a slow
+                # answer, and nothing else will ever notice: TCP keepalive
+                # takes hours, so every later query would queue behind it and
+                # time out too. Drop it so the next query reconnects.
+                log.info("closing silent %s connection to %s",
+                         self.up.spec.scheme, self.up)
+                await self.close()
+            raise
         finally:
             self._pending.pop(mid, None)
+
+    async def _send_and_wait(self, fut: asyncio.Future) -> bytes:
+        await self.writer.drain()                              # type: ignore[union-attr]
+        return await fut
 
     async def close(self) -> None:
         if self._reader_task is not None:
@@ -405,6 +427,7 @@ class Upstream:
         self.trust_ad = trust_ad
         self.rtt = 0.05
         self.failures = 0
+        self.failed_at = 0.0   # loop time of the latest failure; see Forwarder._fastest
         self._session = None  # aiohttp session for DoH
         self._conn: _StreamConn | None = None  # persistent TCP/DoT connection
         self._pool: UdpPool | None = None
@@ -474,6 +497,7 @@ class Upstream:
             return resp
         except Exception:
             self.failures += 1
+            self.failed_at = loop.time()
             raise
 
     def _ad_trusted(self) -> bool:
@@ -534,17 +558,24 @@ class Upstream:
 
     async def _tcp(self, wire: bytes, ssl_ctx=None) -> bytes:
         """One-shot TCP query on a dedicated connection (used for UDP truncation
-        fallback, where the pooled connection may be a different transport)."""
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(self.spec.host, self.spec.port, ssl=ssl_ctx,
-                                    server_hostname=self.spec.sni or None if ssl_ctx else None),
-            self.timeout)
+        fallback, where the pooled connection may be a different transport).
+
+        One budget for the whole exchange. Connect, length prefix and body each
+        used to get a full `timeout` of their own, so a peer that trickled its
+        reply could hold a truncated query for three timeouts on top of the UDP
+        one — long past the point any client was still waiting.
+        """
+        return await asyncio.wait_for(self._tcp_exchange(wire, ssl_ctx), self.timeout)
+
+    async def _tcp_exchange(self, wire: bytes, ssl_ctx=None) -> bytes:
+        reader, writer = await asyncio.open_connection(
+            self.spec.host, self.spec.port, ssl=ssl_ctx,
+            server_hostname=self.spec.sni or None if ssl_ctx else None)
         try:
             writer.write(len(wire).to_bytes(2, "big") + wire)
             await writer.drain()
-            hdr = await asyncio.wait_for(reader.readexactly(2), self.timeout)
-            n = int.from_bytes(hdr, "big")
-            return await asyncio.wait_for(reader.readexactly(n), self.timeout)
+            n = int.from_bytes(await reader.readexactly(2), "big")
+            return await reader.readexactly(n)
         finally:
             writer.close()
 
