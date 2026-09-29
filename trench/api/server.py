@@ -183,7 +183,8 @@ class APIServer:
     async def start(self) -> None:
         await self.auth.ensure_admin(self.app.config.web.admin_password,
                                      data_dir=self.app.config.data_path)
-        webapp = web.Application(middlewares=[self._auth_mw, self._headers_mw])
+        # Headers outermost, so a refusal raised by the auth layer carries them too.
+        webapp = web.Application(middlewares=[self._headers_mw, self._auth_mw])
         from ..security.clientaddr import TRUSTED_KEY
         webapp[TRUSTED_KEY] = self.trusted
         self._add_routes(webapp)
@@ -276,6 +277,11 @@ class APIServer:
         if user is None and bearer.startswith("Bearer "):
             user = await self.auth.token_user(bearer[7:])
         request[_USER] = user
+        why = _cross_origin(request)
+        if why:
+            log.warning("refused cross-origin %s %s (%s)", request.method,
+                        request.path, why)
+            raise _http_error(web.HTTPForbidden, "cross-origin request refused")
         return await handler(request)
 
     @web.middleware
@@ -1282,6 +1288,46 @@ async def _ws_drain(ws: web.WebSocketResponse) -> None:
     handshake."""
     async for _ in ws:
         pass
+
+
+_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+def _cross_origin(request: web.Request) -> str | None:
+    """Why a browser-sent, state-changing request came from another origin.
+
+    The session cookie is SameSite=Strict, which stops a cross-*site* page from
+    riding it but not a same-site one: any other service on the same domain or
+    LAN name (or an XSS in one) could POST `text/plain` — a CORS simple request,
+    no preflight — to any mutating route, or open `/ws` and stream every
+    client's queries. Browsers always label such requests, so refuse on the
+    label; clients that send neither header (scripts, bearer tokens) are not
+    browsers and carry no ambient credential to abuse.
+    """
+    upgrade = request.headers.get("Upgrade", "").lower() == "websocket"
+    if request.method not in _UNSAFE_METHODS and not upgrade:
+        return None
+    site = request.headers.get("Sec-Fetch-Site", "")
+    if site in ("cross-site", "same-site"):
+        return f"Sec-Fetch-Site {site}"
+    origin = request.headers.get("Origin")
+    if origin is None:
+        return None
+    hosts = {request.host.lower()}
+    fwd = request.headers.get("X-Forwarded-Host")
+    if fwd:
+        from ..security.clientaddr import TRUSTED_KEY, peer_ip
+        trusted = request.app.get(TRUSTED_KEY)
+        if trusted and peer_ip(request) in trusted:
+            hosts.add(fwd.split(",")[0].strip().lower())
+    from urllib.parse import urlsplit
+    try:
+        netloc = urlsplit(origin).netloc.lower()
+    except ValueError:
+        netloc = ""
+    if not netloc or netloc not in hosts:
+        return f"Origin {origin!r}"
+    return None
 
 
 async def _json(request: web.Request) -> dict:

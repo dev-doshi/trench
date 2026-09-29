@@ -15,7 +15,9 @@ export default defineConfig({
   server: {
     port: 5199,
     proxy: {
-      "/api": { target: "http://127.0.0.1:8089", changeOrigin: true, ws: true },
+      // changeOrigin stays off: the API refuses a state-changing request whose
+      // Origin names a different host than the one it was sent to (CSRF).
+      "/api": { target: "http://127.0.0.1:8089", changeOrigin: false, ws: true },
       "/metrics": "http://127.0.0.1:8089",
     },
   },
