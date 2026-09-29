@@ -79,6 +79,14 @@ class _Answer(NamedTuple):
     block: Decision | None
 
 
+#: EDNS options that describe one hop, never the answer. A client's cookie,
+#: padding or keepalive must not travel upstream, and an upstream's must neither
+#: be cached nor reach a client: a stored COOKIE is the upstream's server cookie
+#: for *our* address, replayed to every later asker.
+_HOP_BY_HOP = frozenset({EDNSOption.COOKIE, EDNSOption.TCP_KEEPALIVE,
+                         EDNSOption.PADDING})
+
+
 def _detach_task(fut) -> None:
     """Let a future finish unobserved without an "exception was never retrieved"
     warning. Used when the waiter has already answered the client."""
@@ -665,9 +673,16 @@ class Pipeline:
             raise
         else:
             if not fut.done():
-                fut.set_result(answer)
+                # Followers get a pristine copy. The leader's `_finalize` edits
+                # the object it returns (cookie, EDE, OPT presence) before the
+                # followers wake, so sharing it handed them the leader's cookie.
+                fut.set_result(answer if answer.resp is None
+                               else answer._replace(resp=detach(answer.resp)))
             return answer
         finally:
+            if not fut.done():
+                # Whatever went wrong above, a follower must never wait forever.
+                fut.set_exception(UpstreamError("coalesced fetch failed"))
             if self._inflight.get(key) is fut:
                 del self._inflight[key]
             _detach_task(fut)   # followers may all have gone away
@@ -742,6 +757,9 @@ class Pipeline:
         # 9. DNS-rebinding protection: strip private IPs from public answers
         if self.rebinding:
             scrub(resp, ctx.qname, local_suffixes=self.local_suffixes)
+        if resp.edns is not None:
+            resp.edns.options = [o for o in resp.edns.options
+                                 if o[0] not in _HOP_BY_HOP]
         if key is not None:
             self.cache.put(self._scoped_key(key, resp), resp)
         return _Answer(resp, None)
@@ -781,21 +799,27 @@ class Pipeline:
         q = ctx.query
         fwd = q
         ecs_mode = getattr(self.config.upstream, "ecs", "off")
-        if ecs_mode in ("forward", "strip"):
+        base = q.edns
+        if base is not None or ecs_mode == "forward":
+            # Always a fresh OPT: the client's hop-by-hop options (its cookie
+            # above all) are between it and us, and forwarding them let the
+            # upstream's cookie reply be cached and served to other clients.
             fwd = copy.copy(q)
             fwd.questions = list(q.questions)
-            base = q.edns
-            if base is not None or ecs_mode == "forward":
-                edns = Edns(udp_size=(base.udp_size if base else 1232),
-                            flags=(base.flags if base else 0),
-                            options=[o for o in (base.options if base else [])
-                                     if o[0] != EDNSOption.ECS])
-                if ecs_mode == "forward":
-                    try:
-                        edns.set_ecs(ECS.from_client(ctx.client_ip))
-                    except Exception:
-                        pass
-                fwd.edns = edns
+            # A client's own ECS is dropped in every mode: the cache is keyed
+            # by subnet only under `forward`, so passing one through let a
+            # single client pick the subnet an answer cached for all was for.
+            edns = Edns(udp_size=(base.udp_size if base else 1232),
+                        flags=(base.flags if base else 0),
+                        options=[o for o in (base.options if base else [])
+                                 if o[0] not in _HOP_BY_HOP
+                                 and o[0] != EDNSOption.ECS])
+            if ecs_mode == "forward":
+                try:
+                    edns.set_ecs(ECS.from_client(ctx.client_ip))
+                except Exception:
+                    pass
+            fwd.edns = edns
         # 0x20 case randomization (clone if not already cloned)
         orig = None
         if self.use_0x20 and q.question is not None:
@@ -889,8 +913,10 @@ class Pipeline:
         if resp is None:
             resp = ctx.response = ctx.query.reply(Rcode.SERVFAIL)
         resp.id = ctx.query.id
-        if not resp.questions:
-            resp.questions = list(ctx.query.questions)
+        # Always the asker's own question, letter for letter. A cached or
+        # coalesced answer carries whoever asked first, and a 0x20-checking
+        # downstream resolver rejects a mismatched echo as a spoof.
+        resp.questions = list(ctx.query.questions)
         # mirror EDNS presence (size/DO) so clients see a well-formed OPT
         if ctx.query.edns is not None and resp.edns is None:
             resp.edns = Edns(udp_size=self.config.server.edns_udp_size)
@@ -903,6 +929,8 @@ class Pipeline:
             # bound to that other client's address.
             resp.edns = None
         # DNS cookies: echo client cookie + our server cookie (RFC 7873)
+        if resp.edns is not None:
+            resp.edns.remove_option(COOKIE)     # only ever our own, set below
         if self.cookies is not None and ctx.query.edns is not None:
             cc = ctx.query.edns.get_option(COOKIE)
             if cc and len(cc) >= 8 and resp.edns is not None:

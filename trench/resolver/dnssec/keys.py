@@ -11,6 +11,10 @@ from ...wire.writer import Writer
 
 _RSA_ALGOS = {5, 7, 8, 10}
 _ECDSA_CURVE = {13: "P-256", 14: "P-384"}
+#: What this validator can check. RFC 4035 §5.2: a DS set naming none of these
+#: makes the child zone insecure, not bogus.
+SUPPORTED_ALGOS = frozenset(_RSA_ALGOS | set(_ECDSA_CURVE) | {15, 16})
+SUPPORTED_DIGESTS = frozenset({1, 2, 4})
 
 
 def key_tag(dnskey: R.DNSKEY) -> int:

@@ -1,6 +1,8 @@
 # Trench code review
 
-**Scope:** the query hot path (`trench/engine/`, `trench/transport/`, `trench/cache/`, `trench/resolver/forwarder.py`, and the client half of `trench/transport/upstream.py`). I also looked at `clients/registry.py`, `engine/ratelimit.py`, `stats/counters.py`, `store/export.py` and the lifecycle parts of `app.py` to check for blocking I/O and unbounded growth. I did not review `resolver/recursive.py`, `resolver/dnssec/`, `api/`, `auth_zone/`, `dhcp/` or `ops/` in depth.
+**Scope:** the query hot path (`trench/engine/`, `trench/transport/`, `trench/cache/`, `trench/resolver/forwarder.py`, and the client half of `trench/transport/upstream.py`). I also looked at `clients/registry.py`, `engine/ratelimit.py`, `stats/counters.py`, `store/export.py` and the lifecycle parts of `app.py` to check for blocking I/O and unbounded growth. A second pass covered `resolver/recursive.py`, `resolver/dnssec/` and the TSIG, transfer and NOTIFY code in `auth_zone/`; see [Second pass](#second-pass-fixed-in-this-change). I did not review `api/`, `dhcp/`, `filter/`, `auth_zone/update.py` or `ops/` in depth.
+
+**Status:** H1–H4 and every finding in the second pass are fixed in this change, with regression tests in `tests/test_review_fixes.py`. The M and L findings are still open.
 
 **Branch reviewed:** `claude/beautiful-thompson-as41c7` @ `c5b3b5f`
 
@@ -10,9 +12,9 @@
 |---|---|
 | `python3 scripts/mypy_gate.py` | Pass: no new type errors. 64 baselined findings no longer occur, so `--update` can shrink the baseline. |
 | `ruff check trench/ tests/ scripts/` | Pass: all checks passed. |
-| `pytest -q` (with `uv sync --extra dev`) | 2540 passed, 2 skipped, **7 failed**. All 7 failures come from the sandbox: the container has no IPv6 (`EAFNOSUPPORT` in `test_doq`, `test_doh3`, `test_upstream_doq`, `test_bind_do53_uses_inet6_for_a_v6_host`), and it runs as root, which defeats the three "unwritable directory" tests. None of the failures point at the code. |
+| `pytest -q` (with `uv sync --extra dev`) | Before the fixes: 2540 passed, 2 skipped, **7 failed**. After them: 2550 passed (the 10 new regression tests included), with the same 7 failures. All 7 failures come from the sandbox: the container has no IPv6 (`EAFNOSUPPORT` in `test_doq`, `test_doh3`, `test_upstream_doq`, `test_bind_do53_uses_inet6_for_a_v6_host`), and it runs as root, which defeats the three "unwritable directory" tests. None of the failures point at the code. |
 
-The pytest installed on the system has no project dependencies (collection fails on `import aiohttp`). Run the suite through `uv run pytest`.
+In this sandbox the pytest process also does not exit after printing its summary, with or without these fixes. The likely cause is the QUIC servers of the failed IPv6 tests, which are never stopped. The pytest installed on the system has no project dependencies (collection fails on `import aiohttp`). Run the suite through `uv run pytest`.
 
 ## Severity legend
 
@@ -27,6 +29,8 @@ Findings marked *Reproduced* were run with the script in the [appendix](#appendi
 ## `trench/engine/` and `trench/transport/base.py`
 
 ### H1. The server replies to DNS *responses*, so two servers can be made to ping-pong (UDP reflection loop). *Reproduced*
+
+**Fixed.**
 
 **Where:** `Pipeline._run` (`trench/engine/pipeline.py`, validate stage) and `transport/base.py::_formerr`.
 
@@ -47,6 +51,8 @@ RFC 1035 behaviour is to ignore a response that arrives where a query was expect
 **Test gap:** nothing asserts that a `QR=1` datagram gets no reply.
 
 ### H2. Request coalescing copies one client's DNS cookie into another client's answer. *Reproduced*
+
+**Fixed.**
 
 **Where:** `Pipeline._fetch_coalesced` together with `Pipeline._finalize`.
 
@@ -71,6 +77,8 @@ C follower (sent no cookie) cookie: b'AAAAAAAA\xaa\xda\xa5\xc9\x7f\xcf\xad<'
 **Test gap:** `test_a_follower_gets_its_own_copy_of_the_answer` checks `a is not b`. It does not check that the *contents* the follower started from were untouched by the leader's finalize.
 
 ### H3. Cache hits return the first asker's letter case in the question section. *Reproduced*
+
+**Fixed.**
 
 **Where:** `Pipeline._finalize` only fills `resp.questions` when it is empty. `Cache._with_ttl` copies the stored question list, which keeps the casing of whoever populated the cache.
 
@@ -205,6 +213,41 @@ RFC 8484 §4.1 makes an ID of 0 a SHOULD for DoH as well. The comment `# RFC 848
 ### L13. The DoQ server can answer a stream twice.
 
 If a stream's buffer is `_complete` before `end_stream` arrives, the answer task starts and the buffer is removed. A later `StreamDataReceived` on the same stream then starts a new buffer and, if `end_stream` is set, a second `_answer`. Track the IDs of streams already answered.
+
+---
+
+## Second pass (fixed in this change)
+
+### H4. Hop-by-hop EDNS options crossed hops, and a client's ECS poisoned the shared cache.
+`_prepare_forward` copied the client's EDNS options upstream: its DNS COOKIE, and its ECS option when `ecs` was `off`. `_fetch` then cached the upstream reply with the upstream's COOKIE still in it, and served that COOKIE to later clients. A client that sent ECS with `ecs: off` got an answer tailored to its chosen subnet, and that answer was cached globally for everyone.
+**Fix:** the forwarded EDNS is always rebuilt without COOKIE, TCP-KEEPALIVE, PADDING and any client ECS; `_fetch` strips the same hop-by-hop options before caching; `_finalize` drops any leftover COOKIE before it adds its own. NSID and other end-to-end options are kept.
+
+### D1. DNSSEC: algorithm 7 (RSASHA1-NSEC3-SHA1) was treated as unknown.
+`validate.py` mapped algorithms 5 and 8/10 to hashes but not 7, so zones signed with algorithm 7 (still common among NSEC3 zones) failed validation. **Fix:** 7 maps to SHA-1, like 5.
+
+### D2. DNSSEC: a DS set that used only unsupported algorithms or digests made the zone BOGUS.
+RFC 4035 §5.2 says a zone like that is INSECURE. BOGUS turns a signing change by the parent into SERVFAIL for the whole zone. **Fix:** `_delegation` filters DS records to `SUPPORTED_ALGOS` × `SUPPORTED_DIGESTS` and returns insecure if none remain.
+
+### D3. Recursive: AD was set on answers whose CNAME chain was never validated.
+`_apply_validation` validated the final RRset only, using RRSIGs that were not filtered by owner name. A forged or unsigned CNAME in front of a signed target still produced AD=1. **Fix:** RRSIGs are matched by owner, and each CNAME is validated. The weakest verdict wins, so a bogus link makes the answer BOGUS and an insecure link makes it INSECURE.
+
+### T1. TSIG: BADSIG and BADKEY errors were signed with the key.
+RFC 8945 §5.3.2 requires an empty MAC. Signing the error reply turned the server into a signing oracle for arbitrary messages. **Fix:** `sign_error` sends an empty MAC for errors 16 and 17.
+
+### T2. TSIG: multi-message transfers used the full-variable digest on every message.
+RFC 8945 §5.3.1 digests only the timers after the first message. BIND and Knot secondaries rejected Trench's signed AXFR, and Trench rejected theirs. **Fix:** `sign_wire` and `verify_wire` take `timers_only`. The primary uses it for message 2 onward. The secondary tries timers-only first and falls back to full variables for older Trench primaries.
+
+### T3. A signed NOTIFY got an unsigned reply.
+RFC 8945 §5.3 requires a signed reply. Strict primaries discard an unsigned NOTIFY acknowledgement and keep retrying. **Fix:** the reply is signed with the request MAC chained in.
+
+### Still open from the second pass (low)
+- A request whose TSIG carries a non-zero error field is accepted.
+- More than one OPT record in a message is accepted, when it should be FORMERR.
+- `ECS.from_bytes` does not validate the family or prefix lengths.
+- The docstring of `is_subdomain_of` describes the opposite of its behaviour.
+- `sanitize` drops the target zone's SOA after a cross-zone CNAME, so negative answers there lose their TTL.
+- `RecursiveForwarder` clears its connection pool without closing the connections.
+
 
 ---
 

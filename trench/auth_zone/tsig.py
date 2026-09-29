@@ -85,12 +85,22 @@ def _canon_name(name: Name) -> bytes:
 
 
 def _digest(key: TSIGKey, msg_wire: bytes, algo_name: Name, time_signed: int,
-            fudge: int, error: int, other: bytes, request_mac: bytes | None) -> bytes:
-    """Compute the TSIG MAC (RFC 8945 §4.3.3)."""
+            fudge: int, error: int, other: bytes, request_mac: bytes | None,
+            timers_only: bool = False) -> bytes:
+    """Compute the TSIG MAC (RFC 8945 §4.3.3).
+
+    `timers_only` is the digest for the second and later messages of a
+    multi-message answer (§5.3.1): prior MAC, message, then only the time
+    signed and fudge. BIND and Knot sign and expect exactly this on AXFR/IXFR.
+    """
     h = hmac.new(key.secret, digestmod=key._hashmod)
     if request_mac is not None:                       # signing/verifying a response
         h.update(struct.pack(">H", len(request_mac)) + request_mac)
     h.update(msg_wire)                                # DNS message, no TSIG, ARCOUNT unbumped
+    if timers_only:
+        h.update(struct.pack(">HIH", (time_signed >> 32) & 0xFFFF,
+                             time_signed & 0xFFFFFFFF, fudge))
+        return h.digest()
     # TSIG variables
     h.update(_canon_name(Name.from_text(key.name)))
     h.update(struct.pack(">H", Class.ANY))
@@ -126,15 +136,17 @@ def _append_tsig_rr(msg_wire: bytes, key: TSIGKey, tsig: R.TSIG) -> bytes:
 def sign_wire(msg_wire: bytes, key: TSIGKey, *, request_mac: bytes | None = None,
               time_signed: int | None = None, fudge: int = DEFAULT_FUDGE,
               original_id: int | None = None, error: int = 0,
-              other: bytes = b"") -> tuple[bytes, bytes]:
+              other: bytes = b"", timers_only: bool = False) -> tuple[bytes, bytes]:
     """Sign a fully-built (TSIG-less) wire message. Returns (signed_wire, mac).
-    Pass `request_mac` to sign a *response* (chains to the request's MAC)."""
+    Pass `request_mac` to sign a *response* (chains to the request's MAC), and
+    `timers_only` for every message after the first of a zone transfer."""
     if time_signed is None:
         time_signed = int(time.time())
     if original_id is None:
         original_id = struct.unpack_from(">H", msg_wire, 0)[0]
     algo_name = Name.from_text(key.algorithm)
-    mac = _digest(key, msg_wire, algo_name, time_signed, fudge, error, other, request_mac)
+    mac = _digest(key, msg_wire, algo_name, time_signed, fudge, error, other,
+                  request_mac, timers_only)
     tsig = R.TSIG(algo_name, time_signed, fudge, mac, original_id, error, other)
     return _append_tsig_rr(msg_wire, key, tsig), mac
 
@@ -229,6 +241,14 @@ def sign_error(reply_wire: bytes, err: TSIGError, *,
     if err.key is None or err.tsig is None:
         return reply_wire
     now = int(time.time()) if now is None else now
+    if err.tsig_error in (16, 17):                # BADSIG / BADKEY
+        # §5.3.2: the reply carries the error in a TSIG RR with an *empty* MAC.
+        # Signing it with the key the request failed to prove knowledge of
+        # made the server a MAC oracle for anyone who can reach it.
+        algo_name = Name.from_text(err.key.algorithm)
+        return _append_tsig_rr(reply_wire, err.key, R.TSIG(
+            algo_name, now, err.tsig.fudge, b"", err.tsig.original_id,
+            err.tsig_error, b""))
     other = b""
     if err.tsig_error == 18:                      # BADTIME
         other = now.to_bytes(6, "big")
@@ -245,6 +265,7 @@ def verify_wire(wire: bytes, keyring: dict[str, TSIGKey], *,
                 request_mac: bytes | None = None, now: int | None = None,
                 fudge_max: int = DEFAULT_FUDGE,
                 replay: ReplayWindow | None = None,
+                timers_only: bool = False,
                 ) -> tuple[bytes, TSIGKey, R.TSIG]:
     """Verify a TSIG-signed message. Returns (received_mac, key, tsig_rr) on
     success, else raises TSIGError with the appropriate TSIG error code.
@@ -277,7 +298,7 @@ def verify_wire(wire: bytes, keyring: dict[str, TSIGKey], *,
     struct.pack_into(">H", hdr, 0, tsig.original_id)
     msg_no_tsig = bytes(hdr) + wire[12:tsig_start]
     expected = _digest(key, msg_no_tsig, tsig.algorithm, tsig.time_signed,
-                       tsig.fudge, tsig.error, tsig.other, request_mac)
+                       tsig.fudge, tsig.error, tsig.other, request_mac, timers_only)
     # truncated MACs are legal (RFC 8945 §5.2.2.1) down to half length / 80 bits
     got = tsig.mac
     full = len(expected)

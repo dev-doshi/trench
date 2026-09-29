@@ -41,10 +41,21 @@ def apply_padding(response: Message) -> None:
     response.edns.set_padding(PAD_BLOCK, base)
 
 
+def not_a_query(data: bytes) -> bool:
+    """True for a packet with QR set, which must get no reply at all. Answering
+    a response (even with REFUSED or FORMERR, both of which carry QR=1) lets a
+    single spoofed packet start an endless ping-pong between two servers
+    (RFC 1035 §7.3: ignore it). A runt too short to carry the flags byte is
+    left to the callers, which drop anything without an id."""
+    return len(data) > 2 and bool(data[2] & 0x80)
+
+
 async def resolve_wire(pipeline: Pipeline, data: bytes, client_ip: str,
                        proto: str, client_id: str = "") -> Message | None:
     """Parse a wire query and run the pipeline, returning the response Message
     (or None to drop). Transports serialize/frame it themselves."""
+    if not_a_query(data):
+        return None
     try:
         query = Message.parse(data)
     except WireError:
@@ -62,6 +73,8 @@ async def process_query(pipeline: Pipeline, data: bytes, client_ip: str,
     `fast` is a `FastPath` to record the result in, so the next identical query
     can be answered from these very bytes without coming through here at all.
     """
+    if not_a_query(data):
+        return None
     try:
         query = Message.parse(data)
     except WireError:
@@ -93,7 +106,7 @@ def _formerr(data: bytes) -> bytes:
 
 
 def _formerr_msg(data: bytes) -> Message | None:
-    if len(data) < 2:
+    if len(data) < 2 or not_a_query(data):
         return None
     m = Message(id=int.from_bytes(data[:2], "big"), flags=Flags.QR)
     m.set_rcode(Rcode.FORMERR)

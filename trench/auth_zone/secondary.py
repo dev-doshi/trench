@@ -16,7 +16,7 @@ from ..log import get
 from ..wire import Message, Type
 from ..wire.name import Name
 from ..wire.rrtypes import Rcode
-from .tsig import TSIGKey, sign_wire, verify_wire
+from .tsig import TSIGError, TSIGKey, sign_wire, verify_wire
 from .xfr import apply_ixfr, build_xfr_query, ixfr_complete, zone_from_records
 from .zone import Zone
 
@@ -78,7 +78,7 @@ async def transfer_records(host: str, port: int, origin: Name, *,
                     f"({len(records)} records, {nbytes} bytes, {envelopes} messages)")
             data = await asyncio.wait_for(_read_tcp_message(reader), timeout)
             if key is not None:
-                req_mac, _, _ = verify_wire(data, {key.name: key}, request_mac=req_mac)
+                req_mac = _verify_envelope(data, key, req_mac, first=envelopes == 0)
             msg = Message.parse(data)
             if msg.rcode != Rcode.NOERROR:
                 raise TransferError(f"transfer refused: rcode {msg.rcode}")
@@ -92,6 +92,25 @@ async def transfer_records(host: str, port: int, origin: Name, *,
         with contextlib.suppress(Exception):
             await writer.wait_closed()
     return records
+
+
+def _verify_envelope(data: bytes, key: TSIGKey, prev_mac: bytes | None, *,
+                     first: bool) -> bytes:
+    """Verify one transfer message; return its MAC for the next to chain on.
+
+    After the first message RFC 8945 §5.3.1 digests only the timers, which is
+    what BIND and Knot send. Earlier Trench primaries signed every message with
+    the full variables, so that is still accepted as a fallback.
+    """
+    ring = {key.name: key}
+    if first:
+        mac, _, _ = verify_wire(data, ring, request_mac=prev_mac)
+        return mac
+    try:
+        mac, _, _ = verify_wire(data, ring, request_mac=prev_mac, timers_only=True)
+    except TSIGError:
+        mac, _, _ = verify_wire(data, ring, request_mac=prev_mac)
+    return mac
 
 
 async def axfr_in(host: str, port: int, origin: Name, *, key: TSIGKey | None = None,

@@ -647,7 +647,8 @@ class Recursive:
         out.set_flag(Flags.AD, False)  # only WE may assert AD; never trust upstream's
         rdatas = [rr.rdata for rr in out.answers if rr.rtype == qtype and rr.name == name]
         rrsigs = [rr.rdata for rr in out.answers
-                  if rr.rtype == Type.RRSIG and rr.rdata.type_covered == qtype]
+                  if rr.rtype == Type.RRSIG and rr.name == name
+                  and rr.rdata.type_covered == qtype]
         try:
             if rdatas:
                 # The authority section goes along: a wildcard-expanded answer
@@ -667,6 +668,17 @@ class Recursive:
             # validator defect into an outage, but it must be visible.
             log.warning("validator error for %s: %r", name.to_text(), e)
             result = ValidationResult.INSECURE
+        if result != ValidationResult.BOGUS:
+            # The final RRset is only the end of the chain. AD asserts the
+            # whole answer is authentic, so every CNAME that led here has to be
+            # validated too; checking the target alone let a spoofed CNAME into
+            # a signed zone ride out under AD=1.
+            chain = await self._validate_cnames(out)
+            if chain == ValidationResult.BOGUS:
+                result = chain
+                rrsigs = [rr.rdata for rr in out.answers if rr.rtype == Type.RRSIG]
+            elif chain == ValidationResult.INSECURE:
+                result = chain
         if result == ValidationResult.SECURE:
             out.set_flag(Flags.AD, True)
         elif result == ValidationResult.BOGUS and not out.cd:
@@ -678,6 +690,30 @@ class Recursive:
             # worth" gets decided. Say which of the two it was.
             self._ede(out, 10 if not rrsigs else 6,
                       "RRSIGs missing" if not rrsigs else "DNSSEC bogus")
+
+    async def _validate_cnames(self, out: Message):
+        """The weakest verdict over the CNAME records in `out`'s answer."""
+        from .dnssec import ValidationResult
+        worst = ValidationResult.SECURE
+        if self._validator is None:
+            return worst
+        for rr in out.answers:
+            if rr.rtype != Type.CNAME:
+                continue
+            sigs = [s.rdata for s in out.answers
+                    if isinstance(s.rdata, R.RRSIG) and s.name == rr.name
+                    and s.rdata.type_covered == Type.CNAME]
+            try:
+                r = await self._validator.validate(rr.name, Type.CNAME, [rr.rdata],
+                                                   sigs, out.authority)
+            except Exception as e:
+                log.warning("validator error for %s: %r", rr.name.to_text(), e)
+                r = ValidationResult.INSECURE
+            if r == ValidationResult.BOGUS:
+                return r
+            if r != ValidationResult.SECURE:
+                worst = r
+        return worst
 
     @staticmethod
     def _ede(msg: Message, code: int, text: str) -> None:

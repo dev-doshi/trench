@@ -75,10 +75,11 @@ class TransferService:
             msgs = axfr_messages(query, zone)
         out: list[bytes] = []
         prev_mac = request_mac
-        for m in msgs:
+        for i, m in enumerate(msgs):
             wire = m.to_wire()
             if key is not None:
-                wire, prev_mac = sign_wire(wire, key, request_mac=prev_mac)
+                wire, prev_mac = sign_wire(wire, key, request_mac=prev_mac,
+                                           timers_only=i > 0)
             out.append(wire)
         return out
 

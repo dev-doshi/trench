@@ -37,7 +37,7 @@ from ...wire import Type
 from ...wire import rdata as R
 from ...wire.name import Name
 from ...wire.rrtypes import Rcode
-from .keys import ds_digest, key_tag
+from .keys import SUPPORTED_ALGOS, SUPPORTED_DIGESTS, ds_digest, key_tag
 from .nsec import (
     MAX_NSEC3_ITERATIONS,
     Nsec3Set,
@@ -298,7 +298,14 @@ class Validator:
                 # never published. There is no such thing.
                 raise DNSSECError(
                     f"DS for {child.to_text()} not signed by {parent_zone.to_text()}")
-            return "secure", await self._keys_for(child, ds, work)
+            # RFC 4035 §5.2: only DS records we can act on count. A child
+            # signed solely with an algorithm or digest we do not implement is
+            # treated as unsigned; calling it bogus SERVFAILed the whole zone.
+            usable = [d for d in ds if d.algorithm in SUPPORTED_ALGOS
+                      and d.digest_type in SUPPORTED_DIGESTS]
+            if not usable:
+                return "insecure", None
+            return "secure", await self._keys_for(child, usable, work)
 
         nsecs, n3 = self._denial_records(msg.authority, parent_zone, parent_keys, work)
         verdict = None

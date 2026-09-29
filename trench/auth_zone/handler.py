@@ -156,9 +156,10 @@ class AuthHandler:
         # transfer from our own primary, and a flood of them is an amplifier
         # aimed at our own infrastructure.
         key = getattr(sec, "key", None)
+        req_mac = None
         if key is not None:
             try:
-                verify_wire(query_wire, {key.name: key}, replay=self.replay)
+                req_mac, _, _ = verify_wire(query_wire, {key.name: key}, replay=self.replay)
             except TSIGError as e:
                 log.warning("NOTIFY for %s from %s refused: %s",
                             q.name.to_text(), client_ip, e)
@@ -167,6 +168,9 @@ class AuthHandler:
         sec.notify()
         r = query.reply(Rcode.NOERROR)
         r.set_flag(Flags.AA, True)
+        if key is not None:     # a signed request gets a signed reply (RFC 8945 §5.3)
+            out, _ = sign_wire(r.to_wire(), key, request_mac=req_mac)
+            return out
         return r.to_wire()
 
     def _reply(self, query: Message, rcode: int) -> bytes:

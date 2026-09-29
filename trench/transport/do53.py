@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from ..errors import WireError
 from ..log import get
 from ..wire import Message
-from .base import Frontend, process_query
+from .base import Frontend, not_a_query, process_query
 from .stream import ConnectionTracker, StreamLimits, serve_stream
 
 if TYPE_CHECKING:
@@ -89,6 +89,8 @@ class _UDPProtocol(asyncio.DatagramProtocol):
 
     async def _handle(self, data: bytes, addr) -> None:
         try:
+            if not_a_query(data):
+                return
             if self.auth is not None:
                 query = _try_parse(data)
                 if query is not None and self.auth.claims(query):
@@ -114,6 +116,8 @@ def _tcp_responder(pipeline: Pipeline, auth):
     AXFR is never broken up by another query's answer.
     """
     async def respond(data: bytes, client_ip: str) -> list[bytes]:
+        if not_a_query(data):
+            return []
         if auth is not None:
             query = _try_parse(data)
             if query is not None and auth.claims(query):
