@@ -136,11 +136,13 @@ async def test_a_failed_migration_leaves_nothing_behind(tmp_path, monkeypatch):
     d = dbmod.Database(path)
     with pytest.raises(Exception, match="missing"):
         await d.connect()
-    names = {r[0] for r in await d.fetchall(
-        "SELECT name FROM sqlite_master WHERE type='table'")}
-    assert "a" not in names, "half a migration was applied"
-    assert not await d.fetchall("SELECT * FROM _migrations")
-    await d.close()
+    assert d._db is None                  # the failed open closed its connection
+    import sqlite3
+    with contextlib.closing(sqlite3.connect(path)) as raw:
+        names = {r[0] for r in raw.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "a" not in names, "half a migration was applied"
+        assert not raw.execute("SELECT * FROM _migrations").fetchall()
 
     # fixed and re-run: applies once, recorded with its description intact
     monkeypatch.setattr(dbmod, "MIGRATIONS", [
@@ -408,3 +410,200 @@ def test_a_worker_dying_mid_push_does_not_freeze_the_primary():
     finally:
         if child.is_alive():
             child.kill()
+
+
+def _corrupt(path):
+    path.write_bytes(b"this is not an SQLite file, it is garbage" * 200)
+
+
+@pytest.mark.asyncio
+async def test_a_corrupt_database_is_moved_aside_and_replaced(tmp_path):
+    """A damaged file used to stop the primary from starting — and, because
+    the abandoned connection kept aiosqlite's non-daemon thread, hang it."""
+    path = tmp_path / "trench.db"
+    _corrupt(path)
+    db = dbmod.Database(path)
+    await db.connect(recover_corrupt=True)
+    try:
+        assert await db.fetchone("SELECT COUNT(*) AS n FROM querylog") is not None
+    finally:
+        await db.close()
+    moved = sorted(p.name for p in tmp_path.iterdir() if ".corrupt-" in p.name)
+    assert len(moved) == 1
+    kept = next(p for p in tmp_path.iterdir() if p.name == moved[0])
+    assert kept.read_bytes().startswith(b"this is not")  # kept for salvage
+
+
+@pytest.mark.asyncio
+async def test_a_failed_open_closes_its_connection(tmp_path):
+    """Without recovery the error is raised — and the connection's worker
+    thread is gone, so the process can exit instead of hanging."""
+    import threading
+    path = tmp_path / "trench.db"
+    _corrupt(path)
+    before = threading.active_count()
+    db = dbmod.Database(path)
+    with pytest.raises(dbmod.sqlite3.DatabaseError):
+        await db.connect()
+    assert db._db is None
+    for _ in range(50):
+        if threading.active_count() <= before:
+            break
+        await asyncio.sleep(0.02)
+    assert threading.active_count() <= before
+    assert path.read_bytes().startswith(b"this is not")   # untouched
+
+
+@pytest.mark.asyncio
+async def test_a_healthy_database_is_never_quarantined(tmp_path):
+    path = tmp_path / "trench.db"
+    db = dbmod.Database(path)
+    await db.connect(recover_corrupt=True)
+    await db.execute("INSERT INTO setting(key, value) VALUES('k', '1')")
+    await db.close()
+    db = dbmod.Database(path)
+    await db.connect(recover_corrupt=True)
+    try:
+        assert (await db.fetchone("SELECT value FROM setting WHERE key='k'"))["value"] == "1"
+    finally:
+        await db.close()
+    assert not [p for p in tmp_path.iterdir() if ".corrupt-" in p.name]
+
+
+@pytest.mark.asyncio
+async def test_a_failing_log_write_is_reported_once_not_every_tick(tmp_path, caplog):
+    """A full disk failed every 250 ms flush and logged a traceback each time."""
+    import logging
+
+    from test_worker_querylog import mkrec
+
+    from trench.store.querylog import QueryLog
+    d = dbmod.Database(tmp_path / "t.db")
+    await d.connect()
+    ql = QueryLog(d, salt=b"s" * 32)
+
+    async def full(*a, **k):
+        raise dbmod.sqlite3.OperationalError("database or disk is full")
+    real = d.executemany
+    d.executemany = full
+    with caplog.at_level(logging.WARNING, logger="trench"):
+        for _ in range(20):
+            ql.enqueue(mkrec())
+            await ql._flush()
+        failures = [r for r in caplog.records if "write failed" in r.getMessage()]
+        assert len(failures) == 1 and failures[0].exc_info
+        assert ql._failed_rows == 20
+
+        d.executemany = real
+        ql.enqueue(mkrec())
+        await ql._flush()
+    assert any("recovered; 20 rows were lost" in r.getMessage() for r in caplog.records)
+    assert ql._failed_rows == 0
+    await d.close()
+
+
+class Dead(FakeUpstream):
+    """Times out, and records the failure the way `Upstream.query` does."""
+
+    def __init__(self, label, clock, **kw):
+        super().__init__(label, **kw)
+        self.clock, self.failed_at = clock, 0.0
+
+    async def query(self, q):
+        self.asked += 1
+        await asyncio.sleep(self.delay)
+        self.failures += 1
+        self.failed_at = self.clock()
+        raise UpstreamError("timed out")
+
+
+@pytest.mark.asyncio
+async def test_sequential_stops_waiting_on_a_dead_first_upstream(monkeypatch):
+    """Each query used to sit out the dead head's full timeout first."""
+    from trench.resolver import forwarder as fwdmod
+    loop = asyncio.get_running_loop()
+    dead = Dead("dead", loop.time, delay=0.05)
+    good = FakeUpstream("good")
+    fwd = _forwarder([dead, good], "sequential")
+
+    await fwd.resolve(_query())                   # pays the timeout once
+    t = time.monotonic()
+    for _ in range(5):
+        seen: list[str] = []
+        await fwd.resolve(_query(), seen.append)
+        assert seen == ["good"]
+    assert dead.asked == 1, "a recently failed upstream was asked first again"
+    assert time.monotonic() - t < 0.05
+
+    # its failure is forgotten after the window, and it gets asked first again
+    monkeypatch.setattr(fwdmod, "_FAILURE_MEMORY", 0.0)
+    await fwd.resolve(_query())
+    assert dead.asked == 2
+
+
+# --- memory bounds count bytes, not just entries ---
+def _big(name: str, size: int):
+    from trench.wire import RR, Class, Type
+    from trench.wire import rdata as R
+    from trench.wire.name import Name
+    r = _good(name)
+    r.answers = [RR(Name.from_text(name), Type.TXT, Class.IN, 300,
+                    R.TXT([b"x" * 255] * (size // 256)))]
+    return r
+
+
+def test_the_cache_is_bounded_by_size_as_well_as_count():
+    """100,000 entries of up to 64 KiB each was a 6 GiB worst case."""
+    c = Cache(max_entries=100_000, max_bytes=200_000)
+    for i in range(20):
+        name = f"big{i}.example."
+        c.put(Cache.key_for(query(name)), _big(name, 30_000))
+    assert c.bytes <= 200_000
+    assert 0 < c.size < 20 and c.stats["evictions"] == 20 - c.size
+    newest = Cache.key_for(query("big19.example."))
+    assert c.get(newest) is not None, "LRU order: the newest must survive"
+    assert c.get(Cache.key_for(query("big0.example."))) is None
+
+
+def test_the_byte_count_follows_every_way_out():
+    c = Cache(max_bytes=10_000_000)
+    k = Cache.key_for(query("a.example."))
+    c.put(k, _good())
+    one = c.bytes
+    assert one > 0
+    c.put(k, _good(ip="5.6.7.8"))          # a replacement is not charged twice
+    assert c.bytes == one
+    c.put(Cache.key_for(query("b.example.")), _good("b.example."))
+    c.flush("a.example")
+    assert c.bytes == one
+    c.flush()
+    assert c.bytes == 0
+
+
+def test_an_answer_larger_than_the_whole_budget_is_not_cached():
+    c = Cache(max_bytes=10_000)
+    c.put(Cache.key_for(query("a.example.")), _good())
+    c.put(Cache.key_for(query("huge.example.")), _big("huge.example.", 20_000))
+    assert c.size == 1 and c.get(Cache.key_for(query("a.example."))) is not None
+
+
+def test_lowering_the_bound_applies_at_once():
+    c = Cache()
+    for i in range(10):
+        c.put(Cache.key_for(query(f"h{i}.example.")), _good(f"h{i}.example."))
+    c.max_entries = 3
+    c.trim()
+    assert c.size == 3
+
+
+def test_the_fast_path_does_not_keep_large_answers(monkeypatch):
+    from test_fastpath_prefetch import _drive, _query, _setup
+
+    from trench.engine.fastpath import FastPath
+    pipe, fast, _ = _setup(ttl=300)
+    _drive(pipe, fast, _query())
+    assert fast.size == 1                    # a small answer is kept...
+    monkeypatch.setattr(FastPath, "MAX_BLOB", 20)
+    pipe, fast, _ = _setup(ttl=300)
+    _drive(pipe, fast, _query())
+    assert fast.size == 0                    # ...one over the cap is not

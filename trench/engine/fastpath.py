@@ -248,6 +248,11 @@ class FastPath:
     # diversity rather than by name count. 16k covers a home network's working
     # set several times over.
     DEFAULT_MAX = 16_384
+    #: Largest answer kept for replay. The table is bounded by count, and an
+    #: answer can be as large as TCP allows, so without this the worst case was
+    #: a gigabyte of copies. Replay is for the small, common answers; a large
+    #: one takes the normal path, from the cache.
+    MAX_BLOB = 4096
 
     def __init__(self, pipeline, max_entries: int = DEFAULT_MAX):
         self.pipeline = pipeline
@@ -436,6 +441,8 @@ class FastPath:
 
     def store(self, data: bytes, blob: bytes, ctx) -> None:
         if not self.usable or ctx.action not in self._STORABLE:
+            return
+        if len(blob) > self.MAX_BLOB:
             return
         if self._time_dependent(ctx):
             return

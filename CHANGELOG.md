@@ -122,6 +122,23 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A corrupt database hung startup forever.** The failed open left aiosqlite's
+  worker thread running, which kept the process alive with nothing listening. A
+  corrupt file is now moved aside to `<db>.corrupt-<timestamp>` and a fresh one
+  created (users, tokens and query history start empty; a new admin password is
+  printed), and any failed open closes its connection.
+- **A failing query log write logged a traceback every 250 ms.** A full disk
+  filled the log with the same error. It is now reported at most once a minute
+  with a count of lost rows, and once more when writes recover.
+- **The query log purge reported a count taken before the delete**, missing rows
+  the flush loop wrote in between. It now reports what the delete removed.
+- **`sequential` waited on a dead first upstream for every query.** Upstreams
+  that failed in the last 30 seconds are now tried last; configured order still
+  holds among the healthy ones.
+- **The cache was bounded by entry count only**, a worst case near 6 GiB. The new
+  `cache.max_bytes` (default 64 MiB, editable live) bounds its size too.
+- **The fast-path replay table kept answers of any size.** Answers over 4 KiB
+  are no longer recorded there; they are still cached normally.
 - **DNSSEC: algorithm 7 validated as BOGUS.** RSASHA1-NSEC3-SHA1 (RFC 5155 §2)
   was missing from the verifier's hash table, so every zone signed with it
   failed validation.

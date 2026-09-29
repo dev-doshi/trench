@@ -202,6 +202,7 @@ class UpstreamConfig(Section):
 class CacheConfig(Section):
     enabled: bool = True
     max_entries: int = 100_000
+    max_bytes: int = 64 * 1024 * 1024   # wire bytes held; bounds size, not just count
     min_ttl: int = 0
     max_ttl: int = 86_400
     negative_ttl: int = 900

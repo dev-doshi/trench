@@ -58,6 +58,7 @@ class _Entry:
     ttl: int              # seconds, authoritative remaining-at-insert
     stale_until: float    # monotonic deadline past which even stale is dropped
     hits: int = 0
+    size: int = 0         # wire bytes, charged against `max_bytes`
 
 
 def _copy_edns(edns):
@@ -84,12 +85,23 @@ def detach(msg: Message) -> Message:
                    edns=_copy_edns(msg.edns))
 
 
+#: Default bound on the wire bytes the cache holds. `max_entries` alone bounds
+#: the count and not the size: at 100,000 entries an answer can be as large as
+#: TCP allows, 64 KiB, so the worst case was over 6 GiB — reachable by anyone
+#: able to query many names under a zone that serves large answers. Ordinary
+#: traffic averages a couple of hundred bytes an answer and never gets near it.
+DEFAULT_MAX_BYTES = 64 * 1024 * 1024
+
+
 class Cache:
-    def __init__(self, *, max_entries: int = 100_000, min_ttl: int = 0,
+    def __init__(self, *, max_entries: int = 100_000,
+                 max_bytes: int = DEFAULT_MAX_BYTES, min_ttl: int = 0,
                  max_ttl: int = 86_400, negative_ttl: int = 900,
                  serve_stale: bool = True, serve_stale_max: int = 86_400,
                  enabled: bool = True, shared=None):
         self.max_entries = max_entries
+        self.max_bytes = max_bytes
+        self.bytes = 0                # wire bytes currently held
         self.min_ttl = min_ttl
         self.max_ttl = max_ttl
         self.negative_ttl = negative_ttl
@@ -142,7 +154,7 @@ class Cache:
                 # expired: treat as a miss so it gets refetched, but keep the
                 # entry around as a fallback in case that refetch fails
             else:
-                self._store.pop(key, None)
+                self._discard(key)
         # local miss -> consult the shared cross-worker cache (L2)
         shared_hit = self._shared_get(key, now)
         if shared_hit is not None:
@@ -162,14 +174,12 @@ class Cache:
         except Exception:
             return None
         # promote into the local L1 so subsequent hits are lock-free
-        self._store[key] = _Entry(msg=msg, inserted=now, ttl=remaining,
-                                  stale_until=now + remaining + self.serve_stale_max)
         # Same trim `put` does. Without it this path grew L1 without limit: a
         # read-mostly worker fed by a sibling's L2 never inserts through `put`,
         # so max_entries was never enforced on it at all.
-        while len(self._store) > self.max_entries:
-            self._store.popitem(last=False)
-            self.stats["evictions"] += 1
+        self._insert(key, _Entry(msg=msg, inserted=now, ttl=remaining,
+                                 stale_until=now + remaining + self.serve_stale_max,
+                                 size=len(wire)))
         self.stats["shared_hits"] += 1
         return self._with_ttl(msg, max(0, int(remaining))), False
 
@@ -188,21 +198,43 @@ class Cache:
         ttl = self._derive_ttl(msg)
         if ttl <= 0 and msg.rcode == Rcode.NOERROR and msg.answers:
             return  # explicit zero-TTL, do not cache
+        try:
+            wire = msg.to_wire()
+        except Exception:
+            return      # cannot be sized, and could not be served back either
+        if len(wire) > self.max_bytes:
+            return
         now = time.monotonic()
-        entry = _Entry(msg=detach(msg), inserted=now, ttl=ttl,
-                       stale_until=now + ttl + self.serve_stale_max)
-        self._store[key] = entry
-        self._store.move_to_end(key)
+        self._insert(key, _Entry(msg=detach(msg), inserted=now, ttl=ttl,
+                                 stale_until=now + ttl + self.serve_stale_max,
+                                 size=len(wire)))
         self.stats["stores"] += 1
-        while len(self._store) > self.max_entries:
-            self._store.popitem(last=False)
-            self.stats["evictions"] += 1
         # write through to the shared L2 so other workers benefit
         if self.shared is not None:
             try:
-                self.shared.put(key64(*key), msg.to_wire(), ttl)
+                self.shared.put(key64(*key), wire, ttl)
             except Exception:
                 pass
+
+    def _insert(self, key: CacheKey, entry: _Entry) -> None:
+        """Store `entry` as the most recently used, then trim to both bounds."""
+        self._discard(key)
+        self._store[key] = entry
+        self.bytes += entry.size
+        self.trim()
+
+    def _discard(self, key: CacheKey) -> None:
+        old = self._store.pop(key, None)
+        if old is not None:
+            self.bytes -= old.size
+
+    def trim(self) -> None:
+        """Evict least recently used entries until within both bounds."""
+        while self._store and (len(self._store) > self.max_entries
+                               or self.bytes > self.max_bytes):
+            _, old = self._store.popitem(last=False)
+            self.bytes -= old.size
+            self.stats["evictions"] += 1
 
     def _derive_ttl(self, msg: Message) -> int:
         mt = msg.min_ttl()
@@ -261,6 +293,7 @@ class Cache:
         if domain is None:
             n = len(self._store)
             self._store.clear()
+            self.bytes = 0
             if self.shared is not None:
                 self.shared.clear()
             return n
@@ -268,7 +301,7 @@ class Cache:
         victims = [k for k in self._store
                    if k.qname == d or k.qname.endswith(d) and len(k.qname) > len(d)]
         for k in victims:
-            self._store.pop(k, None)
+            self._discard(k)
             # also drop it from the shared L2, or the next miss reads the
             # flushed answer straight back in
             if self.shared is not None:
@@ -334,7 +367,8 @@ class Cache:
             try:
                 key_list, wire_hex, ttl = item
                 key = CacheKey(bytes.fromhex(key_list[0]), *key_list[1:])
-                msg = Message.parse(bytes.fromhex(wire_hex))
+                wire = bytes.fromhex(wire_hex)
+                msg = Message.parse(wire)
                 # Checked here, not trusted: a TTL that is not a number used to
                 # be stored as-is and then raised TypeError from `get` on every
                 # query for that name, long after start-up had reported success.
@@ -345,14 +379,13 @@ class Cache:
                 ttl = min(ttl, self.max_ttl)
             except Exception:
                 continue
-            self._store[key] = _Entry(msg=msg, inserted=now, ttl=ttl,
-                                      stale_until=now + ttl + self.serve_stale_max)
+            # The same bounds `put` keeps. A dump taken under a larger
+            # `max_entries` — or one simply edited by hand — was restored in
+            # full, leaving the cache over its limit until enough new answers
+            # had been stored to trim it. The file is in LRU order, so the
+            # oldest are the ones dropped.
+            self._insert(key, _Entry(msg=msg, inserted=now, ttl=ttl,
+                                     stale_until=now + ttl + self.serve_stale_max,
+                                     size=len(wire)))
             n += 1
-        # The same bound `put` keeps. A dump taken under a larger `max_entries`
-        # — or one simply edited by hand — was restored in full, leaving the
-        # cache over its limit until enough new answers had been stored to trim
-        # it. The file is in LRU order, so the oldest are the ones dropped.
-        while len(self._store) > self.max_entries:
-            self._store.popitem(last=False)
-            self.stats["evictions"] += 1
         return min(n, len(self._store))

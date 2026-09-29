@@ -86,6 +86,7 @@ class App:
         self.counters = Counters(shared=shared)
         self.cache = Cache(
             enabled=config.cache.enabled, max_entries=config.cache.max_entries,
+            max_bytes=config.cache.max_bytes,
             min_ttl=config.cache.min_ttl, max_ttl=config.cache.max_ttl,
             negative_ttl=config.cache.negative_ttl, serve_stale=config.cache.serve_stale,
             serve_stale_max=config.cache.serve_stale_max, shared=cache_shared,
@@ -267,7 +268,7 @@ class App:
             await self.reload_clients()
             return
         self.db = Database(self.config.data_path / self.config.querylog.db)
-        await self.db.connect()
+        await self.db.connect(recover_corrupt=True)
         # Through the applier, so a query log brought up at boot and one brought
         # up by a settings change are the same query log, with the same retention
         # job behind it.
@@ -762,11 +763,13 @@ class App:
         c = self.config.cache
         self.cache.enabled = c.enabled
         self.cache.max_entries = c.max_entries
+        self.cache.max_bytes = c.max_bytes
         self.cache.min_ttl = c.min_ttl
         self.cache.max_ttl = c.max_ttl
         self.cache.negative_ttl = c.negative_ttl
         self.cache.serve_stale = c.serve_stale
         self.cache.serve_stale_max = c.serve_stale_max
+        self.cache.trim()          # a lowered bound applies now, not at the next store
 
     async def _adopt_pipeline(self) -> None:
         c = self.config

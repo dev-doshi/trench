@@ -120,6 +120,7 @@ upstream:
 cache:
   enabled: true
   max_entries: 100000
+  max_bytes: 67108864    # 64 MiB of answers; bounds memory, not just the count
   min_ttl: 0
   max_ttl: 86400
   negative_ttl: 900
