@@ -124,7 +124,7 @@ def test_a_ds_set_of_unsupported_algorithms_makes_the_zone_insecure():
     v.ask = ask
     v._verify = lambda *a, **k: (True, None)            # the DS itself is signed
     work = chain._Work(10, 10)
-    assert asyncio.run(v._delegation(child, parent, [], work)) == ("insecure", None)
+    assert asyncio.run(v._delegation(child, parent, [], work))[:2] == ("insecure", None)
 
 
 # --- TSIG --------------------------------------------------------------------

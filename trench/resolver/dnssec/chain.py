@@ -31,6 +31,7 @@ the whole validator is testable against a mock signed hierarchy with no network.
 from __future__ import annotations
 
 import logging
+import time
 from collections import defaultdict
 
 from ...wire import Type
@@ -65,6 +66,9 @@ ROOT_ANCHORS = [
 ]
 
 MAX_DEPTH = 128                 # a name cannot carry more labels than this
+#: Longest any conclusion about a key or a delegation is trusted without being
+#: re-established, whatever TTL the zone asked for (the usual resolver cap).
+MAX_TRUST_TTL = 86400
 ZONE_FLAG = 0x0100              # DNSKEY flags bit 7 (RFC 4034 §2.1.1)
 ROOT = Name(())
 
@@ -128,9 +132,49 @@ class Validator:
         self.max_chain_queries = max_chain_queries
         self.max_nsec3_iterations = max_nsec3_iterations
         self.now = now
-        # keyed on (zone, DS-set fingerprint) — see _keys_for
-        self._keys: dict[tuple, list[R.DNSKEY]] = {}
-        self._state: dict[str, tuple[str, Name, list[R.DNSKEY] | None]] = {}
+        # keyed on (zone, DS-set fingerprint) — see _keys_for. Both caches hold
+        # (expiry, value), expiry on the monotonic clock: see `_expiry`.
+        self._keys: dict[tuple, tuple[float, list[R.DNSKEY]]] = {}
+        self._state: dict[str, tuple[float, tuple[str, Name, list[R.DNSKEY] | None]]] = {}
+
+    # ------------------------------------------------------------ cache ttl
+    def _expiry(self, rrs, sigs=()) -> float:
+        """When trust derived from these records must be re-established.
+
+        The smallest record TTL, cut short by the earliest RRSIG expiration and
+        capped at `MAX_TRUST_TTL`. These caches used to keep an entry until the
+        process restarted, so a rolled or revoked key, or a zone that went
+        insecure or became signed, was never noticed.
+        """
+        ttl = float(MAX_TRUST_TTL)
+        for rr in rrs:
+            ttl = min(ttl, rr.ttl)
+        wall = int(self.now if self.now is not None else time.time())
+        for sig in sigs:
+            ttl = min(ttl, (sig.expiration - wall) % (1 << 32))   # serial arithmetic
+        return time.monotonic() + max(0.0, ttl)
+
+    @staticmethod
+    def _cached(cache: dict, key):
+        hit = cache.get(key)
+        if hit is None:
+            return None
+        if hit[0] <= time.monotonic():
+            del cache[key]
+            return None
+        return hit
+
+    @staticmethod
+    def _store(cache: dict, key, expires: float, value, limit: int) -> None:
+        if expires <= time.monotonic():
+            return
+        if len(cache) >= limit:
+            now = time.monotonic()
+            for k in [k for k, (exp, _) in cache.items() if exp <= now]:
+                del cache[k]
+            if len(cache) >= limit:
+                return
+        cache[key] = (expires, value)
 
     # ------------------------------------------------------------ public API
     async def validate(self, owner: Name, rtype: int, rdatas: list,
@@ -248,30 +292,36 @@ class Validator:
         state is 'secure' (keys are that zone's trusted DNSKEYs) or 'insecure'
         (a delegation at or above `name` was proven to carry no DS).
         """
+        return (await self._trust(name, work))[1]
+
+    async def _trust(self, name: Name, work):
+        """`_trust_at`, plus when the answer stops being valid: a conclusion
+        is only as fresh as the least fresh link in the chain behind it."""
         key = name.to_text()
-        hit = self._state.get(key)
+        hit = self._cached(self._state, key)
         if hit is not None:
             return hit
         if len(name.labels) > MAX_DEPTH:
             raise DNSSECError("name too deep")
 
         if name.is_root():
-            out = ("secure", ROOT, await self._root_keys(work))
+            keys, exp = await self._keys_exp(ROOT, self.anchors, work)
+            out = ("secure", ROOT, keys)
         else:
-            state, zone, keys = await self._trust_at(name.parent(), work)
+            exp, (state, zone, keys) = await self._trust(name.parent(), work)
             if state != "secure":
                 out = (state, zone, keys)
             else:
-                kind, child_keys = await self._delegation(name, zone, keys, work)
+                kind, child_keys, own = await self._delegation(name, zone, keys, work)
+                exp = min(exp, own)
                 if kind == "secure":
                     out = ("secure", name, child_keys)
                 elif kind == "insecure":
                     out = ("insecure", name, None)
                 else:                                   # no zone cut here
                     out = ("secure", zone, keys)
-        if len(self._state) < 8192:
-            self._state[key] = out
-        return out
+        self._store(self._state, key, exp, out, 8192)
+        return exp, out
 
     async def _root_keys(self, work) -> list[R.DNSKEY]:
         return await self._keys_for(ROOT, self.anchors, work)
@@ -280,7 +330,8 @@ class Validator:
                           parent_keys: list[R.DNSKEY], work):
         """Is `child` a zone cut, and if so is it signed?
 
-        Returns ('secure', keys), ('insecure', None) or ('nocut', None).
+        Returns ('secure', keys, expiry), ('insecure', None, expiry) or
+        ('nocut', None, expiry).
         """
         work.query()
         msg = await self.ask(child, Type.DS)
@@ -301,11 +352,15 @@ class Validator:
             # RFC 4035 §5.2: only DS records we can act on count. A child
             # signed solely with an algorithm or digest we do not implement is
             # treated as unsigned; calling it bogus SERVFAILed the whole zone.
+            # Either verdict rests on this DS set, so it lasts no longer.
+            ds_rrs = [rr for rr in msg.answers if rr.rtype == Type.DS and rr.name == child]
+            ds_exp = self._expiry(ds_rrs, sigs)
             usable = [d for d in ds if d.algorithm in SUPPORTED_ALGOS
                       and d.digest_type in SUPPORTED_DIGESTS]
             if not usable:
-                return "insecure", None
-            return "secure", await self._keys_for(child, usable, work)
+                return "insecure", None, ds_exp
+            keys, kexp = await self._keys_exp(child, usable, work)
+            return "secure", keys, min(kexp, ds_exp)
 
         nsecs, n3 = self._denial_records(msg.authority, parent_zone, parent_keys, work)
         verdict = None
@@ -315,19 +370,25 @@ class Validator:
             verdict = nsec3_ds_denial(child, n3)
         if verdict is None:
             raise DNSSECError(f"absence of DS for {child.to_text()} is unproven")
-        return verdict, None
+        proof = [rr for rr in msg.authority if rr.rtype in (Type.NSEC, Type.NSEC3, Type.RRSIG)]
+        return verdict, None, self._expiry(
+            proof, [rr.rdata for rr in proof if isinstance(rr.rdata, R.RRSIG)])
 
     async def _keys_for(self, zone: Name, ds_set: list[R.DS], work) -> list[R.DNSKEY]:
         """Fetch `zone`'s DNSKEY RRset and anchor it against a trusted DS."""
+        return (await self._keys_exp(zone, ds_set, work))[0]
+
+    async def _keys_exp(self, zone: Name, ds_set: list[R.DS], work):
+        """`_keys_for`, plus when the keys must be fetched and checked again."""
         # Keyed on the DS set as well as the zone. Returning a cached key list
         # before looking at `ds_set` meant a later descent arriving with a
         # rolled or revoked DS reused the keys the old DS anchored — the cache
         # answered a question it had not been asked.
         ck = (zone.to_text(), tuple(sorted(
             (d.key_tag, d.algorithm, d.digest_type, bytes(d.digest)) for d in ds_set)))
-        cached = self._keys.get(ck)
+        cached = self._cached(self._keys, ck)
         if cached is not None:
-            return cached
+            return cached[1], cached[0]
         work.query()
         msg = await self.ask(zone, Type.DNSKEY)
         # `isinstance`, not `rtype` alone: a DNSKEY record whose rdata did not
@@ -364,9 +425,11 @@ class Validator:
                     continue
                 work.sign_op()
                 if verify_rrset(zone, Type.DNSKEY, 1, dnskeys, sig, k, now=self.now):
-                    if len(self._keys) < 4096:
-                        self._keys[ck] = usable
-                    return usable
+                    exp = self._expiry(
+                        [rr for rr in msg.answers
+                         if rr.rtype == Type.DNSKEY and rr.name == zone], [sig])
+                    self._store(self._keys, ck, exp, usable, 4096)
+                    return usable, exp
         raise DNSSECError(f"DNSKEY for {zone.to_text()} not anchored to its DS")
 
     @staticmethod
