@@ -1,14 +1,15 @@
 <script setup lang="ts">
 /* A shape, not a chart: no axes, no numbers. It sits under a figure to say
- * whether that figure is rising, falling or spiky. */
+ * whether that figure is rising, falling or spiky. Given `max`, it draws from
+ * zero to that, so a column of sparks on one scale can be compared. */
 import { computed } from "vue";
 
-const props = defineProps<{ values: number[]; colour: string }>();
+const props = defineProps<{ values: number[]; colour: string; max?: number }>();
 
 const d = computed(() => {
   const v = props.values;
   if (v.length < 2) return null;
-  const max = Math.max(...v), min = Math.min(...v);
+  const max = props.max ?? Math.max(...v), min = props.max ? 0 : Math.min(...v);
   const range = max - min || 1;
   const pts = v.map((y, i) => [(i / (v.length - 1)) * 100, 26 - ((y - min) / range) * 22]);
   const line = pts.map(([x, y], i) => `${i ? "L" : "M"}${x.toFixed(2)} ${y.toFixed(2)}`).join(" ");

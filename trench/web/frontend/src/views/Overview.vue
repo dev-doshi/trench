@@ -18,9 +18,11 @@ import Spark from "../ui/Spark.vue";
 import Trend from "../ui/Trend.vue";
 
 const RANGES = [{ hours: 24, label: "24 hours" }, { hours: 168, label: "7 days" }];
-/* Colour means an outcome and nothing else, so a ranking that is not one is
- * drawn in ink weight, heaviest first — tokens, so it holds in either skin. */
-const INK = ["var(--b-ink)", "var(--b-ink-2)", "var(--b-ink-3)", "var(--b-ink-4)"];
+/* Colour means an outcome and nothing else. Anything that is not one is drawn
+ * in a single ink and labelled where it is drawn, never told apart by shade:
+ * greys a step apart cannot be matched to a legend. */
+const LINE = "var(--b-ink-2)";
+const TOP = 6;
 const nf = new Intl.NumberFormat();
 
 type Ranked = [string, number][];
@@ -57,9 +59,9 @@ async function load() {
       an({ bucket: "hour", group: "action", top: 12 }),
       an({ bucket: "hour", metric: "avg_latency" }),
       an({ metric: "avg_latency" }),
-      an({ group: "qtype", top: INK.length - 1 }),
-      an({ group: "upstream", top: INK.length + 1 }),
-      an({ bucket: "hour", group: "client_ip", top: INK.length }),
+      an({ group: "qtype", top: TOP }),
+      an({ group: "upstream", top: TOP + 1 }),
+      an({ bucket: "hour", group: "client_ip", top: TOP }),
       an({ group: "qname", top: 10 }),
       an({ group: "qname", action: "blocked", top: 10 }),
       an({ group: "client_ip", top: 10 }),
@@ -73,7 +75,7 @@ async function load() {
     latencyAll.value = latAll.rows?.[0]?.[1] ?? null;
     qtypes.value = qt.rows || [];
     // an empty upstream is a cache hit, a block or a local answer
-    upstreams.value = (up.rows || []).filter((x: [string, number]) => x[0]).slice(0, INK.length);
+    upstreams.value = (up.rows || []).filter((x: [string, number]) => x[0]).slice(0, TOP);
     activity.value = act.series || [];
     names.value = n.rows || [];
     blocked.value = b.rows || [];
@@ -156,21 +158,20 @@ const stacks = computed(() => KINDS.filter((k) => byKind.value.has(k)).map((k) =
 const outcomeParts = computed(() => KINDS.filter((k) => totals.value.by[k]).map((k) => ({
   name: meta(k).label, value: totals.value.by[k], colour: colourOf(k),
 })));
-/* ranked in ink weight; `of` adds the remainder, so the ring still sums to it */
-const ranked = (rows: Ranked, of = 0) => {
-  const parts = rows.map(([name, value], i) => ({ name, value, colour: INK[i] }));
-  const rest = of - sum(rows.map((r) => r[1]));
-  if (rest > 0) parts.push({ name: "other", value: rest, colour: "var(--b-edge)" });
-  return parts;
-};
-
 const who = (ip: string) => deviceNames.value.get(ip.toLowerCase()) || "";
-const activitySeries = computed(() => activity.value.map((g, i) => ({
-  name: who(g.group) || g.group, colour: INK[i],
-  points: times.value.map((t) => [t, g.points.find((p) => p[0] === t)?.[1] ?? 0] as [number, number]),
-})));
+/* Small multiples, not overlaid lines: one row per device, each its own line
+ * on a shared scale, so the name sits beside the shape it belongs to. */
+const activityRows = computed(() => {
+  const rows = activity.value.map((g) => {
+    const at = new Map(g.points);
+    const values = times.value.map((t) => at.get(t) ?? 0);
+    return { ip: g.group, values, total: sum(values), peak: Math.max(0, ...values) };
+  });
+  const top = Math.max(1, ...rows.map((r) => r.peak));
+  return rows.map((r) => ({ ...r, top }));
+});
 const latencySeries = computed(() => latency.value.length
-  ? [{ name: "avg ms", colour: INK[1], points: latency.value }] : []);
+  ? [{ name: "avg ms", colour: LINE, points: latency.value }] : []);
 
 const figures = computed(() => {
   const by = byKind.value;
@@ -179,7 +180,7 @@ const figures = computed(() => {
   return [
     { label: "Queries", value: nf.format(totals.value.all), unit: "",
       sub: `${nf.format(Math.round(totals.value.all / hours.value))} an hour on average`,
-      colour: INK[2], spark: perHour.value },
+      colour: LINE, spark: perHour.value },
     { label: "Blocked", value: nf.format(totals.value.by.blocked), unit: share(totals.value.by.blocked),
       sub: "of all queries", colour: fillVar("blocked"), spark: by.get("blocked") ?? [] },
     { label: "Answered from cache", value: share(totals.value.by.cache), unit: "",
@@ -187,7 +188,7 @@ const figures = computed(() => {
       colour: fillVar("cache"), spark: cacheRate },
     { label: "Average response", value: latencyAll.value === null ? "—" : String(latencyAll.value), unit: "ms",
       sub: totals.value.by.failed ? `${nf.format(totals.value.by.failed)} failed` : "none failed",
-      colour: INK[2], spark: latency.value.map((p) => p[1]) },
+      colour: LINE, spark: latency.value.map((p) => p[1]) },
   ];
 });
 
@@ -245,20 +246,46 @@ const clock = computed(() => updated.value?.toLocaleTimeString([], { hour: "2-di
         </div>
         <div>
           <div class="sec-h"><h5 class="b-cap">Record types</h5><span class="b-cap ov-note">most asked for</span></div>
-          <Donut v-if="qtypes.length" :parts="ranked(qtypes, totals.all)" unit="queries" />
+          <table class="tb ov-tb" v-if="qtypes.length">
+            <tbody>
+              <tr v-for="[t, v] in qtypes" :key="t">
+                <td class="id"><RouterLink :to="browse('type', t)" class="lnk">{{ t }}</RouterLink></td>
+                <td class="ov-m"><div class="mtr"><i :style="{ width: width(v, qtypes), background: LINE }" /></div></td>
+                <td class="r">{{ nf.format(v) }}</td>
+                <td class="r ov-pct">{{ share(v) }}</td>
+              </tr>
+            </tbody>
+          </table>
           <p class="b-void-state" v-else>—</p>
         </div>
         <div>
-          <div class="sec-h"><h5 class="b-cap">Upstreams</h5></div>
-          <Donut v-if="upstreams.length" :parts="ranked(upstreams)" unit="forwarded" />
+          <div class="sec-h"><h5 class="b-cap">Upstreams</h5><span class="b-cap ov-note">share of forwarded</span></div>
+          <table class="tb ov-tb" v-if="upstreams.length">
+            <tbody>
+              <tr v-for="[u, v] in upstreams" :key="u">
+                <td class="id" :title="u">{{ u }}</td>
+                <td class="ov-m"><div class="mtr"><i :style="{ width: width(v, upstreams), background: 'var(--o-upstream)' }" /></div></td>
+                <td class="r">{{ nf.format(v) }}</td>
+                <td class="r ov-pct">{{ share(v, sum(upstreams.map((x) => x[1]))) }}</td>
+              </tr>
+            </tbody>
+          </table>
           <p class="b-void-state" v-else>Nothing forwarded in this span.</p>
         </div>
       </div>
 
       <div class="sec cols ov-cols">
         <div>
-          <div class="sec-h"><h5 class="b-cap">Device activity</h5><span class="b-cap ov-note">queries per hour, busiest four</span></div>
-          <Trend v-if="activitySeries.length" :series="activitySeries" :height="200" />
+          <div class="sec-h"><h5 class="b-cap">Device activity</h5><span class="b-cap ov-note">per hour, one scale</span></div>
+          <table class="tb ov-tb ov-mult" v-if="activityRows.length">
+            <tbody>
+              <tr v-for="r in activityRows" :key="r.ip">
+                <td class="id"><RouterLink :to="browse('client', r.ip)" class="lnk" :title="r.ip">{{ who(r.ip) || r.ip }}</RouterLink></td>
+                <td class="ov-sp"><Spark :values="r.values" :colour="LINE" :max="r.top" /></td>
+                <td class="r">{{ nf.format(r.total) }}</td>
+              </tr>
+            </tbody>
+          </table>
           <p class="b-void-state" v-else>—</p>
         </div>
         <div>
@@ -346,7 +373,9 @@ const clock = computed(() => updated.value?.toLocaleTimeString([], { hour: "2-di
 .ov-seg button { padding: 6px 12px; }
 @media (max-width: 720px) { .ov-state em { display: none; } }
 
-.tb.ov-tb { table-layout: fixed; min-width: 0; }  /* four columns fold; the 560px floor is for wider tables */
+.tb.ov-tb { table-layout: fixed; min-width: 0; }
+.ov-mult td.ov-sp { width: 50%; padding-top: 3px; padding-bottom: 3px; vertical-align: middle; }
+.ov-mult .spk { height: 22px; }  /* four columns fold; the 560px floor is for wider tables */
 .ov-tb td:first-child { padding-left: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ov-tb td.ov-m { width: 22%; }
 .ov-tb td.r { width: 56px; }
