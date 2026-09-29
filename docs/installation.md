@@ -62,16 +62,24 @@ there is nothing to pull:
 ```bash
 git clone https://github.com/dev-doshi/trench
 cd trench
+cp trench.example.yaml trench.yaml   # gitignored, so a clone has none
 docker compose up -d
 ```
 
 Run from anywhere else it fails with `no configuration file provided: not
 found`, which only means Compose could not see the file.
 
+Skip the `cp` and Docker creates an empty *directory* named `trench.yaml` in
+its place, and the container fails to start.
+
 It uses host networking, which is what lets the container serve DNS to the
-rest of the LAN, and mounts the repository's `trench.yaml` — which binds DNS
-on `:53` and the console on `:8089`, both on `0.0.0.0`. DoT (`:853`), DoH
-(`:8443`) and DoQ are disabled in that file until you give them a certificate.
+rest of the LAN, and mounts that `trench.yaml`. As copied, the example is a
+safe starter, not a LAN server: DNS answers on `127.0.0.1:5354` and the
+console on `127.0.0.1:8089`, and DoT, DoH and DoQ are off until you give them
+a certificate. To serve the network, set `server.do53.host` to `0.0.0.0` and
+`port` to `53`, and turn on `security.rate_limit` — the comments in the file
+walk through each. The database and blocklists live in the `trench-data`
+volume and survive rebuilds.
 
 On macOS and Windows, Docker Desktop does not give a container the host's
 network the way Linux does; treat Compose there as a way to build and

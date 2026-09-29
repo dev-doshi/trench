@@ -13,6 +13,7 @@ import signal
 import socket
 
 import pytest
+from support import needs_ipv6
 
 from trench import __main__ as M
 from trench.config import Config
@@ -127,6 +128,7 @@ def test_bind_do53_honours_the_per_protocol_switches():
         t.close()
 
 
+@needs_ipv6
 def test_bind_do53_uses_inet6_for_a_v6_host():
     u, t = M._bind_do53_sockets(_cfg(host="::1"))
     try:

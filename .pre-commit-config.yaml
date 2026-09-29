@@ -1,0 +1,22 @@
+# Optional: `pip install pre-commit && pre-commit install` runs the same lint
+# and type gates as CI before each commit. Versions match the dev extra.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.9
+    hooks:
+      - id: ruff
+        files: ^(trench|tests|scripts|deploy)/
+
+  - repo: local
+    hooks:
+      # The ratchet, not bare mypy: only findings missing from
+      # mypy-baseline.txt fail. Runs in your environment (it needs Trench's
+      # dependencies installed to type-check against), on the whole package
+      # because a change in one module can surface an error in another.
+      - id: mypy-gate
+        name: mypy (ratcheted)
+        entry: python3 scripts/mypy_gate.py
+        language: system
+        pass_filenames: false
+        types: [python]
+        files: ^trench/

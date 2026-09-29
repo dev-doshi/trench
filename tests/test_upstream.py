@@ -118,6 +118,40 @@ async def test_upstream_doq():
         await srv.stop()
 
 
+@pytest.mark.asyncio
+async def test_upstream_doq_needs_no_ipv6(monkeypatch):
+    """A v4 DoQ upstream must work on a kernel with IPv6 disabled.
+
+    aioquic's own `connect` always opens an AF_INET6 dual-stack socket, which
+    fails with EAFNOSUPPORT there; the forwarder must not depend on it.
+    """
+    import errno
+    import socket as socketmod
+
+    from trench.transport.doq import DoQServer
+    port = free_port()
+    srv = DoQServer(server_pipeline(), "127.0.0.1", port, None, None, CERT_DIR)
+    await srv.start()
+
+    real = socketmod.socket
+
+    class _NoV6(real):
+        def __init__(self, family=-1, *a, **k):
+            if family == socketmod.AF_INET6:
+                raise OSError(errno.EAFNOSUPPORT, "Address family not supported")
+            super().__init__(family, *a, **k)
+
+    monkeypatch.setattr(socketmod, "socket", _NoV6)
+    try:
+        fwd = Forwarder([f"quic://127.0.0.1:{port}"], strategy="sequential", verify=False)
+        resp = await fwd.resolve(mkquery())
+        assert resp.answers[0].rdata.to_text() == "93.184.216.34"
+        await fwd.close()
+    finally:
+        monkeypatch.undo()
+        await srv.stop()
+
+
 # --- stream reconnect behaviour ---------------------------------------------
 class _FlakyConn:
     """Stands in for `_StreamConn`, failing the first `fail_first` attempts.

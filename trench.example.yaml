@@ -4,7 +4,7 @@
 # `servers`, `filtering.sources`, and the `host` of each encrypted transport
 # (which defaults to 127.0.0.1 like everything else — 0.0.0.0 is shown
 # because a transport you turn on is usually one you want the LAN to reach).
-data_dir: ./data
+data_dir: ./data         # relative to the working directory; /data/data in the Docker image
 dev: false
 uvloop: true
 

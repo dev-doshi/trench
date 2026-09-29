@@ -182,6 +182,21 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A DoQ upstream that never completed its handshake held each query for
   aioquic's 60 s idle timeout; the whole exchange is now bounded by
   `upstream.timeout`.
+- A `quic://` upstream failed outright on a host with IPv6 disabled
+  (`ipv6.disable=1`, some container runtimes), even for an IPv4 server: the
+  client socket was always AF_INET6. It is now opened in the family of the
+  address the upstream resolved to.
+- The Docker image lost its data on every recreate when run on the example
+  config. The image's working directory was `/app`, so `data_dir: ./data`
+  resolved to `/app/data` in the container layer rather than the `/data`
+  volume, and the database, the compiled blocklist and the initial admin
+  password went with the container. The working directory is now `/data`, and
+  `/data/data` ships group-writable so the account `server.user` drops to can
+  write to it.
+- Shutdown closes the database even when the admin API, a secondary zone or
+  the query log fails to stop. Any of those raising used to skip the close,
+  and aiosqlite's worker thread is not a daemon, so the process answered
+  SIGTERM by never exiting.
 - Schema migrations are applied in one transaction with their bookkeeping row,
   so a failure or a kill mid-upgrade no longer leaves half a migration applied
   and unrecorded. A failed write is rolled back rather than left pending, to be

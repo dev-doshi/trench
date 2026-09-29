@@ -11,6 +11,7 @@ import stat
 import time
 
 import pytest
+from support import needs_unprivileged
 
 from trench.api.auth import LOCKOUT_THRESHOLD, SESSION_TTL, AuthManager
 from trench.security import hashutil, totp
@@ -55,6 +56,7 @@ async def test_without_a_writable_data_dir_the_password_is_printed(auth, capsys)
     assert pw in capsys.readouterr().out
 
 
+@needs_unprivileged
 @pytest.mark.asyncio
 async def test_an_unwritable_data_dir_falls_back_to_printing(auth, tmp_path, capsys):
     locked = tmp_path / "locked"

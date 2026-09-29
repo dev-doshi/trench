@@ -336,16 +336,26 @@ are open.
 
 ## Suggested order of work
 
-| # | Item | Effort |
-|---|------|--------|
-| 1 | Fix `docs/upgrading.md` distribution name and Compose step | minutes |
-| 2 | Release workflow: checkout `ref`, `tag_name`, semver `value`, gated `latest` | small |
-| 3 | Build once, attest the Python artifacts for the GitHub Release | small |
-| 4 | Resolve `[Unreleased]` vs `2.0.0` before the first tag | small |
-| 5 | Pin ruff/mypy; decide adopt-or-delete for `uv.lock` | small–medium |
-| 6 | SHA-pin actions in privileged jobs; smoke-run the CI image | small |
-| 7 | Python 3.13/3.14 in the matrix; macOS row or drop the classifier | small |
-| 8 | Enforce the mypy ratchet in `--update`; correct the backlog description | small |
-| 9 | README tree, test count, `scripts/README.md`, Dockerfile uninstall name | small |
-| 10 | Split `app.py` builders and `api/server.py` routes; decouple `engine` from `store` | medium |
-| 11 | Mirror `trench/` layout in `tests/` | medium, mechanical |
+| # | Item | Effort | Status |
+|---|------|--------|--------|
+| 1 | Fix `docs/upgrading.md` distribution name and Compose step | minutes | Done |
+| 2 | Release workflow: checkout `ref`, `tag_name`, semver `value`, gated `latest` | small | Done |
+| 3 | Build once, attest the Python artifacts for the GitHub Release | small | Done |
+| 4 | Resolve `[Unreleased]` vs `2.0.0` before the first tag | small | Guarded: `verify` fails while `[Unreleased]` has entries; the renumbering decision is still open |
+| 5 | Pin ruff/mypy; decide adopt-or-delete for `uv.lock` | small–medium | Done: lock adopted by CI, the image and Dependabot (`uv` ecosystem) |
+| 6 | SHA-pin actions in privileged jobs; smoke-run the CI image | small | Done for every workflow |
+| 7 | Python 3.13/3.14 in the matrix; macOS row or drop the classifier | small | Matrix and classifiers done; macOS classifier kept (the code handles it) without a CI row |
+| 8 | Enforce the mypy ratchet in `--update`; correct the backlog description | small | Done (`--allow-growth`) |
+| 9 | README tree, test count, `scripts/README.md`, Dockerfile uninstall name | small | Done (the stub-package layer is gone) |
+| 10 | Split `app.py` builders and `api/server.py` routes; decouple `engine` from `store` | medium | Open |
+| 11 | Mirror `trench/` layout in `tests/` | medium, mechanical | Open |
+
+Also fixed while working through these: a `quic://` upstream failed on any
+host without IPv6 (aioquic's client always opens an AF_INET6 socket), and
+tests that assume a non-root user or IPv6 loopback now skip instead of failing
+in containers. The Docker image wrote its database into the container layer rather
+than the `/data` volume when run on the example config (its working directory
+was `/app`); a component failing during shutdown left the database open, which
+kept the process from ever exiting; and a test that leaked a connection made
+the suite hang after its last test — now caught per test by a conftest guard,
+with a job timeout in CI as the backstop.

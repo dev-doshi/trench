@@ -14,7 +14,7 @@ import time
 
 import aiohttp
 import pytest
-from support import api_app, shutdown_api
+from support import api_app, needs_unprivileged, shutdown_api
 
 from trench.api.server import _config_writable, _write_config
 
@@ -821,6 +821,7 @@ def test_config_writable_for_a_new_file_in_a_writable_dir(tmp_path):
     assert ok is True and why == ""
 
 
+@needs_unprivileged
 def test_config_writable_for_a_new_file_in_an_unwritable_dir(tmp_path):
     d = tmp_path / "locked"
     d.mkdir()
@@ -832,6 +833,7 @@ def test_config_writable_for_a_new_file_in_an_unwritable_dir(tmp_path):
         d.chmod(0o700)
 
 
+@needs_unprivileged
 def test_config_writable_for_a_read_only_file(tmp_path):
     """The shipped container bind-mounts this file `:ro`, so the honest answer
     on a default install is no."""

@@ -1,12 +1,17 @@
 version: 2
 updates:
-  - package-ecosystem: pip
+  # uv.lock is what CI, the image and contributors install from, so the uv
+  # ecosystem is the one that has to move: it updates pyproject.toml and the
+  # lockfile in the same PR. Dev tools are grouped because ruff and mypy
+  # upgrades usually arrive with baseline or lint churn to review together.
+  - package-ecosystem: uv
     directory: /
     schedule: { interval: weekly }
     open-pull-requests-limit: 5
     groups:
       python-dev:
-        dependency-type: development
+        patterns: ["ruff", "mypy", "pytest*", "hypothesis", "coverage",
+                   "dnspython", "types-*"]
 
   - package-ecosystem: npm
     directory: /trench/web/frontend
@@ -16,11 +21,14 @@ updates:
       frontend:
         patterns: ["*"]
 
-  # Workflows pin actions by major tag; this is what keeps those current.
+  # Workflows pin actions by commit SHA with the version in a comment; this
+  # bumps both together.
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }
 
+  # Covers the Python base image and the uv image the Dockerfile builds with.
+  # CI's UV_VERSION (ci.yml) is not seen by Dependabot; keep it in step.
   - package-ecosystem: docker
     directory: /
     schedule: { interval: weekly }

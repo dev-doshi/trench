@@ -19,8 +19,9 @@ branch.
 **Do not open a public issue for a vulnerability.**
 
 Use GitHub's private reporting: *Security → Report a vulnerability* on the
-repository. If that is unavailable, email the address listed in the repository
-profile.
+repository. If that form is unavailable to you, open an ordinary issue that says
+only that you have a security report and asks a maintainer to enable private
+reporting or get in touch — no details, no affected component, no version.
 
 Please include:
 

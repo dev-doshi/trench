@@ -28,6 +28,9 @@ systemctl restart trench
 journalctl -u trench -n 50
 ```
 
+`trench upgrade status` shows the installed and the newest available version
+without changing anything.
+
 Or by hand, into the same virtual environment it was installed into:
 
 ```bash
@@ -35,19 +38,33 @@ Or by hand, into the same virtual environment it was installed into:
 systemctl restart trench
 ```
 
-From a checkout, `git pull && pip install -e .` instead.
+## From a checkout
+
+```bash
+git pull
+pip install -e .
+systemctl restart trench
+```
+
+With Compose, which builds the image from the checkout:
+
+```bash
+git pull
+docker compose up -d --build
+```
 
 ## Docker
+
+Once images are published, point Compose at the registry instead of `build:`
+and pin a version rather than tracking `latest` on anything you depend on:
+
+```yaml
+image: ghcr.io/dev-doshi/trench:2.0.0
+```
 
 ```bash
 docker compose pull
 docker compose up -d
-```
-
-Pin a version rather than tracking `latest` on anything you depend on:
-
-```yaml
-image: ghcr.io/dev-doshi/trench:2.0.0
 ```
 
 ## Database migrations

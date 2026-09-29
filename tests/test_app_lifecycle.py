@@ -434,6 +434,26 @@ async def test_a_frontend_that_fails_to_stop_does_not_skip_the_database(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_a_failing_api_or_query_log_stop_still_closes_the_database(tmp_path):
+    """aiosqlite's worker thread is not a daemon: a database left open by an
+    exception earlier in stop() keeps the process alive after SIGTERM."""
+    app = App(_cfg(tmp_path))
+    await app.setup_storage()
+
+    class Bad:
+        async def stop(self):
+            raise RuntimeError("boom")
+
+    real_querylog = app.querylog
+    app.api = Bad()
+    app.querylog = Bad()
+    await app.stop()                       # must not raise
+    assert app.db._db is None
+    if real_querylog is not None:
+        await real_querylog.stop()
+
+
+@pytest.mark.asyncio
 async def test_stop_cancels_the_bootstrap_tasks(tmp_path):
     app = App(_cfg(tmp_path))
     await app.setup_storage()
