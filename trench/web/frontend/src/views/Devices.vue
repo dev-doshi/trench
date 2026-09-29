@@ -28,7 +28,7 @@ import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { api } from "../lib/api";
 import { registrable } from "../lib/dnsname";
-import { entryOf, nameTitle, useNames } from "../lib/names";
+import { entryOf, nameOf, nameTitle, useNames } from "../lib/names";
 import { kindOf } from "../lib/outcome";
 import type { Row } from "../lib/qlang";
 import Spine from "../ui/Spine.vue";
@@ -234,7 +234,7 @@ function browse(ip: string) {
           <tbody>
             <tr v-for="d in named" :key="d.ip" class="click" @click="browse(d.ip)">
               <td class="id" :title="nameTitle(d.ip)">
-                {{ d.name }}
+                <span class="dev" style="max-width:260px">{{ d.name }}</span>
                 <span class="sub">
                   {{ d.ip }}<template v-if="d.group"> · {{ d.group }}</template>
                   · {{ d.identBy || "not identified" }} · {{ ago(d.last) }}
@@ -322,7 +322,7 @@ function browse(ip: string) {
           <tbody>
             <tr v-for="g in groups" :key="g.name">
               <td class="id">{{ g.name }}</td>
-              <td>{{ g.clients?.length ? g.clients.join(", ") : "—" }}</td>
+              <td :title="g.clients?.join(', ')">{{ g.clients?.length ? g.clients.map((c: string) => nameOf(c) || c).join(", ") : "—" }}</td>
               <td>
                 <span v-if="g.compiled">{{ nf.format(g.rules) }} own<span v-if="g.inherit">, plus the household's</span></span>
                 <span v-else class="b-warn">lists did not compile</span>

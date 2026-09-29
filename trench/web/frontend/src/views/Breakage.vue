@@ -25,9 +25,11 @@ import { RouterLink } from "vue-router";
 import { api } from "../lib/api";
 import { term } from "../lib/qlang";
 import { align } from "../lib/dnsname";
+import { nameOf, useNames } from "../lib/names";
 import { store } from "../lib/store";
 
 const nf = new Intl.NumberFormat();
+useNames();
 
 const findings = ref<any[]>([]);
 const high = ref(0);
@@ -125,8 +127,9 @@ const listRows = computed(() => (lists.value?.lists || []) as any[]);
           <p class="sec-note" style="margin:3px 0 0" v-if="f.rule">
             Blocked by <code>{{ f.rule }}</code><template v-if="f.source"> from {{ f.source }}</template>.
           </p>
-          <p class="sec-note" style="margin:3px 0 0;color:var(--b-ink-4)" v-if="f.clients?.length">
-            {{ f.clients.slice(0, 4).join(", ") }}<template v-if="f.clients.length > 4">, and {{ f.clients.length - 4 }} more</template>
+          <p class="sec-note" style="margin:3px 0 0;color:var(--b-ink-4)" v-if="f.clients?.length"
+             :title="f.clients.join(', ')">
+            {{ f.clients.slice(0, 4).map((ip: string) => nameOf(ip) || ip).join(", ") }}<template v-if="f.clients.length > 4">, and {{ f.clients.length - 4 }} more</template>
           </p>
         </div>
 

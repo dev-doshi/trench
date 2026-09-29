@@ -203,7 +203,7 @@ function exportNdjson() {
           <thead>
             <tr>
               <th style="width:62px">When</th>
-              <th style="width:132px">Device</th>
+              <th style="width:200px">Device</th>
               <th>Name</th>
               <th style="width:56px">Type</th>
               <th style="width:104px">Outcome</th>
@@ -216,7 +216,7 @@ function exportNdjson() {
                   :aria-expanded="open === keyOf(r)" @click="toggle(r)"
                   @keydown.enter.prevent="toggle(r)" @keydown.space.prevent="toggle(r)">
                 <td :title="stamp(r.ts)" style="color:var(--b-ink-3)">{{ ago(r.ts) }}</td>
-                <td class="id" :title="nameTitle(r.client_ip)">{{ nameOf(r.client_ip) || r.client_id || r.client_ip }}</td>
+                <td class="id" :title="nameTitle(r.client_ip)"><span class="dev">{{ nameOf(r.client_ip) || r.client_id || r.client_ip }}</span></td>
                 <td class="id">
                   <span class="dim">{{ align(r.qname).sub }}{{ align(r.qname).sub ? "." : "" }}</span>{{ align(r.qname).reg }}
                 </td>

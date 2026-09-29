@@ -172,7 +172,7 @@ const shape = computed(() => {
           <tbody>
             <tr v-for="r in ranked" :key="r.name">
               <td class="id" v-if="byDevice" :title="nameTitle(r.name)">
-                {{ nameOf(r.name) || r.name }}<span class="dim" v-if="nameOf(r.name)"> {{ r.name }}</span>
+                <span class="dev" style="max-width:320px">{{ nameOf(r.name) || r.name }}</span>
               </td>
               <td class="id" v-else>{{ r.name }}</td>
               <td class="r">{{ nf.format(r.v) }}</td>

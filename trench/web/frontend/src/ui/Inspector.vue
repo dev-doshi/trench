@@ -227,7 +227,7 @@ const ms = (us?: number) => (!us ? "—" : us >= 1000 ? `${(us / 1000).toFixed(1
             <tbody>
               <tr v-for="(r, i) in all.slice(0, 14)" :key="r.ts + '-' + i">
                 <td style="color:var(--b-ink-3)">{{ stamp(r.ts) }}</td>
-                <td class="id" :title="isDomain ? nameTitle(r.client_ip) : undefined">{{ isDomain ? (nameOf(r.client_ip) || r.client_id || r.client_ip) : r.qname }}</td>
+                <td class="id" :title="isDomain ? nameTitle(r.client_ip) : undefined"><span class="dev" v-if="isDomain">{{ nameOf(r.client_ip) || r.client_id || r.client_ip }}</span><template v-else>{{ r.qname }}</template></td>
                 <td>
                   <span class="oc">
                     <i :style="kindOf(r) === 'unknown' ? '' : `background:var(--o-${kindOf(r)})`" />

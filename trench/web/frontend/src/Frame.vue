@@ -16,6 +16,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { RouterLink, RouterView, useRoute } from "vue-router";
 import { api } from "./lib/api";
 import { local } from "./lib/local";
+import { forgetNames } from "./lib/names";
 import { store } from "./lib/store";
 import Ico from "./ui/Ico.vue";
 import Palette from "./ui/Palette.vue";
@@ -99,6 +100,7 @@ onUnmounted(() => window.removeEventListener("keydown", onKey));
 async function signOut() {
   await api.post("/auth/logout").catch(() => {});
   store.stopWs();
+  forgetNames();
   store.setUser(null);
 }
 </script>

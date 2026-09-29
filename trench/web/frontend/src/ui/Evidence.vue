@@ -134,7 +134,6 @@ function copyChain() {
         <dt>Who</dt>
         <dd>
           <button type="button" class="lnk" @click="store.inspect('client', row.client_ip)" :title="nameTitle(row.client_ip)">{{ nameOf(row.client_ip) || row.client_ip }}</button>
-          <span v-if="nameOf(row.client_ip)" class="note">{{ row.client_ip }}</span>
           <span v-if="row.client_id" class="note">{{ row.client_id }}</span>
           <span v-else class="none">unnamed — known only by address</span>
         </dd>

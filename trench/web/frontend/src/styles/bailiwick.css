@@ -611,6 +611,13 @@ button.lnk { background: none; border-width: 0 0 1px; padding: 0; font: inherit;
 }
 .tb td.id { font: 400 var(--b-id-s)/1.4 var(--b-id); color: var(--b-ink); }
 .tb td.id .dim { color: var(--b-ink-4); }
+/* A device, by name or by address, on one line. The width is capped so the
+   column is the same before and after names arrive, and never pushes the
+   row's other columns about; the full name and address are in the title. */
+.dev {
+  display: inline-block; max-width: 180px; vertical-align: bottom;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .tb tbody tr:hover td { background: var(--b-hover); }
 .tb tbody tr.on td { background: var(--b-pick); }
 .tb tbody tr.click { cursor: pointer; }
@@ -686,7 +693,7 @@ button.lnk { background: none; border-width: 0 0 1px; padding: 0; font: inherit;
    a fast-moving list unreadable. */
 .tape-r {
   display: grid;
-  grid-template-columns: 76px 74px minmax(0, 1fr) 128px 64px;
+  grid-template-columns: 76px 74px minmax(0, 1fr) 200px 64px;
   gap: var(--b-3); align-items: baseline; padding: 5px var(--b-3) 5px 10px;
   border-bottom: 1px solid var(--b-edge-soft); cursor: pointer;
   border-left: 2px solid transparent;
@@ -701,7 +708,8 @@ button.lnk { background: none; border-width: 0 0 1px; padding: 0; font: inherit;
 .tape-n { font: 400 var(--b-id-s)/1.4 var(--b-id); color: var(--b-ink-2);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tape-n .dim { color: var(--b-ink-4); }
-.tape-d { font: 400 var(--b-cap)/1.4 var(--b-id); color: var(--b-ink-4); }
+.tape-d { font: 400 var(--b-cap)/1.4 var(--b-id); color: var(--b-ink-4);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tape-ms { font: 500 var(--b-cap)/1.4 var(--b-ui); color: var(--b-ink-3);
   font-variant-numeric: tabular-nums; text-align: right; }
 

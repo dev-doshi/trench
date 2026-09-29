@@ -7,14 +7,27 @@
 // the name came from rather than presenting it as fact.
 import { reactive } from "vue";
 import { api } from "./api";
+import { local } from "./local";
 
 export type NameSource = "manual" | "dhcp" | "network";
 export interface DeviceName { name: string; source: NameSource; fqdn: string; }
 
 const REFRESH_MS = 3 * 60_000;
+const CACHE_KEY = "dg_names";
+
+/* The last names this browser saw, so the first paint already has them: rows
+ * drawn with an address and redrawn with a name a moment later jump about.
+ * Only a convenience — the server's answer always replaces it, including an
+ * empty one after names are switched off or privacy is raised. */
+function cached(): Record<string, DeviceName> {
+  try {
+    const v = JSON.parse(local.get(CACHE_KEY) || "{}");
+    return v && typeof v === "object" && !Array.isArray(v) ? v : {};
+  } catch { return {}; }
+}
 
 const state = reactive({
-  byIp: {} as Record<string, DeviceName>,
+  byIp: cached(),
   lookup: { enabled: false, via: "" },
   loaded: false,
 });
@@ -35,6 +48,7 @@ export function refreshNames(): Promise<void> {
       }
     }
     state.byIp = out;
+    local.set(CACHE_KEY, JSON.stringify(out));
     state.lookup = d?.lookup || { enabled: false, via: "" };
     state.loaded = true;
   }).catch(() => {}).finally(() => { inflight = null; });
@@ -76,4 +90,11 @@ export function nameTitle(ip: string): string {
 export function label(ip: string): string {
   const n = nameOf(ip);
   return n ? `${n} (${ip})` : ip;
+}
+
+/** On sign-out: the household's device names do not outlive the session. */
+export function forgetNames() {
+  state.byIp = {};
+  state.loaded = false;
+  local.del(CACHE_KEY);
 }

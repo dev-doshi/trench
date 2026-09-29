@@ -327,8 +327,7 @@ const clock = computed(() => updated.value?.toLocaleTimeString([], { hour: "2-di
           <table class="tb ov-tb">
             <tbody>
               <tr v-for="[ip, v] in devices" :key="ip">
-                <td class="id"><RouterLink :to="browse('client', ip)" class="lnk" :title="nameTitle(ip)">{{ who(ip) || ip }}</RouterLink>
-                  <span class="dim" v-if="who(ip)"> {{ ip }}</span></td>
+                <td class="id"><RouterLink :to="browse('client', ip)" class="lnk" :title="nameTitle(ip)">{{ who(ip) || ip }}</RouterLink></td>
                 <td class="ov-m"><div class="mtr"><i :style="{ width: width(v, devices), background: 'var(--b-ink-3)' }" /></div></td>
                 <td class="r">{{ nf.format(v) }}</td>
                 <td class="r ov-pct">{{ share(v) }}</td>
@@ -360,7 +359,7 @@ const clock = computed(() => updated.value?.toLocaleTimeString([], { hour: "2-di
 .ov-fig .spk { margin-top: var(--b-1); height: 28px; }
 
 .ov-cols { grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); }
-.ov-cols > div { min-width: 0; }
+.ov-cols > div { min-width: 0; container-type: inline-size; }
 .ov-cols .sec-h { flex-wrap: wrap; row-gap: var(--b-1); }
 .ov-cols .sec-h > * { white-space: nowrap; }
 
@@ -375,7 +374,10 @@ const clock = computed(() => updated.value?.toLocaleTimeString([], { hour: "2-di
 .ov-mult td.ov-sp { width: 50%; padding-top: 3px; padding-bottom: 3px; vertical-align: middle; }
 .ov-mult .spk { height: 22px; }  /* four columns fold; the 560px floor is for wider tables */
 .ov-tb td:first-child { padding-left: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ov-tb td.ov-m { width: 22%; }
+.ov-tb td.ov-m { width: 18%; }
+/* In a narrow card the name is the point and the bar only repeats the count
+   beside it, so the bar gives its width to the name rather than cutting it. */
+@container (max-width: 380px) { .ov-tb td.ov-m { display: none; } }
 .ov-tb td.r { width: 56px; }
 .ov-tb td.ov-pct { width: 44px; padding-right: 0; color: var(--b-ink-4); font-size: var(--b-cap); }
 .ov-tb .lnk { color: var(--b-ink); }

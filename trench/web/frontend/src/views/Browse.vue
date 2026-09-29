@@ -370,7 +370,7 @@ watch(queryText, () => { nextTick(syncUrl); });
 
 /** A device row shows its name and its address; both are identifiers. */
 function rowLabel(key: FacetKey, value: string) {
-  if (key === "device") { const n = nameOf(value); return { dim: n ? value + " " : "", main: n || value }; }
+  if (key === "device") return { dim: "", main: nameOf(value) || value };
   if (key === "name" || key === "domain") {
     const a = align(value);
     return { dim: a.sub ? a.sub + "." : "", main: a.reg };
