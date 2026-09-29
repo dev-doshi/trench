@@ -14,7 +14,7 @@
  */
 import { registrable } from "./dnsname.ts";
 import { isAuthored, isStale, kindOf, type Kind } from "./outcome.ts";
-import type { Row } from "./qlang.ts";
+import { term, type Row } from "./qlang.ts";
 
 export type FacetKey =
   | "tld" | "domain" | "name" | "device" | "qtype" | "upstream" | "rule" | "source";
@@ -39,43 +39,43 @@ export const FACETS: Record<FacetKey, FacetDef> = {
   tld: {
     key: "tld", label: "Suffix", of: "top-level domain", ident: true,
     value: (r) => clean(r.qname).split(".").pop() || "",
-    express: (v) => `tld=${v}`,
+    express: (v) => term("tld", v),
   },
   domain: {
     key: "domain", label: "Domain", of: "what somebody owns",
     ident: true,
     value: (r) => registrable(r.qname),
-    express: (v) => `reg=${v}`,
+    express: (v) => term("reg", v),
   },
   name: {
     key: "name", label: "Name", of: "the exact name asked for", ident: true,
     value: (r) => clean(r.qname),
-    express: (v) => `name=${v}`,
+    express: (v) => term("name", v),
   },
   device: {
     key: "device", label: "Device", of: "the client that asked", ident: true,
     value: (r) => r.client_ip || "",
-    express: (v) => `client=${v}`,
+    express: (v) => term("client", v),
   },
   qtype: {
     key: "qtype", label: "Type", of: "record type requested", ident: true,
     value: (r) => (r.qtype || "").toUpperCase(),
-    express: (v) => `type=${v}`,
+    express: (v) => term("type", v),
   },
   upstream: {
     key: "upstream", label: "Resolver", of: "which upstream answered", ident: true,
     value: (r) => r.upstream || "",
-    express: (v) => `upstream=${v}`,
+    express: (v) => term("upstream", v),
   },
   rule: {
     key: "rule", label: "Rule", of: "the rule that decided it", ident: true,
     value: (r) => r.rule || "",
-    express: (v) => `rule=${v}`,
+    express: (v) => term("rule", v),
   },
   source: {
     key: "source", label: "List", of: "where the deciding rule came from", ident: false,
     value: (r) => r.source || "",
-    express: (v) => `source=${v}`,
+    express: (v) => term("source", v),
   },
 };
 

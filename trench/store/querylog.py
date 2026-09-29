@@ -366,7 +366,16 @@ class QueryLog:
         if client:
             where.append("client_ip = ?"); params.append(client)
         if action:
-            where.append("action = ?"); params.append(action)
+            # A comma list is "any of these": the console's `blocked` means every
+            # action it draws as blocked (blocked, refused, ratelimited, …), and
+            # fetching them one action at a time would page the log once each.
+            # No action name contains a comma, so a single value is unchanged.
+            actions = [a for a in dict.fromkeys(action.split(",")) if a][:16]
+            if len(actions) == 1:
+                where.append("action = ?"); params.append(actions[0])
+            elif actions:
+                where.append(f"action IN ({','.join('?' * len(actions))})")
+                params.extend(actions)
         if rcode:
             where.append("rcode = ?"); params.append(rcode)
         if upstream:

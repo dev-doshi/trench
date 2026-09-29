@@ -1,6 +1,6 @@
 # Known mypy findings, recorded by scripts/mypy_gate.py.
 # New findings fail CI; this file may only ever shrink.
-# 64 finding(s).
+# 62 finding(s).
 trench/analyze/lists.py	union-attr	Item "None" of "Any | None" has no attribute "nbytes"
 trench/analyze/lists.py	union-attr	Item "None" of "Any | None" has no attribute "nbytes"
 trench/api/auth.py	index	Value of type "Row | None" is not indexable
@@ -45,13 +45,11 @@ trench/engine/pipeline.py	union-attr	Item "None" of "Question | None" has no att
 trench/engine/responses.py	union-attr	Item "None" of "Question | None" has no attribute "name"
 trench/filter/cnamecloak.py	attr-defined	"Rdata" has no attribute "name"
 trench/resolver/dnssec/chain.py	assignment	Incompatible types in assignment (expression has type "tuple[str, Name, None]", variable has type "tuple[str, Name, list[DNSKEY]]")
-trench/resolver/recursive.py	arg-type	Argument 4 to "validate" of "Validator" has incompatible type "list[Rdata]"; expected "list[RRSIG]"
 trench/resolver/recursive.py	assignment	Incompatible types in assignment (expression has type "int", variable has type "Type")
 trench/resolver/recursive.py	attr-defined	"Rdata" has no attribute "name"
 trench/resolver/recursive.py	attr-defined	"Rdata" has no attribute "name"
 trench/resolver/recursive.py	attr-defined	"Rdata" has no attribute "name"
 trench/resolver/recursive.py	attr-defined	"Rdata" has no attribute "name"
-trench/resolver/recursive.py	attr-defined	"Rdata" has no attribute "type_covered"
 trench/resolver/recursive.py	union-attr	Item "None" of "Validator | None" has no attribute "validate"
 trench/resolver/recursive.py	union-attr	Item "None" of "Validator | None" has no attribute "validate_denial"
 trench/security/acme.py	assignment	Incompatible types in assignment (expression has type "dict[Any, Any]", target has type "str")

@@ -91,9 +91,22 @@ def test_query_reports_a_failure_on_stderr(capsys):
     assert ";; query failed:" in capsys.readouterr().err
 
 
-def test_query_rejects_an_unknown_record_type():
-    with pytest.raises((KeyError, ValueError, SystemExit)):
-        main(["query", "example.com", "NOTATYPE", "--server", "127.0.0.1:1"])
+def test_query_rejects_an_unknown_record_type(capsys):
+    # A typo is a usage error with a suggestion, not a Python traceback.
+    assert main(["query", "example.com", "NOTATYPE", "--server", "127.0.0.1:1"]) == 2
+    err = capsys.readouterr().err
+    assert "unknown record type 'NOTATYPE'" in err and "AAAA" in err
+
+
+def test_query_rejects_an_unknown_transport(capsys):
+    assert main(["query", "example.com", "A", "@carrier-pigeon"]) == 2
+    assert "@udp, @tcp, @tls, @https or @quic" in capsys.readouterr().err
+
+
+def test_query_reports_how_long_it_took(capsys):
+    with UdpEcho() as srv:
+        main(["query", "example.com", "--server", f"127.0.0.1:{srv.port}"])
+    assert ";; query time:" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("transport,scheme", [

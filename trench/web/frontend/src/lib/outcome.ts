@@ -33,7 +33,10 @@ const OUTCOMES: Record<Kind, Omit<Outcome, "kind">> = {
 /** Display order everywhere: what you came to look for first. */
 export const KINDS: Kind[] = ["blocked", "failed", "cache", "upstream", "local", "unknown"];
 
-const BLOCKED = new Set(["blocked", "block", "refused", "ratelimited", "safesearch"]);
+/** Every recorded action drawn as blocked. The query language pushes this list
+ *  down to the server for `blocked`, so the two cannot disagree. */
+export const BLOCKED_ACTIONS = ["blocked", "block", "refused", "ratelimited", "safesearch"];
+const BLOCKED = new Set(BLOCKED_ACTIONS);
 const LOCAL = new Set(["authoritative", "rewrite"]);
 
 export function kindOf(r: Row): Kind {

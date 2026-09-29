@@ -83,6 +83,17 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The CLI says what went wrong, in sentences.** API commands read
+  `TRENCH_URL`/`TRENCH_TOKEN`, answer in prose at a terminal (JSON when piped
+  or with `--json`), and tell apart nothing listening, an unresolvable host, a
+  missing, rejected or under-scoped token, a non-Trench server and the daemon's
+  own refusal. Usage mistakes exit 2 with the accepted values; `query` reports
+  its time and server.
+- **Console accessibility.** Raised the contrast of the faint ink tokens,
+  and added a skip link and focus management for the sheet, palette and
+  inspector. Rows are keyboard-operable, and menus, toggles, lists and the
+  search input carry ARIA roles and state. See `docs/reviews/ui-ux-review.md`.
+
 - **Rebinding protection costs about a seventh of what it did.** The verdict for
   an answer address is a pure function of the string, and it was recomputed from
   scratch for every record of every answer: profiled, `scrub` was roughly half
@@ -121,6 +132,22 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **The `ts_stat` table**, written by nothing and read by nothing.
 
 ### Fixed
+
+- **Console: no navigation below 900 px.** The places strip was hidden and its
+  replacement button never shown; it now takes over at 980 px, and the header
+  no longer clips at laptop widths.
+- **Console: search.** A half-typed query no longer empties the page (the last
+  valid one keeps filtering), changing the server-side part of a query
+  reloads, an outcome list is pushed down as `IN`, and Browse's time window
+  follows the clock instead of dropping live rows.
+- **Console: live feed.** One WebSocket with jittered backoff instead of
+  stacked reconnects; an expired session returns to sign-in; the Live tape
+  really freezes while hovered or focused; rows beyond the cap are announced.
+- **Console: pivots quote their values**, so a domain or client with a quote
+  or space no longer breaks or widens the query; CSV export neutralises
+  formula-leading cells.
+- **`trench why`** said "1 recent queries", crashed on a finding with missing
+  fields, and hid why `--resolve` failed.
 
 - **DNSSEC: algorithm 7 validated as BOGUS.** RSASHA1-NSEC3-SHA1 (RFC 5155 §2)
   was missing from the verifier's hash table, so every zone signed with it
