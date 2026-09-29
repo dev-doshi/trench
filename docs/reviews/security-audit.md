@@ -560,4 +560,10 @@ The `plugins` collection holds module paths, and they are imported at startup. A
 - **UDP `max_inflight` cap (2048):** drops excess datagrams before creating a task.
 - **Session cookie:** `HttpOnly`, `SameSite=Strict`, and `Secure` when TLS is on.
 - **Pause endpoint:** a `NaN` duration clamps to 0, so it is harmless.
+- **Query log SQL:** every filter is bound as a parameter, and API `limit` values are clamped.
+- **Cache key:** includes DO, CD, ECS scope and view. The on-disk dump is JSON, not pickle.
+- **Name decompression:** caps pointer hops and total length, and rejects forward pointers.
+- **Dynamic UPDATE:** enforces the zone boundary (`NOTZONE`) and protects the apex SOA/NS. The TSIG key name must match the zone's key.
+- **DNSSEC delegation (`chain.py`):** DS→DNSKEY anchoring prefers SHA-256 digests, checks the ZONE flag and signer, refuses a wildcard-synthesized DS, and budgets key-tag work.
+- **Self-updater (`ops/update.py`):** checks the distribution name and sha256, smoke-tests in a staging venv, and caps artifact size. The index URL cannot be changed through the API.
 - **Rebinding classification (apart from M5):** it catches NAT64, IPv4-mapped, 6to4 and 198.18/15 addresses.
