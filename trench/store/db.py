@@ -1,6 +1,7 @@
 """Async SQLite wrapper (aiosqlite) with WAL + migrations."""
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,19 @@ from .schema import MIGRATIONS
 
 log = get("db")
 
+#: Primary result codes that mean the file itself is damaged, as opposed to
+#: busy, locked, read-only or out of space — none of which a new file would fix.
+_CORRUPT_CODES = {getattr(sqlite3, "SQLITE_CORRUPT", 11),
+                  getattr(sqlite3, "SQLITE_NOTADB", 26)}
+
+
+def _is_corrupt(e: sqlite3.DatabaseError) -> bool:
+    code = getattr(e, "sqlite_errorcode", None)
+    if code is not None:
+        return code & 0xFF in _CORRUPT_CODES
+    msg = str(e)
+    return "not a database" in msg or "malformed" in msg
+
 
 class Database:
     def __init__(self, path: str | Path):
@@ -19,7 +33,8 @@ class Database:
         self._db: aiosqlite.Connection | None = None
         self.readonly = False
 
-    async def connect(self, *, readonly: bool = False) -> None:
+    async def connect(self, *, readonly: bool = False,
+                      recover_corrupt: bool = False) -> None:
         """Open the database. `readonly` is for the non-primary workers.
 
         Only the primary may write — that is what keeps SQLite to one writer —
@@ -31,11 +46,41 @@ class Database:
         """
         parent = Path(self.path).parent
         parent.mkdir(parents=True, exist_ok=True)
+        try:
+            await self._open(readonly)
+        except sqlite3.DatabaseError as e:
+            if readonly or not recover_corrupt or not _is_corrupt(e):
+                raise
+            # The query log, its salt, the console users: none of it is worth
+            # the resolver not starting, which is what a damaged file meant —
+            # on the one box the household's DNS runs on. The file is kept
+            # beside the new one for the operator to salvage, not deleted.
+            moved = self._quarantine()
+            log.error("database %s is corrupt (%s); moved it to %s and started "
+                      "a new one. Console users, API tokens and the query log "
+                      "start empty; a new admin password is issued as on first "
+                      "run.", self.path, e, moved)
+            await self._open(readonly)
+
+    async def _open(self, readonly: bool) -> None:
+        """Open, configure and migrate — and close again if any of that fails.
+
+        aiosqlite runs each connection on a non-daemon thread. A connection
+        abandoned after a failed pragma or migration kept that thread, and so
+        the process, alive: a corrupt file did not stop the daemon, it hung it,
+        with nothing listening and nothing for a supervisor to restart.
+        """
+        try:
+            await self._configure(readonly)
+        except BaseException:
+            await self.close()
+            raise
+
+    async def _configure(self, readonly: bool) -> None:
         if readonly:
-            import aiosqlite as _a
             self.readonly = True
-            self._db = await _a.connect(f"file:{self.path}?mode=ro", uri=True)
-            self._db.row_factory = _a.Row
+            self._db = await aiosqlite.connect(f"file:{self.path}?mode=ro", uri=True)
+            self._db.row_factory = aiosqlite.Row
             await self._db.execute("PRAGMA busy_timeout=5000")
             return
         # This file holds scrypt password hashes, TOTP secrets, API-token
@@ -53,6 +98,19 @@ class Database:
                        "PRAGMA foreign_keys=ON"):
             await self._db.execute(pragma)
         await self.apply_migrations()
+
+    def _quarantine(self) -> str:
+        """Move the database and its WAL/SHM files aside; returns the new name."""
+        import os
+        import time
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        dest = f"{self.path}.corrupt-{stamp}"
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.replace(self.path + suffix, dest + suffix)
+            except FileNotFoundError:
+                pass
+        return dest
 
     @staticmethod
     def _precreate_private(path: Path) -> None:

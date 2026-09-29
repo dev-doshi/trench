@@ -62,7 +62,9 @@ async def _querylog_salt(cfg: Config) -> bytes:
     from .store import Database
     db = Database(cfg.data_path / cfg.querylog.db)
     try:
-        await db.connect()
+        # The first open of the file, before the fork: a corrupt one is moved
+        # aside here, so every worker comes up on the fresh one.
+        await db.connect(recover_corrupt=True)
         return await db.secret("querylog_salt")
     except Exception:
         logmod.get("main").exception("could not read the query-log salt")

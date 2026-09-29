@@ -245,7 +245,7 @@ async def test_a_flush_failure_is_logged_not_raised(tmp_path, caplog):
 
     db.executemany = boom
     await ql._flush()                       # must not raise
-    assert any("querylog flush failed" in r.getMessage() for r in caplog.records)
+    assert any("query log write failed" in r.getMessage() for r in caplog.records)
     await db.close()
 
 

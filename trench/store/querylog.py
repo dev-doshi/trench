@@ -100,6 +100,9 @@ class QueryLog:
         self.dropped = 0
         self._dropped_reported = 0
         self._dropped_at = float("-inf")
+        # Rows lost to failed writes since the last successful one.
+        self._failed_rows = 0
+        self._failed_at = float("-inf")
 
     @property
     def recording(self) -> bool:
@@ -242,7 +245,28 @@ class QueryLog:
         try:
             await self.db.executemany(_INSERT, rows)
         except Exception:
-            log.exception("querylog flush failed (%d rows)", len(rows))
+            self._write_failed(len(rows))
+        else:
+            if self._failed_rows:
+                log.warning("query log writes recovered; %d rows were lost while "
+                            "they were failing", self._failed_rows)
+                self._failed_rows, self._failed_at = 0, float("-inf")
+
+    def _write_failed(self, n: int) -> None:
+        """Count a lost batch, and say so at most once a minute.
+
+        The writer ticks every 250 ms, and the usual reason a write fails — a
+        full disk — does not clear by itself. A traceback per tick was four
+        log lines a second into the same full filesystem, burying the one line
+        that said what was wrong.
+        """
+        self._failed_rows += n
+        now = time.monotonic()
+        if now - self._failed_at >= 60:
+            first = self._failed_at == float("-inf")
+            self._failed_at = now
+            log.error("query log write failed; %d rows lost so far",
+                      self._failed_rows, exc_info=first)
 
     async def retention_sweep(self) -> int:
         """Delete records older than `retention_days`, a chunk at a time.
@@ -389,8 +413,9 @@ class QueryLog:
 
     async def purge(self) -> int:
         """Delete every stored query (one-click privacy purge). Returns rows removed."""
-        n = await self.count()
-        await self.store.execute("DELETE FROM querylog")
+        # The count is the delete's own: a COUNT taken first missed whatever
+        # the flush loop wrote in between, and those rows went too.
+        n = max(await self.store.execute("DELETE FROM querylog"), 0)
         # VACUUM cannot run inside a transaction, and this connection is shared
         # with the 250 ms flush loop — so it reliably raised *after* the rows
         # were already gone, and the operator saw a 500 for a purge that had in
