@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import random
 import secrets
 import ssl
 from dataclasses import dataclass, field
@@ -23,12 +22,16 @@ from ..errors import UpstreamError
 from ..log import get
 from ..wire import Message
 from ..wire.name import suffixes
-from ..wire.rrtypes import Flags
+from ..wire.rrtypes import Flags, Rcode
 
 if TYPE_CHECKING:
     from .quicclient import DoQClient
 
 log = get("upstream")
+_SYSRAND = secrets.SystemRandom()
+
+#: The longest a DNS message can be; a DoH body past this is not one.
+MAX_DNS_MESSAGE = 65535
 
 
 @dataclass
@@ -145,7 +148,7 @@ class _UdpSocket(asyncio.DatagramProtocol):
     outstanding on the same socket and UDP does not promise order.
     """
 
-    __slots__ = ("pending", "questions", "rejected", "transport", "pool", "closed")
+    __slots__ = ("pending", "questions", "rejected", "transport", "pool", "closed", "left")
 
     def __init__(self, pool: UdpPool | None = None) -> None:
         self.pending: dict[int, asyncio.Future] = {}
@@ -154,6 +157,7 @@ class _UdpSocket(asyncio.DatagramProtocol):
         self.transport: asyncio.DatagramTransport | None = None
         self.pool = pool
         self.closed = False
+        self.left = UdpPool.lifetime() if pool is not None else 1
 
     def connection_made(self, transport) -> None:
         self.transport = transport
@@ -260,7 +264,24 @@ class UdpPool:
 
     Sockets are opened all at once on first use, because entropy comes from how
     many exist — a pool that grows on demand would start out predictable.
+
+    Each socket is also retired after a random number of queries and replaced
+    by a fresh ephemeral port. A pool that never changed let an attacker who
+    learned its ports (by watching, or by probing over time) keep them for the
+    life of the process, shrinking the port entropy towards zero; rotation
+    bounds how long any learned port stays useful, at an amortised cost of
+    about 1 us per query. Selection uses the OS CSPRNG for the same reason the
+    transaction id does: Mersenne Twister output is predictable from samples.
     """
+
+    #: Queries a socket carries before it is replaced: uniform in this range,
+    #: so an observer cannot tell when a given port will go.
+    LIFETIME = (32, 128)
+
+    @classmethod
+    def lifetime(cls) -> int:
+        lo, hi = cls.LIFETIME
+        return lo + secrets.randbelow(hi - lo)
 
     def __init__(self, host: str, port: int, size: int):
         self.host = host
@@ -312,14 +333,21 @@ class UdpPool:
         txid = (wire[0] << 8) | wire[1]
         # Pick a socket that is not already waiting on this transaction id;
         # otherwise two replies would be indistinguishable to the dispatcher.
-        sock = random.choice(self._socks)
+        socks = self._socks
+        sock = socks[secrets.randbelow(len(socks))]
         if txid in sock.pending:
-            for cand in random.sample(self._socks, min(8, len(self._socks))):
+            for cand in _SYSRAND.sample(socks, min(8, len(socks))):
                 if txid not in cand.pending:
                     sock = cand
                     break
             else:
                 raise UpstreamError("no free upstream socket for this query id")
+        sock.left -= 1
+        if sock.left <= 0:
+            # Out of the pool now, so no new query picks it; closed once the
+            # queries already on it are answered. `_ensure` opens its successor.
+            self.discard(sock)
+            sock.pool = None
         loop = asyncio.get_running_loop()
         fut = loop.create_future()
         sock.expect(wire, fut)
@@ -328,6 +356,8 @@ class UdpPool:
             return await sock.wait(txid, fut, timeout)
         finally:
             sock.forget(txid)
+            if sock.pool is None and not sock.pending:
+                sock.close()
 
     def close(self) -> None:
         for s in self._socks:
@@ -480,6 +510,11 @@ def _check_response(resp: Message, sent: Message, *, check_id: bool) -> None:
         # sanitize() cannot filter them either, having no question to work from.
         if resp.answers or resp.authority or resp.additional:
             raise UpstreamError("upstream response has records but no question")
+        # Nor may it be an answer. An empty NOERROR or NXDOMAIN is a negative
+        # answer that gets cached, and with no question it also escapes the
+        # 0x20 check further up: a spoofer needed only the id to erase a name.
+        if resp.rcode in (Rcode.NOERROR, Rcode.NXDOMAIN):
+            raise UpstreamError("upstream answer has no question")
         return
     if got.name != want.name or got.rtype != want.rtype or got.rclass != want.rclass:
         raise UpstreamError(f"upstream answered a different question "
@@ -508,6 +543,10 @@ class Upstream:
         self._ssl: dict[tuple[str, ...], ssl.SSLContext] = {}
         if udp_source_ports > 0 and spec.scheme == "udp":
             self._pool = UdpPool(spec.host, spec.port, udp_source_ports)
+        # 0x20 on plain UDP, learned per upstream (see `_case_sent`/`_case_got`).
+        # None = still learning, True = echoes case (enforced), False = does not.
+        self._case_echo: bool | None = None
+        self._case_misses = 0
 
     def __repr__(self) -> str:
         return f"{self.spec.scheme}://{self.spec.host}:{self.spec.port}"
@@ -525,6 +564,7 @@ class Upstream:
                 # from opening a fresh socket per query.
                 sent = copy.copy(msg)
                 sent.id = secrets.randbelow(65536)
+                self._case_sent(sent)
                 wire = sent.to_wire()
                 data = await self._udp(wire)
                 resp = Message.parse(data)
@@ -532,6 +572,7 @@ class Upstream:
                 if resp.tc:
                     resp = Message.parse(await self._tcp(wire))
                     _check_response(resp, sent, check_id=True)
+                self._case_got(resp, sent, msg)
                 resp.id = msg.id          # hand the client back its own id
             elif scheme in ("tcp", "tls"):
                 wire = msg.to_wire()
@@ -574,12 +615,71 @@ class Upstream:
             self.failed_at = loop.time()
             raise
 
+    #: Mismatched echoes, with no match ever seen, before concluding that an
+    #: upstream rewrites case and giving up 0x20 on it.
+    CASE_LEARN = 3
+
+    def _case_sent(self, sent: Message) -> None:
+        """Randomise the case of a plain-UDP query name (RFC 5452 §9.1, 0x20).
+
+        Plain UDP is the one transport where an off-path spoofer only has to
+        guess the transaction id and port: ~26 bits against the default pool.
+        On a name like `www.example.com` this adds ~13 more, per query, with
+        nothing to configure. It is on for every plain-UDP upstream —
+        forwarders and the recursive resolver's authoritative servers alike —
+        because it is learned rather than assumed: see `_case_got`.
+        """
+        q = sent.question
+        if self._case_echo is False or q is None:
+            return
+        from ..engine.zerox20 import randomize_name  # engine imports transport
+        sent.questions = [q.__class__(randomize_name(q.name), q.rtype, q.rclass),
+                          *sent.questions[1:]]
+
+    def _case_got(self, resp: Message, sent: Message, msg: Message) -> None:
+        """Check the echoed case, then hand back the case the caller sent.
+
+        A mismatch that got this far carried the right id from the right port,
+        so it is either a spoof that won a ~26-bit guess or an upstream that
+        does not echo case. The first matching echo settles which kind of
+        upstream this is, and from then on a mismatch is refused. Until then a
+        mismatch is accepted and counted. `CASE_LEARN` mismatches in a row,
+        learning or not, mean the upstream rewrites case, and 0x20 is turned
+        off for it rather than failing every query it answers.
+        """
+        q, got = sent.question, resp.question
+        orig = msg.question
+        if q is None or got is None or orig is None or q.name.labels == orig.name.labels:
+            return
+        if got.name.labels == q.name.labels:
+            self._case_misses = 0
+            # Only a mixed-case echo is evidence: an upstream that folds case
+            # to lower (or upper) also "echoes" a name that came out that way.
+            text = b"".join(q.name.labels)
+            if self._case_echo is None and text != text.lower() and text != text.upper():
+                self._case_echo = True
+        else:
+            self._case_misses += 1
+            if self._case_misses >= self.CASE_LEARN:
+                # That many in a row is not a spoofer winning ~26-bit guesses
+                # back to back; it is an upstream that (now) rewrites case.
+                if self._case_echo is not False:
+                    log.info("upstream %r does not echo query-name case; "
+                             "0x20 off for it", self)
+                self._case_echo = False
+            elif self._case_echo:
+                raise UpstreamError("0x20 case mismatch from upstream (possible spoof)")
+        from ..engine.zerox20 import restore
+        restore(resp, orig.name)
+
     def _ad_trusted(self) -> bool:
         if self.trust_ad == "always":
             return True
         if self.trust_ad == "never":
             return False
-        return self.spec.scheme in self.AUTHENTICATED_SCHEMES
+        # Encrypted is not authenticated: with `verify` off anyone on the path
+        # can terminate the TLS session and set AD on a forged answer.
+        return self.verify and self.spec.scheme in self.AUTHENTICATED_SCHEMES
 
     # --- transports ---
     async def _udp(self, wire: bytes) -> bytes:
@@ -684,7 +784,17 @@ class Upstream:
         async with self._session.post(url, data=wire, headers=headers,
                                       timeout=aiohttp.ClientTimeout(total=self.timeout)) as r:
             r.raise_for_status()
-            return await r.read()
+            # No DNS message is longer than 65535 octets. `read()` buffered
+            # whatever the far end streamed, so a hostile or broken upstream
+            # could grow this process without bound.
+            if (r.content_length or 0) > MAX_DNS_MESSAGE:
+                raise UpstreamError("DoH upstream reply is larger than any DNS message")
+            body = bytearray()
+            async for chunk in r.content.iter_any():
+                body += chunk
+                if len(body) > MAX_DNS_MESSAGE:
+                    raise UpstreamError("DoH upstream reply is larger than any DNS message")
+            return bytes(body)
 
     async def _doq(self, wire: bytes) -> bytes:
         # The whole exchange, handshake included. `connect` waits for the

@@ -7,19 +7,27 @@ treated as forged. The client's original case is restored on the way back.
 """
 from __future__ import annotations
 
-import random
+import secrets
 
 from ..wire import RR, Message, Question
 from ..wire.name import Name
 
 
 def randomize_name(name: Name) -> Name:
+    """`name` with each ASCII letter's case flipped by a CSPRNG bit.
+
+    `secrets`, not `random`: the case pattern is the secret a spoofer must
+    guess, and Mersenne Twister output is recoverable from enough samples.
+    One draw for the whole name keeps it as cheap as the old per-letter calls.
+    """
+    bits = secrets.randbits(max(1, sum(len(label) for label in name.labels)))
     labels = []
     for label in name.labels:
         out = bytearray(label)
         for i, b in enumerate(out):
-            if 0x41 <= b <= 0x5A or 0x61 <= b <= 0x7A:  # ascii letter
-                out[i] = (b ^ 0x20) if random.getrandbits(1) else b
+            if bits & 1 and (0x41 <= b <= 0x5A or 0x61 <= b <= 0x7A):  # letter
+                out[i] = b ^ 0x20
+            bits >>= 1
         labels.append(bytes(out))
     return Name(tuple(labels))
 

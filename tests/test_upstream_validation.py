@@ -176,6 +176,22 @@ async def test_empty_error_reply_without_a_question_is_tolerated():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("rcode", [0, 3])        # NOERROR (NODATA), NXDOMAIN
+async def test_an_empty_answer_without_a_question_is_rejected(rcode):
+    """An empty NODATA or NXDOMAIN is a negative answer that gets cached, and
+    with no question it would also skip the 0x20 check: a spoofer would need
+    only the id to erase a name."""
+    def reply(got):
+        r = Message(id=got.id)
+        r.set_flag(Flags.QR, True)
+        r.set_rcode(rcode)
+        return r.to_wire()
+    async with FakeUpstream(reply) as srv:
+        with pytest.raises(UpstreamError, match="no question"):
+            await upstream_to(srv.port).query(query())
+
+
+@pytest.mark.asyncio
 async def test_case_differences_from_the_upstream_are_tolerated():
     """Some resolvers normalise case. Strict 0x20 checking happens further up
     where the original casing is known; here it must not break resolution."""
@@ -234,3 +250,12 @@ def test_authenticated_transports_are_trusted_under_auto():
         up = Upstream(parse_upstream(f"{scheme}://9.9.9.9" if scheme != "udp" else "9.9.9.9"),
                       trust_ad="auto")
         assert up._ad_trusted() is trusted, f"{scheme} should be trusted={trusted}"
+
+
+def test_ad_is_not_trusted_over_unverified_tls():
+    """Encrypted is not authenticated: with verification off anyone on the path
+    can terminate TLS and set AD on a forged answer."""
+    for scheme in ("tls", "https"):
+        up = Upstream(parse_upstream(f"{scheme}://9.9.9.9"), timeout=1.0,
+                      verify=False, trust_ad="auto")
+        assert not up._ad_trusted()

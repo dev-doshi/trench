@@ -104,6 +104,42 @@ async def test_upstream_doh():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("chunked", [False, True])
+async def test_a_doh_upstream_reply_larger_than_any_dns_message_is_refused(chunked):
+    """The body was read whole, however long the far end kept sending."""
+    from aiohttp import web
+
+    from trench.errors import UpstreamError
+    from trench.transport.doh import DoHServer
+    from trench.transport.upstream import Upstream
+
+    class Hostile(DoHServer):
+        async def _handle(self, request):
+            if not chunked:
+                return web.Response(body=b"\0" * 70000,
+                                    content_type="application/dns-message")
+            resp = web.StreamResponse(headers={"Content-Type": "application/dns-message"})
+            resp.enable_chunked_encoding()      # no length to check up front
+            await resp.prepare(request)
+            for _ in range(10):
+                await resp.write(b"\0" * 8192)
+            await resp.write_eof()
+            return resp
+
+    port = free_port()
+    srv = Hostile(server_pipeline(), "127.0.0.1", port, "/dns-query", tls=True,
+                  data_dir=CERT_DIR)
+    await srv.start()
+    up = Upstream(parse_upstream(f"https://127.0.0.1:{port}/dns-query"), verify=False)
+    try:
+        with pytest.raises(UpstreamError, match="larger than any DNS message"):
+            await up._doh(mkquery().to_wire())
+    finally:
+        await up.close()
+        await srv.stop()
+
+
+@pytest.mark.asyncio
 async def test_upstream_doq():
     from trench.transport.doq import DoQServer
     port = free_port()
