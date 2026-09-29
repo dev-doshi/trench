@@ -36,4 +36,17 @@ const routes = [
 ];
 
 const router = createRouter({ history: createWebHistory(), routes });
+
+// A tab left open across an upgrade still runs the previous build, and the
+// views it lazy-loads were deleted with it. Loading the page fresh fetches the
+// current build. At most once a minute, and never when storage cannot remember
+// that it tried, so a server that really is broken shows its error instead of
+// reloading forever.
+router.onError((_err, to) => {
+  const now = String(Date.now());
+  if (Date.now() - Number(local.get("bw_reloaded") || 0) < 60_000) return;
+  local.set("bw_reloaded", now);
+  if (local.get("bw_reloaded") === now) location.assign(to.fullPath);
+});
+
 createApp(App).use(router).mount("#app");

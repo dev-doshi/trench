@@ -1332,7 +1332,9 @@ class APIServer:
             raise _http_error(web.HTTPNotFound, "no such endpoint")
         from pathlib import Path
         index = Path(__file__).resolve().parent.parent / "web" / "dist" / "index.html"
-        return web.FileResponse(index)
+        # Revalidate every time: it names the hashed bundles, and a cached copy
+        # outlives an upgrade and points at files that no longer exist.
+        return web.FileResponse(index, headers={"Cache-Control": "no-cache"})
 
 
 async def _ws_drain(ws: web.WebSocketResponse) -> None:

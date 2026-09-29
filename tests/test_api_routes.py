@@ -915,6 +915,8 @@ async def test_unknown_paths_fall_through_to_the_console(api):
             assert r.headers["X-Frame-Options"] == "DENY"
         async with anon.get(f"{api.base}/") as r:
             assert r.status == 200 and r.content_type == "text/html"
+            # it names the hashed bundles; a stale copy outlives an upgrade
+            assert r.headers["Cache-Control"] == "no-cache"
 
 
 # --- role gates ---
