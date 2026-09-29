@@ -453,3 +453,26 @@ def test_no_user_has_no_role():
 
 def test_an_unknown_requirement_is_never_satisfied():
     assert AuthManager.has_role({"role": "admin"}, "wizard") is False
+
+
+
+def test_the_scrypt_gate_survives_a_second_event_loop(tmp_path):
+    """The gate was one module-level semaphore, bound to whichever loop first
+    contended on it; any later loop (a CLI call, a test, a restart in-process)
+    then failed every login with "bound to a different event loop"."""
+    import asyncio
+
+    async def burst():
+        db = Database(tmp_path / "t.db")
+        await db.connect()
+        try:
+            auth = AuthManager(db)
+            if not await db.fetchone("SELECT 1 FROM app_user WHERE name='a'"):
+                await auth.create_user("a", "pw")
+            got = await asyncio.gather(*(auth.login("a", "pw") for _ in range(4)))
+            assert all(got)
+        finally:
+            await db.close()
+
+    asyncio.run(burst())
+    asyncio.run(burst())

@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import secrets
 import time
+import weakref
 
 from ..log import get
 from ..security import hashutil, totp
@@ -27,7 +28,10 @@ _DUMMY_HASH = hashutil.hash_password(secrets.token_urlsafe(16))
 #: memory; the default thread pool would otherwise run dozens side by side for a
 #: burst of login requests.
 _SCRYPT_SLOTS = 2
-_scrypt_gate: asyncio.Semaphore | None = None
+#: One gate per event loop. A single module-level semaphore bound itself to the
+#: first loop that contended on it, and every login on any later loop then
+#: raised "bound to a different event loop".
+_scrypt_gates: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
 async def _scrypt(fn, *args):
@@ -37,10 +41,11 @@ async def _scrypt(fn, *args):
     verify run inline froze DNS for its whole duration — and a login request
     needs no credentials to send.
     """
-    global _scrypt_gate
-    if _scrypt_gate is None:
-        _scrypt_gate = asyncio.Semaphore(_SCRYPT_SLOTS)
-    async with _scrypt_gate:
+    loop = asyncio.get_running_loop()
+    gate = _scrypt_gates.get(loop)
+    if gate is None:
+        gate = _scrypt_gates[loop] = asyncio.Semaphore(_SCRYPT_SLOTS)
+    async with gate:
         return await asyncio.to_thread(fn, *args)
 
 
