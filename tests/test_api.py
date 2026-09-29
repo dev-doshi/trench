@@ -1,6 +1,7 @@
 """API server: auth gate, login, rules CRUD, toggle, metrics, websocket."""
 from __future__ import annotations
 
+import asyncio
 import socket
 
 import aiohttp
@@ -119,6 +120,50 @@ async def test_api_websocket(tmp_path):
         await app.api.stop()
         await app.db.close()
 
+
+@pytest.mark.asyncio
+async def test_api_websocket_keeps_up_with_a_burst(tmp_path):
+    """A burst that fits the per-socket queue arrives whole and promptly.
+
+    The send loop used to poll `receive()` with a 1 ms timeout after every
+    event, capping a socket at roughly 740 events/s; anything beyond that
+    overflowed the queue and was dropped without trace. 1500 events fit the
+    queue, so all 1500 must arrive, well inside the time the old loop needed."""
+    import json
+    app, port = await make_app(tmp_path)
+    base = f"http://127.0.0.1:{port}"
+    jar = aiohttp.CookieJar(unsafe=True)
+    try:
+        async with aiohttp.ClientSession(cookie_jar=jar) as s:
+            await s.post(f"{base}/api/v1/auth/login",
+                         json={"name": "admin", "password": "secret123"})
+            async with s.ws_connect(f"{base}/api/v1/ws") as ws:
+                assert json.loads((await ws.receive(timeout=3)).data)["type"] == "hello"
+                for i in range(1500):
+                    app.counters.record(client="10.0.0.2", qname=f"n{i}.example",
+                                        qtype="A", action="allowed")
+                got, dropped = 0, None
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + 1.2
+                while got < 1500 and loop.time() < deadline:
+                    frame = json.loads((await ws.receive(timeout=2)).data)
+                    if frame["type"] == "query":
+                        got += 1
+                assert got == 1500
+                while dropped is None:      # and the stats frame owns up to no gaps
+                    frame = json.loads((await ws.receive(timeout=3)).data)
+                    if frame["type"] == "stats":
+                        dropped = frame["dropped"]
+                assert dropped == 0
+            # and a closed socket gives up its subscription on the resolve path
+            for _ in range(40):
+                if not app.counters._listeners:
+                    break
+                await asyncio.sleep(0.05)
+            assert not app.counters._listeners
+    finally:
+        await app.api.stop()
+        await app.db.close()
 
 @pytest.mark.asyncio
 async def test_api_websocket_requires_a_session(tmp_path):

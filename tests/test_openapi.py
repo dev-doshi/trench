@@ -93,3 +93,23 @@ def test_every_summary_says_which_role_it_needs(registered):
             if role and f"({role.group(1)})" not in spec.get("summary", ""):
                 missing.append(f"{method.upper()} {path} needs {role.group(1)}")
     assert not missing, "summaries that do not name the required role:\n  " + "\n  ".join(missing)
+
+
+def test_every_operation_meets_what_openapi_requires():
+    """OpenAPI 3.0 requires `responses` on each operation and a declared
+    parameter for each `{name}` in a path. The document once missed both on
+    54 counts, and validating generators rejected it whole."""
+    verbs = {"get", "post", "put", "delete", "patch"}
+    problems = []
+    for path, item in _OPENAPI["paths"].items():
+        templated = set(re.findall(r"{(\w+)}", path))
+        for verb, op in item.items():
+            if verb not in verbs:
+                continue
+            if not op.get("responses"):
+                problems.append(f"{verb.upper()} {path}: no responses")
+            declared = {p["name"] for p in op.get("parameters", []) if p.get("in") == "path"}
+            if declared != templated:
+                problems.append(f"{verb.upper()} {path}: path params {sorted(declared)}"
+                                f" != {sorted(templated)}")
+    assert not problems, "\n  ".join(["invalid OpenAPI operations:", *problems])

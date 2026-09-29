@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 
 from aiohttp import web
@@ -306,8 +307,8 @@ class APIServer:
     async def login(self, request: web.Request) -> web.Response:
         body = await _json(request)
         ip = _client_ip(request)
-        token = await self.auth.login(body.get("name", ""), body.get("password", ""),
-                                      body.get("code", ""), ip)
+        token = await self.auth.login(_str(body, "name"), _str(body, "password"),
+                                      str(body.get("code") or ""), ip)
         if token is None:
             return web.json_response({"error": "invalid credentials"}, status=401)
         resp = web.json_response({"ok": True})
@@ -347,8 +348,8 @@ class APIServer:
     async def tokens_create(self, request: web.Request) -> web.Response:
         user = self._require(request, "admin")
         body = await _json(request)
-        name = (body.get("name") or "").strip()
-        scope = body.get("scope", "viewer")
+        name = _str(body, "name").strip()
+        scope = _str(body, "scope", "viewer")
         # Capped at ten years: past that an expiry is indistinguishable from
         # the `0` that already means "never", and an uncapped value reached
         # `time.time() + days * 86400` and then SQLite, overflowing both.
@@ -368,7 +369,8 @@ class APIServer:
     async def tokens_delete(self, request: web.Request) -> web.Response:
         self._require(request, "admin")
         tid = request.match_info["tid"]
-        if not await self.auth.revoke_api_token(int(tid)):
+        # The route matches any segment; a non-numeric one names no token.
+        if not (tid.isascii() and tid.isdigit()) or not await self.auth.revoke_api_token(int(tid)):
             return web.json_response({"error": "not found"}, status=404)
         await self._audit(request, "token.revoke", str(tid))
         return web.json_response({"ok": True})
@@ -609,8 +611,8 @@ class APIServer:
     async def rules_post(self, request: web.Request) -> web.Response:
         self._require(request, "editor")
         body = await _json(request)
-        domain = (body.get("domain") or "").strip().lower()
-        action = body.get("action")
+        domain = _str(body, "domain").strip().lower()
+        action = _str(body, "action")
         f = self.app.filter
         if not domain or action not in ("deny", "allow", "remove"):
             return web.json_response({"error": "bad request"}, status=400)
@@ -739,7 +741,7 @@ class APIServer:
             return web.json_response({"error": "seconds must be a number"}, status=400)
         if seconds < 0 or seconds > 86_400:
             return web.json_response({"error": "seconds must be 0..86400"}, status=400)
-        client = str(body.get("client", "") or "")
+        client = _str(body, "client")
         pipe = self.app.pipeline
         if seconds == 0:
             pipe.resume(client)
@@ -768,7 +770,7 @@ class APIServer:
         """
         self._require(request, "admin")
         from . import settings as st
-        body = await request.json()
+        body = await _json(request)
         changes = body.get("changes") or {}
         if not isinstance(changes, dict) or not changes:
             raise web.HTTPBadRequest(text="no changes")
@@ -897,7 +899,7 @@ class APIServer:
         except _NoUpdater:
             return web.json_response({"error": "update checking is off"}, status=409)
         body = await _json(request)
-        version = (body.get("version") or "").strip() or None
+        version = _str(body, "version").strip() or None
         from ..ops.update import UpdateError
         try:
             status = await updater.apply(version=version)
@@ -936,9 +938,17 @@ class APIServer:
             return web.json_response({"error": "no query log"}, status=503)
         body = await _json(request)
         from ..ops.whatif import compile_delta, whatif_from_querylog
-        delta = compile_delta(deny=body.get("deny") or [],
-                              allow=body.get("allow") or [],
-                              list_text=body.get("list_text") or "")
+        # A bare string is a sequence too, and was dry-run a character at a
+        # time; a number in the list reached `.strip()` and a 500.
+        lists = {}
+        for key in ("deny", "allow"):
+            value = body.get(key) or []
+            if not isinstance(value, list) or not all(isinstance(d, str) for d in value):
+                return web.json_response(
+                    {"error": f"{key} must be a list of strings"}, status=400)
+            lists[key] = value
+        delta = compile_delta(deny=lists["deny"], allow=lists["allow"],
+                              list_text=_str(body, "list_text"))
         result = await whatif_from_querylog(
             self.app.db, self.app.filter, delta,
             hours=_num(body, "hours", 24, 24 * 30, float),
@@ -1022,8 +1032,8 @@ class APIServer:
     async def clients_create(self, request: web.Request) -> web.Response:
         self._require(request, "editor")
         body = await _json(request)
-        ident = (body.get("ident") or "").strip()
-        itype = body.get("ident_type", "ip")
+        ident = _str(body, "ident").strip()
+        itype = _str(body, "ident_type", "ip")
         if not ident or itype not in self._IDENT_TYPES:
             return web.json_response({"error": "ident and valid ident_type required"}, status=400)
         policy_obj = body.get("policy") or {}
@@ -1035,7 +1045,7 @@ class APIServer:
         policy = json.dumps(policy_obj)
         await self.app.db.execute(
             "INSERT INTO client(ident, ident_type, name, comment, policy) VALUES(?,?,?,?,?)",
-            (ident, itype, body.get("name", ""), body.get("comment", ""), policy))
+            (ident, itype, _str(body, "name"), _str(body, "comment"), policy))
         await self.app.reload_clients()
         self.app.notify_workers()
         await self._audit(request, "client.create", ident)
@@ -1048,12 +1058,18 @@ class APIServer:
         row = await self.app.db.fetchone("SELECT id FROM client WHERE id=?", (cid,))
         if row is None:
             return web.json_response({"error": "not found"}, status=404)
-        if body.get("ident_type") not in (None, *self._IDENT_TYPES):
+        # A key that is present is a value to write, so `"ident_type": null`
+        # must not slip past the check as "absent" and store NULL; and an
+        # update may not blank the identifier that create insists on.
+        if "ident_type" in body and body["ident_type"] not in self._IDENT_TYPES:
             return web.json_response({"error": "invalid ident_type"}, status=400)
+        if "ident" in body and not _str(body, "ident").strip():
+            return web.json_response({"error": "ident must not be empty"}, status=400)
         fields, params = [], []
         for col in ("ident", "ident_type", "name", "comment"):
             if col in body:
-                fields.append(f"{col}=?"); params.append(body[col])
+                value = _str(body, col)
+                fields.append(f"{col}=?"); params.append(value.strip() if col == "ident" else value)
         if "policy" in body:
             if not isinstance(body["policy"], dict):
                 return web.json_response({"error": "policy must be an object"}, status=400)
@@ -1069,6 +1085,11 @@ class APIServer:
     async def clients_delete(self, request: web.Request) -> web.Response:
         self._require(request, "editor")
         cid = request.match_info["cid"]
+        # Report a missing row as one, like update does, rather than answering
+        # "ok" and writing an audit entry for a deletion that never happened.
+        row = await self.app.db.fetchone("SELECT id FROM client WHERE id=?", (cid,))
+        if row is None:
+            return web.json_response({"error": "not found"}, status=404)
         await self.app.db.execute("DELETE FROM client WHERE id=?", (cid,))
         await self.app.reload_clients()
         self.app.notify_workers()
@@ -1162,12 +1183,19 @@ class APIServer:
         self._ws.add(ws)
         loop = asyncio.get_running_loop()
         live: asyncio.Queue = asyncio.Queue(maxsize=WS_QUEUE)
+        # Events this socket missed because it fell behind. The queue is bounded
+        # so a slow browser can never hold up the resolve path that feeds it;
+        # the cost is gaps in the feed, which the console is now told about in
+        # every stats frame rather than left to assume the feed is complete.
+        dropped = 0
 
         def on_event(ev: dict) -> None:            # called from the resolve path
+            nonlocal dropped
             try:
                 live.put_nowait(ev)
             except asyncio.QueueFull:
-                pass
+                dropped += 1
+
         self.app.counters.subscribe(on_event)
         # Read in a task of its own, so a close from the client is noticed as it
         # arrives. The loop used to probe `ws.receive()` with a 1 ms timeout
@@ -1200,7 +1228,8 @@ class APIServer:
                 getter = None
                 if loop.time() >= next_stats:
                     await ws.send_str(json.dumps({"type": "stats", "data": self._stats_payload(),
-                                                  "series": self.app.counters.series(60)}))
+                                                  "series": self.app.counters.series(60),
+                                                  "dropped": dropped}))
                     next_stats = loop.time() + 2.0
         except ConnectionResetError:
             pass
@@ -1227,10 +1256,39 @@ async def _ws_drain(ws: web.WebSocketResponse) -> None:
 
 
 async def _json(request: web.Request) -> dict:
+    """The request body as a JSON object, or `{}`.
+
+    Every caller goes on to `.get` fields out of it, so a body that parses but
+    is not an object — `[1]`, `"x"`, `3` — is as unusable as one that does not
+    parse, and used to reach that `.get` as an AttributeError and a 500.
+    """
     try:
-        return await request.json()
+        body = await request.json()
     except Exception:
         return {}
+    return body if isinstance(body, dict) else {}
+
+
+def _bad_request(error: str) -> web.HTTPBadRequest:
+    return web.HTTPBadRequest(text=json.dumps({"error": error}),
+                              content_type="application/json")
+
+
+def _str(body: dict, name: str, default: str = "") -> str:
+    """A string field of a JSON body: `default` when absent or null, a 400 when
+    present as anything else.
+
+    JSON gives a field whatever type the sender chose. Handlers `.strip()` it,
+    bind it into SQLite or look it up in a dict, and a number or a list there
+    was an AttributeError, a binding error or an unhashable-type error — each a
+    500, and in `/pause` a list was quietly stringified into a client key.
+    """
+    value = body.get(name)
+    if value is None:
+        return default
+    if not isinstance(value, str):
+        raise _bad_request(f"{name} must be a string")
+    return value
 
 
 def _client_ip(request: web.Request) -> str:
@@ -1345,3 +1403,27 @@ _OPENAPI = {
         "/readyz": {"get": {"summary": "Readiness: 503 until the filter engine is loaded"}},
     },
 }
+
+
+def _complete_operations(doc: dict) -> dict:
+    """Fill in what OpenAPI 3.0 requires of every operation and the summaries
+    above leave out, so the served document validates.
+
+    Without this, 51 operations lacked the mandatory `responses` and the three
+    templated paths never declared `{tid}`/`{cid}` — the spec validator reported
+    54 errors, and generators that validate first (openapi-generator among them)
+    refuse the file outright however complete its route list is. Done here
+    rather than by hand so a route added later cannot reintroduce either.
+    """
+    for path, item in doc["paths"].items():
+        params = [{"name": name, "in": "path", "required": True,
+                   "schema": {"type": "integer"}}
+                  for name in re.findall(r"{(\w+)}", path)]
+        for op in item.values():
+            op.setdefault("responses", {"default": {"description": "See summary"}})
+            if params:
+                op.setdefault("parameters", params)
+    return doc
+
+
+_complete_operations(_OPENAPI)
