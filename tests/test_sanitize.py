@@ -232,3 +232,16 @@ async def test_pipeline_does_not_relay_or_cache_injected_records():
     resp2 = await pipe.resolve(q(), "10.0.0.1")
     assert owners(resp2.answers) == ["a.example."]
     assert all("bank" not in o for o in owners(resp2.answers) + owners(resp2.additional))
+
+
+def test_the_target_zones_soa_survives_a_cross_zone_cname():
+    """A negative answer after `a.example CNAME x.b.test` comes from b.test's
+    zone. Dropping its SOA left nothing to set the negative-cache TTL."""
+    m = resp_for("www.example.com.")
+    m.answers = [rr("www.example.com.", Type.CNAME, CNAME(n("x.b.test.")))]
+    m.authority = [rr("b.test.", Type.SOA,
+                      SOA(n("ns.b.test."), n("hm.b.test."), 1, 2, 3, 4, 300)),
+                   rr("evil.test.", Type.NS, NS(n("ns.evil.test.")))]
+    cut = sanitize(m, "www.example.com.")
+    assert owners(m.authority) == ["b.test."]
+    assert cut.authority == 1

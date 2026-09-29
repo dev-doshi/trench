@@ -145,11 +145,12 @@ class _UdpSocket(asyncio.DatagramProtocol):
     outstanding on the same socket and UDP does not promise order.
     """
 
-    __slots__ = ("pending", "questions", "transport", "pool", "closed")
+    __slots__ = ("pending", "questions", "rejected", "transport", "pool", "closed")
 
     def __init__(self, pool: UdpPool | None = None) -> None:
         self.pending: dict[int, asyncio.Future] = {}
         self.questions: dict[int, bytes] = {}   # txid -> expected question bytes
+        self.rejected: dict[int, bytes] = {}    # txid -> a reply held back, see wait
         self.transport: asyncio.DatagramTransport | None = None
         self.pool = pool
         self.closed = False
@@ -173,6 +174,7 @@ class _UdpSocket(asyncio.DatagramProtocol):
                 fut.set_exception(UpstreamError("upstream socket closed"))
         self.pending.clear()
         self.questions.clear()
+        self.rejected.clear()
 
     def expect(self, wire: bytes, fut: asyncio.Future) -> int:
         """Register `fut` for the reply to the query `wire`; return its id."""
@@ -184,6 +186,24 @@ class _UdpSocket(asyncio.DatagramProtocol):
     def forget(self, txid: int) -> None:
         self.pending.pop(txid, None)
         self.questions.pop(txid, None)
+        self.rejected.pop(txid, None)
+
+    async def wait(self, txid: int, fut: asyncio.Future, timeout: float) -> bytes:
+        """The reply for `txid`, or on timeout the mismatched one held back.
+
+        A held-back reply is handed over only when nothing better came, so the
+        caller's own check rejects it with its usual "different question"
+        error: an upstream that really answers the wrong question still fails
+        clearly rather than as a bare timeout, while a spoofer racing the real
+        answer no longer takes its slot.
+        """
+        try:
+            return await asyncio.wait_for(fut, timeout)
+        except TimeoutError:
+            stray = self.rejected.get(txid)
+            if stray is None:
+                raise
+            return stray
 
     def datagram_received(self, data: bytes, addr) -> None:
         if len(data) < 12:
@@ -196,8 +216,11 @@ class _UdpSocket(asyncio.DatagramProtocol):
         # answer, and is dropped rather than accepted. Taking the first datagram
         # with the right id let one spoofed packet fail the query outright — the
         # later check rejected it, but the real answer had lost its slot.
+        # A reply with no question at all (a bare FORMERR) is let through: the
+        # caller's check decides whether that shape is acceptable.
         q = self.questions.get(txid, b"")
-        if q and data[12:12 + len(q)].lower() != q:
+        if q and data[4:6] != b"\x00\x00" and data[12:12 + len(q)].lower() != q:
+            self.rejected.setdefault(txid, data)
             return
         self.forget(txid)
         fut.set_result(data)
@@ -211,6 +234,7 @@ class _UdpSocket(asyncio.DatagramProtocol):
                 fut.set_exception(exc)
         self.pending.clear()
         self.questions.clear()
+        self.rejected.clear()
 
     def close(self) -> None:
         if self.transport is not None:
@@ -301,7 +325,7 @@ class UdpPool:
         sock.expect(wire, fut)
         try:
             sock.transport.sendto(wire)          # type: ignore[union-attr]
-            return await asyncio.wait_for(fut, timeout)
+            return await sock.wait(txid, fut, timeout)
         finally:
             sock.forget(txid)
 
@@ -562,12 +586,12 @@ class Upstream:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future = loop.create_future()
         proto = _UdpSocket()
-        proto.expect(wire, fut)
+        txid = proto.expect(wire, fut)
         transport, _ = await loop.create_datagram_endpoint(
             lambda: proto, remote_addr=(self.spec.host, self.spec.port))
         try:
             transport.sendto(wire)
-            return await asyncio.wait_for(fut, self.timeout)
+            return await proto.wait(txid, fut, self.timeout)
         finally:
             transport.close()
 
@@ -616,9 +640,8 @@ class Upstream:
     async def _tcp_exchange(self, wire: bytes, ssl_ctx=None) -> bytes:
         reader, writer = await asyncio.open_connection(
             self.spec.host, self.spec.port, ssl=ssl_ctx,
-            # Parenthesised: `sni or None if ssl_ctx else None` parses as
-            # `sni or (...)`, handing plain TCP a server_hostname — which
-            # asyncio rejects — whenever the spec carried a `#name`.
+            # Parenthesised for the reader: the conditional binds loosest, so
+            # the unparenthesised form meant the same but read like a bug.
             server_hostname=(self.spec.sni or None) if ssl_ctx else None)
         try:
             writer.write(len(wire).to_bytes(2, "big") + wire)

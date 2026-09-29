@@ -768,6 +768,9 @@ class RecursiveForwarder:
             # this path keeps a socket per query and its full entropy.
             up = Upstream(UpstreamSpec("udp", ip, 53), timeout=self.timeout)
             if len(self._pool) > 512:
+                # Dropping without close() is safe: a udp Upstream opens a
+                # socket per query and a one-shot TCP connection per truncation,
+                # so between queries it holds nothing to leak.
                 self._pool.clear()
             self._pool[ip] = up
         return up

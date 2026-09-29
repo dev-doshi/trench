@@ -2,7 +2,7 @@
 
 **Scope:** the query hot path (`trench/engine/`, `trench/transport/`, `trench/cache/`, `trench/resolver/forwarder.py`, and the client half of `trench/transport/upstream.py`). I also looked at `clients/registry.py`, `engine/ratelimit.py`, `stats/counters.py`, `store/export.py` and the lifecycle parts of `app.py` to check for blocking I/O and unbounded growth. A second pass covered `resolver/recursive.py`, `resolver/dnssec/` and the TSIG, transfer and NOTIFY code in `auth_zone/`; see [Second pass](#second-pass-fixed-in-this-change). I did not review `api/`, `dhcp/`, `filter/`, `auth_zone/update.py` or `ops/` in depth.
 
-**Status:** H1–H4 and every finding in the second pass are fixed in this change, with regression tests in `tests/test_review_fixes.py`. The M and L findings were open at `c5b3b5f`. Later commits on `main` (for example the TCP half-close, upstream demotion and DoQ upstream fixes) address some of them, so check each one against the current code before starting work on it. After merging with `main`, the suite gives 2635 passed and 5 failed: four from the sandbox, plus one `free_port` bind race in `test_doh_wire_and_json` that passes on rerun.
+**Status:** every finding is closed. M2, M3, M6, L8, L13 and the ID half of M5 were fixed on `main`. L5 is accepted as a design choice. Everything else is fixed on `main` by the follow-up commits of this review. Regression tests are in `tests/test_review_fixes.py`, `tests/test_sanitize.py`, `tests/test_upstream.py`, `tests/test_clients.py` and `tests/test_transport_base.py`. Each finding's heading is followed by its status. With all fixes in, the suite gives 2650 passed, 2 skipped and 4 failed. All four failures come from the sandbox: three are the "unwritable directory" tests defeated by running as root, and one is `test_bind_do53_uses_inet6_for_a_v6_host`, which fails because the sandbox has no IPv6. Ruff and `mypy_gate` pass.
 
 **Branch reviewed:** `claude/beautiful-thompson-as41c7` @ `c5b3b5f`
 
@@ -94,6 +94,8 @@ The fast path already handles this correctly: it patches `out[12:qend] = data[12
 
 ### M1. The safe-search chain bypasses `_fetch`, the per-group upstream, and the cache.
 
+**Fixed.** The target is resolved through `_fetch_coalesced` with its own cache key, so it gets the group upstream, sanitising, caching and coalescing.
+
 **Where:** `Pipeline._safe_search_chain` calls `self.forwarder.resolve(sub)` directly.
 
 - **Invariant break:** `_fetch`'s docstring says it is "the only path by which an upstream answer enters this resolver". This call skips 0x20 verification, `sanitize`, the rebinding scrub and cloak inspection. The records it copies are rewritten to the target's owner name without any check.
@@ -104,6 +106,8 @@ The fast path already handles this correctly: it patches `out[12:qend] = data[12
 **Fix:** resolve the target with a synthetic `QueryContext` through `_fetch_coalesced` (with a cache key), in the same way `warm()` does.
 
 ### M2. The stream frontend drops answers on half-close, and its idle timer cuts off slow in-flight queries. *Reproduced (half-close)*
+
+**Fixed on `main`.**
 
 **Where:** `transport/stream.py::serve_stream`.
 
@@ -121,17 +125,25 @@ The same `finally` runs when the idle read times out. A client that sends one qu
 
 ### L1. Cloak inspection swallows exceptions.
 
+**Fixed.** The failure is logged with `log.exception`.
+
 `_fetch` wraps `inspect_cloak` in `except Exception: d = None`. A bug there silently disables CNAME-cloak blocking. The module's own comments argue that our own failures should be logged as errors (see `_resolve_upstream`). At minimum, add `log.exception`.
 
 ### L2. The ECS fallback lookup double-counts misses.
+
+**Fixed.** `Cache.get` takes `count_miss`, and the ECS probe passes `count_miss=False`.
 
 `_run` calls `cache.get(key)` and then `cache.get(key._replace(ecs=""))`. When the second call hits, the first has already incremented `stats["misses"]`, so the reported hit rate reads low. A `count_miss=False` flag on the first lookup would fix this.
 
 ### L3. Prefetch has no concurrency bound and does not go through the coalescing table.
 
+**Fixed.** Prefetch goes through `_fetch_coalesced` and is capped at `PREFETCH_MAX` in flight.
+
 `_maybe_prefetch` calls `_fetch` directly. A burst of popular names entering `PREFETCH_WINDOW` together, which is typical after a restart with a restored cache, launches one upstream query per key with no cap. A client query that arrives when the entry expires does not coalesce with a prefetch that is still in flight. A small semaphore, plus routing through `_fetch_coalesced`, fixes both.
 
 ### L4. The fast path clears its whole table when full.
+
+**Fixed.** The table evicts its oldest entries one at a time.
 
 `FastPath.store` calls `self.table.clear()` at `max_entries`. This is documented as a deliberate choice. The downside is that a busy server repeatedly drops to 0% replay all at once. An `OrderedDict` trimmed with `popitem(last=False)`, which `Cache` already does, costs about the same.
 
@@ -141,6 +153,8 @@ The same `finally` runs when the idle read times out. A client that sends one qu
 
 ### M3. `Cache.load` ignores `max_entries`, the TTL clamps and the shape of each row.
 
+**Fixed on `main`.**
+
 - Restored entries are inserted without the trim loop that `put` and `_shared_get` run. A cache dumped with a larger `max_entries` (or edited by hand) restores above the configured bound, and stays there until the next `put`.
 - `ttl` is taken from the file as written: it is not clamped to the current `min_ttl`/`max_ttl` and not checked for being a positive int. After an operator lowers `max_ttl`, restored entries keep the old, longer lifetime.
 - `CacheKey(bytes.fromhex(...), *key_list[1:])` does not check field types. A malformed row can create a key that never matches anything but still takes a slot.
@@ -149,19 +163,27 @@ The same `finally` runs when the idle read times out. A client that sends one qu
 
 ### M4. `Cache.dump` is non-atomic and runs synchronously on the event loop at shutdown.
 
+**Fixed.** `App.stop` calls `Cache.dump_async`, which serialises and writes in a worker thread. The write goes to a temporary file, is fsynced and then renamed over the old one.
+
 `App.stop` calls `cache.dump()` before the frontends are stopped. That serializes up to `max_entries` messages to JSON on the loop thread while listeners are still accepting queries. `Path.write_text` also truncates the file before writing, so a crash or `SIGKILL` part-way through leaves a truncated file. `load` then discards the entire file.
 
 **Fix:** stop the frontends first (or run the dump in `asyncio.to_thread`), and write to a temporary file followed by `os.replace`.
 
 ### L5. The memory bound counts entries, not bytes.
 
+**Accepted as a design choice.** The bound stays a count. Operators size `max_entries` for their memory.
+
 `max_entries=100_000` is a count. Responses fetched over TCP can reach 64 KiB each, so the worst case is several GiB. By comparison, L2 caps each payload at 1232 bytes. Add a per-entry size cap for L1, such as skipping `put` for responses over a threshold, or add byte accounting.
 
 ### L6. Targeted flush matching on wire suffixes is technically imprecise.
 
+**Fixed.** `wire.name.key_is_under` confirms the match on a label boundary. `flush` and `is_subdomain_of` both use it.
+
 `k.qname.endswith(d)` on wire-format keys works for ordinary names. A label containing a byte equal to a length octet (legal in wire format) can produce a false-positive suffix match. The consequence is only an extra eviction. Comparing label boundaries (for example, `wire_key` split into labels) would make the match exact.
 
 ### L7. `get()` does not refresh LRU position on a stale hit.
+
+**Fixed.** A stale hit calls `move_to_end`.
 
 The stale-serve path does not call `move_to_end`. An entry that is actively being served stale during an upstream outage can be evicted before entries nobody reads. Small change, worth making given the RFC 8767 intent.
 
@@ -170,6 +192,8 @@ The stale-serve path does not call `move_to_end`. An entry that is actively bein
 ## `trench/transport/upstream.py` and `trench/resolver/forwarder.py`
 
 ### M5. The DoQ upstream sends the client's message ID and opens a new QUIC connection for every query.
+
+**Fixed.** The ID half was fixed on `main`. This change adds `DoQClient` (`transport/quicclient.py`), which keeps one connection per upstream and reconnects only when that connection dies.
 
 - RFC 9250 §4.2.1: "the DNS Message ID **MUST** be set to 0." `_doq` sends `msg.to_wire()` with the client's ID. Strict servers may close the connection with `DOQ_PROTOCOL_ERROR`.
 - Each query runs `aioquic.connect(...)`, a full handshake. `self.timeout` does not bound that handshake, because `wait_for` covers only the response future. An unreachable DoQ upstream can therefore hold a query for aioquic's idle timeout rather than for `upstream.timeout`.
@@ -181,6 +205,8 @@ RFC 8484 §4.1 makes an ID of 0 a SHOULD for DoH as well. The comment `# RFC 848
 
 ### M6. `_StreamConn.query` has no timeout on `drain()`, and does not close the replaced writer.
 
+**Fixed on `main`.**
+
 - `await self.writer.drain()` sits outside the `wait_for`. An upstream that stops reading (zero TCP window) blocks the query indefinitely. `Pipeline._resolve_upstream` has no overall deadline unless a stale entry exists. On UDP each blocked query also holds an `inflight` slot, so a stalled DoT upstream can eventually fill `udp_max_inflight`, and after that every UDP query is dropped.
 - When the read loop ends on EOF, `_abort` marks the connection closed but never closes `self.writer`. `_open` then overwrites it. The previous transport stays open until garbage collection, and DoT providers close idle connections often. The one-shot `_tcp` fallback has the same missing timeout on `drain`.
 
@@ -188,13 +214,19 @@ RFC 8484 §4.1 makes an ID of 0 a SHOULD for DoH as well. The comment `# RFC 848
 
 ### L8. `fastest` demotes an upstream permanently after one failure.
 
+**Fixed on `main`** (`_FAILURE_MEMORY` in `resolver/forwarder.py`).
+
 `failures` resets only on success, and an upstream sorted last is only asked when the head fails. So after a single transient error, a faster upstream can go unused indefinitely. Add decay or occasional probing, for example resetting `failures` after N seconds.
 
 ### L9. `_tcp`'s `server_hostname` expression is hard to read (readability).
 
+**Fixed.** The expression is now parenthesised as `(sni or None) if ssl_ctx else None`. Its meaning is unchanged. Commit `8908baf` wrongly called this a behaviour bug, and the code comment has been corrected.
+
 `server_hostname=self.spec.sni or None if ssl_ctx else None` is correct, because it parses as `(sni or None) if ssl_ctx else None`. It still reads like a precedence bug, and it is spelled differently from the equivalent at line 296 (`(spec.sni or spec.host) if ssl_ctx else None`). Parenthesise it and use one form in both places.
 
 ### L10. A spoofed response with a matching ID fails the query instead of being ignored.
+
+**Fixed.** `_UdpSocket` records each query's question and holds back a reply whose question does not match (RFC 5452 §9.1), so the real reply can still arrive. If nothing better arrives before the timeout, the held reply goes to `_check_response`, which fails it with the usual "different question" error. A reply with no question (a bare FORMERR) goes straight through.
 
 `_UdpSocket.datagram_received` resolves the waiter for any datagram with a matching ID. `_check_response` then raises on a question mismatch, which fails the whole query when it could have kept waiting for the genuine reply. This is low severity, since the spoofer still has to guess the ID and the outcome is a SERVFAIL rather than poisoning. The more robust approach is to validate before resolving the future.
 
@@ -204,13 +236,19 @@ RFC 8484 §4.1 makes an ID of 0 a SHOULD for DoH as well. The comment `# RFC 848
 
 ### L11. DoH rejects a valid `Content-Type` with parameters.
 
+**Fixed.** The check compares the parsed `request.content_type`.
+
 `request.headers.get("Content-Type") != "application/dns-message"` is an exact string comparison, so `application/dns-message; charset=…` gets a 415 response. Compare `request.content_type` (the parsed media type) instead.
 
 ### L12. The DoQ server reads the peer address from private aioquic state.
 
+**Fixed.** `LimitedQuicProtocol` takes the peer from the first datagram passed to the public `datagram_received` callback. `doq.py` and `doh3.py` read it through `peer_ip()`.
+
 `self._quic._network_paths[0].addr[0]` is private API. It breaks silently (`"?"` for every client, which merges every client into one policy and one rate-limit bucket) if aioquic changes it. Capture the address in `connection_made` or from the transport's `peername`.
 
 ### L13. The DoQ server can answer a stream twice.
+
+**Fixed on `main`.**
 
 If a stream's buffer is `_complete` before `end_stream` arrives, the answer task starts and the buffer is removed. A later `StreamDataReceived` on the same stream then starts a new buffer and, if `end_stream` is set, a second `_answer`. Track the IDs of streams already answered.
 
@@ -240,14 +278,13 @@ RFC 8945 §5.3.1 digests only the timers after the first message. BIND and Knot 
 ### T3. A signed NOTIFY got an unsigned reply.
 RFC 8945 §5.3 requires a signed reply. Strict primaries discard an unsigned NOTIFY acknowledgement and keep retrying. **Fix:** the reply is signed with the request MAC chained in.
 
-### Still open from the second pass (low)
-- A request whose TSIG carries a non-zero error field is accepted.
-- More than one OPT record in a message is accepted, when it should be FORMERR.
-- `ECS.from_bytes` does not validate the family or prefix lengths.
-- The docstring of `is_subdomain_of` describes the opposite of its behaviour.
-- `sanitize` drops the target zone's SOA after a cross-zone CNAME, so negative answers there lose their TTL.
-- `RecursiveForwarder` clears its connection pool without closing the connections.
-
+### Lows from the second pass (all fixed)
+- A request whose TSIG carries a non-zero error field was accepted. `verify_wire` now fails it with BADSIG.
+- A message with more than one OPT record was accepted. It now fails to parse, so the client gets FORMERR (RFC 6891 §6.1.1).
+- `ECS.from_bytes` did not validate the family or the prefix lengths. It now raises on an unknown family, on a prefix longer than the address, and on an address whose length does not match its prefix. A malformed option in an upstream reply therefore keeps the answer cached per subnet instead of marking it global.
+- The docstring of `is_subdomain_of` described the opposite of its behaviour. The docstring is corrected, and the function now uses the label-exact `key_is_under`.
+- `sanitize` dropped the target zone's SOA after a cross-zone CNAME, so negative answers there lost their TTL. Authority records are now kept when they belong to any name on the CNAME chain or to an ancestor of one.
+- `RecursiveForwarder` clears its pool without closing the connections. **No change needed:** a UDP `Upstream` opens a socket per query and holds nothing between queries. A comment now says so.
 
 ---
 
@@ -258,13 +295,13 @@ RFC 8945 §5.3 requires a signed reply. Strict primaries discard an unsigned NOT
 | `clients/registry._arp_lookup` | OK: reads an in-memory table; the refresh runs in a worker thread. |
 | `store/export.QueryExport.write` | OK: called through `asyncio.to_thread`. |
 | `gravity/manager` local list read | OK: `asyncio.to_thread`. |
-| `Cache.dump` / `Cache.load`, `learn.dump` / `learn.load` in `App.start` / `App.stop` | **Blocking on the loop**; see M4. Tolerable at start-up, but not at shutdown while listeners are still serving. |
+| `Cache.dump` / `Cache.load`, `learn.dump` / `learn.load` in `App.start` / `App.stop` | `Cache.dump` at shutdown now runs in a worker thread (M4, fixed). The loads and `learn.dump` still block, but they run only at start-up or are small. |
 | `SharedCache.get/put/clear` | Takes a cross-process `multiprocessing.Lock` on the loop thread. Critical sections are short, but a worker killed while holding a stripe lock wedges every reader of that stripe for good (the docstring acknowledges this). Consider a lock-free seqlock or timed acquires. |
 | `app.py:354` zone file `read_text` | Start-up only; acceptable. |
 
 ## Unbounded-growth audit
 
-The rate limiter (`max_keys`), the stats counters (`TopCounter` caps), the client policy LRU, the fast-path table and `Cache` (by entry count) are all bounded. The exceptions are L5 (a count bound, not a byte bound) and M3 (the bound is not applied on `load`). `Pipeline._client_pause` grows only through operator action.
+The rate limiter (`max_keys`), the stats counters (`TopCounter` caps), the client policy LRU, the fast-path table and `Cache` (by entry count) are all bounded. The one exception is L5: the bound counts entries, not bytes, and is accepted as a design choice. M3 (the bound not applied on `load`) is fixed on `main`. `Pipeline._client_pause` grows only through operator action.
 
 ## Suggested regression tests
 

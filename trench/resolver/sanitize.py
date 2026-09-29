@@ -151,9 +151,13 @@ def sanitize(resp: Message, qname: str | Name) -> Sanitized:
     resp.answers = kept_answers
 
     # Authority: the zone that answered, or proof there is no answer. Owned by
-    # the question name or an ancestor of it.
+    # a name on the chain or an ancestor of one. After a cross-zone CNAME the
+    # negative answer comes from the *target's* zone: checking ancestors of the
+    # question name alone dropped that SOA, so `www.a.example CNAME x.b.test`
+    # with x.b.test NODATA reached the cache with no SOA to set its negative TTL.
     kept_auth = [rr for rr in resp.authority
-                 if rr.name in allowed or _in_bailiwick(rr.name, owner)]
+                 if rr.name in allowed
+                 or any(_in_bailiwick(rr.name, link) for link in allowed)]
     dropped.authority = len(resp.authority) - len(kept_auth)
     resp.authority = kept_auth
 

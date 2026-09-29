@@ -307,6 +307,13 @@ def verify_wire(wire: bytes, keyring: dict[str, TSIGKey], *,
     if not hmac.compare_digest(expected[:len(got)], got):
         raise TSIGError("MAC verification failed", tsig_error=16,
                         key=key, tsig=tsig)  # BADSIG
+    if tsig.error:
+        # Authentic, but reporting a failure. From a transfer peer that is its
+        # BADTIME or BADKEY answer, and treating it as verified accepted a
+        # response the signer itself was rejecting; in a request the field has
+        # no meaning at all (a requester sets it to 0), so it is refused too.
+        raise TSIGError(f"signed message reports TSIG error {tsig.error}",
+                        tsig_error=16, key=key, tsig=tsig)  # BADSIG
     if now is None:
         now = int(time.time())
     # The narrower of what the sender asked for and what we are willing to

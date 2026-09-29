@@ -82,13 +82,27 @@ class ECS:
         return cls(fam, prefix, 0, raw[:nbytes])
 
     @classmethod
-    def from_bytes(cls, b: bytes) -> ECS | None:
+    def from_bytes(cls, b: bytes) -> ECS:
+        """Decode the option, refusing anything RFC 7871 §6 calls malformed.
+
+        Raises ValueError. Accepting any bytes let an unknown family or an
+        address longer than its prefix through to `network_text`, and let a
+        malformed option with scope 0 mark an answer as good for every client.
+        """
         if len(b) < 4:
-            return None
+            raise ValueError("ECS option shorter than its fixed part")
         family = int.from_bytes(b[0:2], "big")
         src = b[2]
         scope = b[3]
-        return cls(family, src, scope, b[4:])
+        bits = {1: 32, 2: 128}.get(family)
+        if bits is None:
+            raise ValueError(f"ECS family {family} unknown")
+        if src > bits or scope > bits:
+            raise ValueError("ECS prefix longer than the address family")
+        address = b[4:]
+        if len(address) != (src + 7) // 8:
+            raise ValueError("ECS address length does not match its prefix")
+        return cls(family, src, scope, address)
 
     def to_bytes(self) -> bytes:
         return (self.family.to_bytes(2, "big") + bytes([self.source_prefix, self.scope_prefix])

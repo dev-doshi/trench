@@ -278,3 +278,39 @@ def test_the_quic_peer_is_the_first_datagrams_source():
     p.datagram_received(b"x", ("198.51.100.66", 4433))   # unauthenticated source
     assert p.peer_ip() == "192.0.2.7"
     assert len(p.seen) == 2
+
+
+def test_a_signed_message_reporting_a_tsig_error_does_not_verify():
+    signed, _ = sign_wire(mkquery().to_wire(), KEY, error=18)
+    try:
+        verify_wire(signed, {"k.": KEY})
+    except TSIGError as e:
+        assert e.tsig_error == 16
+    else:
+        raise AssertionError("a BADTIME-reporting message verified")
+
+
+# --- wire: a second OPT is FORMERR, a malformed ECS is refused ---------------
+def test_a_message_with_two_opt_records_does_not_parse():
+    import pytest
+
+    from trench.errors import WireError
+    wire = bytearray(mkquery(edns=True).to_wire())
+    opt = wire[-11:]                       # the OPT the query already carries
+    assert opt[1:3] == b"\x00\x29"
+    wire[10:12] = (2).to_bytes(2, "big")   # ARCOUNT
+    wire += opt
+    with pytest.raises(WireError):
+        Message.parse(bytes(wire))
+
+
+def test_a_malformed_ecs_option_is_refused():
+    import pytest
+    for raw in (b"\x00\x01\x18",                    # short
+                b"\x00\x07\x18\x00\x0a\x00\x00",    # unknown family
+                b"\x00\x01\x28\x00" + b"\x00" * 5,  # /40 on IPv4
+                b"\x00\x01\x18\x00\x0a\x00"):       # /24 with two address bytes
+        with pytest.raises(ValueError):
+            ECS.from_bytes(raw)
+    ok = ECS.from_client("192.0.2.1")
+    assert ECS.from_bytes(ok.to_bytes()) == ok
