@@ -146,3 +146,42 @@ def test_the_verdict_is_remembered_not_recomputed():
     for i in range(_VERDICT_CACHE * 2):               # churn it
         _is_private(f"10.{i >> 16 & 255}.{i >> 8 & 255}.{i & 255}")
     assert _is_private.cache_info().currsize <= _VERDICT_CACHE
+
+
+def _svc(params: bytes, rtype=Type.HTTPS):
+    cls = R.HTTPS if rtype == Type.HTTPS else R.SVCB
+    return RR(Name.from_text("evil.com"), rtype, Class.IN, 60,
+              cls(1, Name.from_text("."), params))
+
+
+def _param(key: int, val: bytes) -> bytes:
+    return key.to_bytes(2, "big") + len(val).to_bytes(2, "big") + val
+
+
+def test_rebinding_scrubs_private_svcb_address_hints():
+    """RFC 9460 lets a client connect straight to ipv4hint/ipv6hint without an
+    A/AAAA lookup, so a private hint on a public name is a rebinding answer."""
+    import ipaddress
+    alpn = _param(1, b"\x02h2")
+    v4 = _param(4, ipaddress.ip_address("192.168.1.5").packed
+                + ipaddress.ip_address("1.2.3.4").packed)
+    v6 = _param(6, ipaddress.ip_address("fd00::1").packed)
+    m = Message(id=1)
+    shared = _svc(alpn + v4 + v6)
+    m.answers = [shared, _svc(alpn, Type.SVCB)]
+    assert scrub(m, "evil.com") == 1
+    assert m.answers[0].rdata.params == alpn + _param(4, bytes([1, 2, 3, 4]))
+    assert m.answers[1].rdata.params == alpn
+    assert shared.rdata.params == alpn + v4 + v6      # original left intact
+
+
+def test_rebinding_leaves_public_and_malformed_hints_alone():
+    public = _param(4, bytes([1, 2, 3, 4]))
+    for params in (public, public[:-1], _param(4, b"\x0a\x00\x00")):
+        m = Message(id=1)
+        m.answers = [_svc(params)]
+        assert scrub(m, "evil.com") == 0
+        assert m.answers[0].rdata.params == params
+    m = Message(id=1)
+    m.answers = [_svc(_param(4, bytes([10, 0, 0, 1])))]
+    assert scrub(m, "nas.lan", local_suffixes=("lan",)) == 0

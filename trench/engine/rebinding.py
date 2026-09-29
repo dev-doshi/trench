@@ -2,6 +2,7 @@
 public names (a public domain resolving to 192.168.x.x is a rebinding attack)."""
 from __future__ import annotations
 
+import dataclasses
 import functools
 import ipaddress
 
@@ -37,14 +38,54 @@ def _is_private(addr: str) -> bool:
             or ip.is_unspecified or ip.is_reserved)
 
 
+#: SvcParamKeys that carry addresses (RFC 9460 §7.3). A client may connect to
+#: these instead of looking up A/AAAA, so a private hint is as much a rebinding
+#: vector as a private A record.
+_HINT_KEYS = {4: 4, 6: 16}      # ipv4hint, ipv6hint -> address length
+
+
+def _scrub_hints(params: bytes) -> bytes | None:
+    """`params` without any address hint that names private space, or None when
+    nothing needed removing. Malformed params come back unchanged (None): they
+    state no address a client could use."""
+    out, i, changed = [], 0, False
+    while i < len(params):
+        if i + 4 > len(params):
+            return None
+        key = int.from_bytes(params[i:i + 2], "big")
+        ln = int.from_bytes(params[i + 2:i + 4], "big")
+        val = params[i + 4:i + 4 + ln]
+        if len(val) != ln:
+            return None
+        size = _HINT_KEYS.get(key)
+        if size is not None:
+            if ln % size:
+                return None
+            addrs = [val[j:j + size] for j in range(0, ln, size)]
+            good = [a for a in addrs
+                    if not _is_private(str(ipaddress.ip_address(a)))]
+            if len(good) != len(addrs):
+                changed = True
+                if good:        # an empty hint list is invalid: drop the key
+                    blob = b"".join(good)
+                    out.append(params[i:i + 2] + len(blob).to_bytes(2, "big") + blob)
+            else:
+                out.append(params[i:i + 4 + ln])
+        else:
+            out.append(params[i:i + 4 + ln])
+        i += 4 + ln
+    return b"".join(out) if changed else None
+
+
 def is_local_name(qname: str, local_suffixes: tuple[str, ...]) -> bool:
     name = qname.rstrip(".").lower()
     return any(name == s or name.endswith("." + s) for s in local_suffixes)
 
 
 def scrub(response: Message, qname: str, *, local_suffixes: tuple[str, ...] = ()) -> int:
-    """Remove A/AAAA answers pointing at private space for non-local names.
-    Returns the number of records stripped."""
+    """Remove A/AAAA answers pointing at private space for non-local names, and
+    private address hints from SVCB/HTTPS answers. Returns the number of
+    records stripped or rewritten."""
     if is_local_name(qname, local_suffixes):
         return 0
     kept = []
@@ -61,6 +102,13 @@ def scrub(response: Message, qname: str, *, local_suffixes: tuple[str, ...] = ()
                 and _is_private(rr.rdata.address)):
             removed += 1
             continue
+        if rr.rtype in (Type.SVCB, Type.HTTPS) and isinstance(rr.rdata, R.SVCB):
+            params = _scrub_hints(rr.rdata.params)
+            if params is not None:
+                # A copy, not an edit: the record may be shared with a cache.
+                rr = dataclasses.replace(
+                    rr, rdata=dataclasses.replace(rr.rdata, params=params))
+                removed += 1
         kept.append(rr)
     if removed:
         response.answers = kept
