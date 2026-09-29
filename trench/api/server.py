@@ -421,13 +421,22 @@ class APIServer:
             return web.json_response({"error": "that code does not match"}, status=400)
         await self.auth.set_totp(user["name"], secret)
         self._pending_totp.pop(user["name"], None)
+        self.auth.end_other_sessions(user["id"], request.cookies.get("dgsession", ""))
         await self._audit(request, "totp.enable", user["name"])
         return web.json_response({"ok": True})
 
     async def totp_disable(self, request: web.Request) -> web.Response:
         user = self._require(request, "admin")
+        # A current code, not just a session: otherwise whoever holds a stolen
+        # cookie removes the factor that was the reason the cookie was not
+        # enough, and the next login needs only the password.
+        body = await _json(request)
+        if not await self.auth.check_totp(user["name"], str(body.get("code", "")).strip()):
+            return web.json_response({"error": "enter a current code to turn this off"},
+                                     status=403)
         await self.auth.set_totp(user["name"], "")
         self._pending_totp.pop(user["name"], None)
+        self.auth.end_other_sessions(user["id"], request.cookies.get("dgsession", ""))
         await self._audit(request, "totp.disable", user["name"])
         return web.json_response({"ok": True})
 
@@ -468,7 +477,9 @@ class APIServer:
         return web.json_response(await self.app.querylog.facets())
 
     async def querylog_purge(self, request: web.Request) -> web.Response:
-        self._require(request, "editor")
+        # Admin, like the audit log: the query log is the record of what the
+        # network did, and an editor must not be able to erase it.
+        self._require(request, "admin")
         if self.app.querylog is None:
             return web.json_response({"purged": 0})
         n = await self.app.querylog.purge()
@@ -1405,7 +1416,7 @@ _OPENAPI = {
             "delete": {"summary": "Revoke an API token (admin)"}},
         f"{API}/auth/totp/enrol": {"post": {"summary": "Begin TOTP enrolment (admin)"}},
         f"{API}/auth/totp/confirm": {"post": {"summary": "Confirm and enable TOTP (admin)"}},
-        f"{API}/auth/totp": {"delete": {"summary": "Disable TOTP (admin)"}},
+        f"{API}/auth/totp": {"delete": {"summary": "Disable TOTP with a current code (admin)"}},
 
         # --- what the resolver is doing --------------------------------------
         f"{API}/stats": {"get": {"summary": "Realtime stats (viewer)",
@@ -1422,7 +1433,7 @@ _OPENAPI = {
             "get": {"summary": "Distinct clients, actions, rcodes and upstreams (viewer)"}},
         f"{API}/querylog/export": {
             "get": {"summary": "Stream the query log as NDJSON (viewer)"}},
-        f"{API}/querylog/purge": {"post": {"summary": "Delete every logged query (editor)"}},
+        f"{API}/querylog/purge": {"post": {"summary": "Delete every logged query (admin)"}},
         f"{API}/analytics": {
             "get": {"summary": "Flexible aggregation over the query log (viewer)"}},
         f"{API}/history": {
@@ -1563,6 +1574,7 @@ _BODIES = {
          "expires_days": {"type": "integer", "minimum": 0, "maximum": 3650, "default": 0,
                           "description": "0 never expires"}}, ("name",)),
     (f"{API}/auth/totp/confirm", "post"): _body({"code": _S}, ("code",)),
+    (f"{API}/auth/totp", "delete"): _body({"code": _S}, ("code",)),
     (f"{API}/rules", "post"): _body(
         {"domain": _S, "action": {"type": "string", "enum": ["deny", "allow", "remove"]}},
         ("domain", "action")),

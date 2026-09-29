@@ -301,11 +301,23 @@ async def test_removing_the_secret_removes_the_second_factor(auth):
     assert await auth.login("admin", "pw")
 
 
-def test_the_used_code_set_is_bounded(auth):
+def test_the_used_code_set_is_bounded(auth, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr("trench.api.auth.time.monotonic", lambda: clock[0])
     secret = "S" * 16
     for i in range(40):
         assert auth._consume_totp(1, secret, f"{i:06d}") is True
-    assert len(auth._totp_used[1]) <= 16
+        clock[0] += 30
+    assert len(auth._totp_used[1]) <= 5
+
+
+def test_a_code_spent_moments_ago_stays_spent_however_many_came_before(auth):
+    """Trimming by count kept arbitrary members of a set, so a burst of codes
+    could evict the one just used and make it replayable."""
+    secret = "S" * 16
+    for i in range(40):
+        auth._consume_totp(1, secret, f"{i:06d}")
+    assert all(auth._consume_totp(1, secret, f"{i:06d}") is False for i in range(40))
 
 
 @pytest.mark.asyncio
@@ -476,3 +488,24 @@ def test_the_scrypt_gate_survives_a_second_event_loop(tmp_path):
 
     asyncio.run(burst())
     asyncio.run(burst())
+
+
+@pytest.mark.asyncio
+async def test_a_stranger_cannot_lock_the_admin_out_of_a_known_address(auth):
+    """The per-user lock was global: five wrong guesses from anywhere shut the
+    real admin out too, indefinitely if repeated."""
+    await auth.create_user("admin", "pw")
+    assert await auth.login("admin", "pw", ip="192.0.2.10")        # the owner
+    for i in range(LOCKOUT_THRESHOLD * 2):
+        await auth.login("admin", "wrong", ip=f"198.51.100.{i}")   # a stranger
+    assert await auth.login("admin", "pw", ip="198.51.100.200") is None
+    assert await auth.login("admin", "pw", ip="192.0.2.10")
+
+
+@pytest.mark.asyncio
+async def test_one_ipv6_host_cannot_rotate_through_its_prefix(auth):
+    await auth.create_user("admin", "pw")
+    auth._known_from["admin"] = ["2001:db8:1::/64"]      # skip the per-user lock
+    for i in range(LOCKOUT_THRESHOLD):
+        await auth.login("admin", "wrong", ip=f"2001:db8:1::{i + 1:x}")
+    assert await auth.login("admin", "pw", ip="2001:db8:1::ffff") is None

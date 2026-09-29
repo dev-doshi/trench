@@ -908,7 +908,7 @@ async def _login_as(base, name, password):
     ("POST", "/api/v1/toggle", "editor"),
     ("POST", "/api/v1/cache/flush", "editor"),
     ("POST", "/api/v1/gravity/refresh", "editor"),
-    ("POST", "/api/v1/querylog/purge", "editor"),
+    ("POST", "/api/v1/querylog/purge", "admin"),
     ("PUT", "/api/v1/settings", "admin"),
     ("GET", "/api/v1/audit", "admin"),
     ("GET", "/api/v1/auth/tokens", "admin"),
@@ -1318,6 +1318,65 @@ async def test_disabling_totp_that_was_never_enabled_is_harmless(api):
         assert r.status == 200
     async with api.s.get(f"{api.base}/api/v1/auth/me") as r:
         assert (await r.json())["totp"] is False
+
+
+async def _turn_totp_on(api):
+    from trench.security import totp
+    async with api.s.post(f"{api.base}/api/v1/auth/totp/enrol") as r:
+        secret = (await r.json())["secret"]
+    async with api.s.post(f"{api.base}/api/v1/auth/totp/confirm",
+                          json={"code": totp.totp(secret)}) as r:
+        assert r.status == 200
+    return secret
+
+
+@pytest.mark.asyncio
+async def test_a_session_alone_cannot_turn_totp_off(api):
+    """A stolen cookie must not be able to remove the factor that made the
+    password alone not enough."""
+    await _turn_totp_on(api)
+    for body in ({}, {"code": "000000"}):
+        async with api.s.delete(f"{api.base}/api/v1/auth/totp", json=body) as r:
+            assert r.status == 403
+    async with api.s.get(f"{api.base}/api/v1/auth/me") as r:
+        assert (await r.json())["totp"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_current_code_turns_totp_off(api):
+    from trench.security import totp
+    secret = await _turn_totp_on(api)
+    # The code confirming enrolment was spent; the next step's code is fresh.
+    code = totp.totp(secret, at=time.time() + 30)
+    async with api.s.delete(f"{api.base}/api/v1/auth/totp", json={"code": code}) as r:
+        assert r.status == 200
+    async with api.s.get(f"{api.base}/api/v1/auth/me") as r:
+        assert (await r.json())["totp"] is False
+
+
+@pytest.mark.asyncio
+async def test_guessing_the_code_through_a_session_backs_off(api):
+    await _turn_totp_on(api)
+    for _ in range(8):
+        async with api.s.delete(f"{api.base}/api/v1/auth/totp",
+                                json={"code": "000000"}) as r:
+            assert r.status == 403
+    assert api.app.api.auth._locked("totp:admin") > 0
+
+
+@pytest.mark.asyncio
+async def test_turning_totp_on_signs_out_every_other_session(api):
+    """A session stolen before the second factor went on must not survive it."""
+    async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True)) as other:
+        await other.post(f"{api.base}/api/v1/auth/login",
+                         json={"name": "admin", "password": "pw"})
+        async with other.get(f"{api.base}/api/v1/auth/me") as r:
+            assert (await r.json())["user"] is not None
+        await _turn_totp_on(api)
+        async with other.get(f"{api.base}/api/v1/auth/me") as r:
+            assert (await r.json())["user"] is None
+    async with api.s.get(f"{api.base}/api/v1/auth/me") as r:
+        assert (await r.json())["user"]["name"] == "admin"      # this one stays
 
 
 # --- shutdown ---

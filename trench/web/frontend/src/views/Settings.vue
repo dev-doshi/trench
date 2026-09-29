@@ -52,6 +52,7 @@ const totpOn = ref(false);
 const totpSecret = ref("");        // during enrolment only
 const totpUri = ref("");
 const totpCode = ref("");
+const totpOffCode = ref("");       // a current code: a session alone cannot turn it off
 
 async function loadAccess() {
   try {
@@ -109,7 +110,8 @@ async function confirmTotp() {
 
 async function disableTotp() {
   try {
-    await api.del("/auth/totp");
+    await api.del("/auth/totp", { code: totpOffCode.value.trim() });
+    totpOffCode.value = "";
     await loadAccess();
     store.toast("Two-factor disabled");
   } catch (e: any) {
@@ -319,9 +321,13 @@ function saveTokenValue() {
             <em v-if="totpOn">On. Lost your authenticator? <code>trench passwd --clear-totp</code> on the box.</em>
             <em v-else>A code from an authenticator app, on top of the password.</em>
           </span>
-          <span class="st-ctl">
-            <button class="btn" v-if="totpOn" @click="disableTotp">turn off</button>
-            <button class="btn" v-else-if="!totpSecret" @click="startTotp">set up</button>
+          <span class="st-ctl" v-if="totpOn">
+            <input type="text" v-model="totpOffCode" placeholder="current code" inputmode="numeric"
+                   autocomplete="one-time-code" style="width:120px" @keyup.enter="disableTotp" />
+            <button class="btn" :disabled="!totpOffCode.trim()" @click="disableTotp">turn off</button>
+          </span>
+          <span class="st-ctl" v-else>
+            <button class="btn" v-if="!totpSecret" @click="startTotp">set up</button>
           </span>
         </label>
 

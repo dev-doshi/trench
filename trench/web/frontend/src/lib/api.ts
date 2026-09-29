@@ -64,7 +64,7 @@ export const api = {
   get: (p: string) => call("GET", p),
   post: (p: string, body?: unknown) => call("POST", p, body ?? {}),
   put: (p: string, body?: unknown) => call("PUT", p, body ?? {}),
-  del: (p: string) => call("DELETE", p),
+  del: (p: string, body?: unknown) => call("DELETE", p, body),
   // build a query string, dropping empty values
   qs: (params: Record<string, unknown>) => {
     const u = new URLSearchParams();

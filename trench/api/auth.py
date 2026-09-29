@@ -4,6 +4,7 @@ brute-force lockout, TOTP 2FA.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import secrets
 import time
 import weakref
@@ -16,6 +17,7 @@ log = get("auth")
 
 ROLE_RANK = {"viewer": 1, "editor": 2, "admin": 3}
 SESSION_TTL = 8 * 3600
+TOTP_MEMORY = 120.0        # longer than any code stays valid (+/-1 step of 30 s)
 LOCKOUT_THRESHOLD = 5      # allow this many failures before backoff kicks in
 LOCKOUT_BASE = 2.0
 LOCKOUT_MAX = 300.0
@@ -49,13 +51,35 @@ async def _scrypt(fn, *args):
         return await asyncio.to_thread(fn, *args)
 
 
+#: How many address prefixes per account are remembered as ones it logged in from.
+KNOWN_PREFIXES = 8
+
+
+def _addr_key(ip: str) -> str:
+    """The lockout key for an address: itself for IPv4, its /64 for IPv6.
+
+    One IPv6 host is routinely handed a whole /64, so counting single addresses
+    gave it 2**64 fresh counters to rotate through.
+    """
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return ip
+    if addr.version == 4:
+        return ip
+    if addr.ipv4_mapped:
+        return str(addr.ipv4_mapped)
+    return str(ipaddress.ip_network(f"{addr}/64", strict=False))
+
+
 class AuthManager:
     def __init__(self, db: Database):
         self.db = db
         self.sessions: dict[str, tuple[dict, float]] = {}
         self._fails: dict[str, tuple[int, float]] = {}  # key -> (count, last)
-        self._totp_used: dict[int, set[str]] = {}       # user id -> codes spent
+        self._totp_used: dict[int, dict[str, float]] = {}  # user id -> code -> when spent
         self._pepper: bytes | None = None               # see `pepper()`
+        self._known_from: dict[str, list[str]] = {}     # user -> recent good prefixes
 
     async def pepper(self) -> bytes:
         """The key API-token digests are computed under, loaded once.
@@ -75,12 +99,17 @@ class AuthManager:
         valid for ~90 seconds and could be replayed by anyone who observed it
         once — which is exactly what a one-time code is supposed to prevent.
         """
-        used = self._totp_used.setdefault(user_id, set())
+        now = time.monotonic()
+        used = self._totp_used.setdefault(user_id, {})
+        # A code is valid for at most three 30-second steps, so one spent more
+        # than that ago can never match again and is forgotten. Pruning by age
+        # rather than by count: a set trimmed to "the last few" kept arbitrary
+        # members, and could drop the code spent a second ago.
+        for old in [c for c, at in used.items() if now - at > TOTP_MEMORY]:
+            del used[old]
         if code in used:
             return False
-        used.add(code)
-        if len(used) > 16:            # only the current window can ever match
-            self._totp_used[user_id] = set(list(used)[-8:])
+        used[code] = now
         return True
 
     def _sweep(self, now: float) -> None:
@@ -164,17 +193,24 @@ class AuthManager:
 
     async def login(self, name: str, password: str, code: str = "", ip: str = "") -> str | None:
         # Locked out by address *and* by username. The address alone is not a
-        # stable identity: it comes from the request, so an attacker who can
-        # vary it (see security.trusted_proxies) would otherwise never trip the
-        # counter at all.
-        if self._locked(ip) > 0 or self._locked(f"user:{name}") > 0:
+        # stable identity: an attacker with many of them (a botnet, or any IPv6
+        # host) would otherwise never trip the counter. But the per-user lock
+        # was global, so five wrong guesses from anywhere shut the real admin
+        # out too — indefinitely, if repeated. It is not applied to a prefix
+        # this account has logged in from before: that is how its owner still
+        # gets in while a stranger is hammering the name.
+        where = _addr_key(ip)
+        keys = [where]
+        if where not in self._known_from.get(name, ()):
+            keys.append(f"user:{name}")
+        if any(self._locked(k) > 0 for k in keys):
             return None
         # Count the attempt as a failure now, before the first await, and clear
         # it only on success. Recording it after the verify let every request in
         # a concurrent burst pass the check above before any of them had been
         # counted, so the threshold did not limit the guessing rate at all.
         now = time.time()
-        for k in (ip, f"user:{name}"):
+        for k in keys:
             count, _ = self._fails.get(k, (0, 0.0))
             self._fails[k] = (count + 1, now)
         row = await self.db.fetchone("SELECT * FROM app_user WHERE name=? AND disabled=0", (name,))
@@ -193,8 +229,12 @@ class AuthManager:
         if not ok:
             self._sweep(time.time())
             return None
-        self._fails.pop(ip, None)
-        self._fails.pop(f"user:{name}", None)
+        for k in keys:
+            self._fails.pop(k, None)
+        known = self._known_from.setdefault(name, [])
+        if where not in known:
+            known.append(where)
+            del known[:-KNOWN_PREFIXES]
         assert row is not None          # `ok` is only True on the row branch
         if hashutil.needs_rehash(row["pw_hash"]):
             # The password is in hand and verified exactly here and nowhere
@@ -281,6 +321,44 @@ class AuthManager:
 
     async def set_totp(self, name: str, secret: str) -> None:
         await self.db.execute("UPDATE app_user SET totp_secret=? WHERE name=?", (secret, name))
+
+    async def check_totp(self, name: str, code: str) -> bool:
+        """A current code for `name`'s second factor, spent once. True when the
+        account has none.
+
+        For changes to the factor itself: a session alone — a stolen cookie, a
+        console left open — must not be enough to switch it off. Failures count
+        towards the same backoff as logins, so the code cannot be guessed
+        through an open session either.
+        """
+        row = await self.db.fetchone(
+            "SELECT id, totp_secret FROM app_user WHERE name=?", (name,))
+        if row is None:
+            return False
+        if not row["totp_secret"]:
+            return True
+        key = f"totp:{name}"
+        if self._locked(key) > 0:
+            return False
+        if totp.verify(row["totp_secret"], code) and \
+                self._consume_totp(row["id"], row["totp_secret"], code):
+            self._fails.pop(key, None)
+            return True
+        count, _ = self._fails.get(key, (0, 0.0))
+        self._fails[key] = (count + 1, time.time())
+        return False
+
+    def end_other_sessions(self, user_id: int, keep: str = "") -> int:
+        """Sign `user_id` out everywhere but the session `keep`.
+
+        Called when the second factor changes: a session that was stolen before
+        TOTP went on must not outlive the change that was meant to stop it.
+        """
+        gone = [t for t, (u, _) in self.sessions.items()
+                if u["id"] == user_id and t != keep]
+        for t in gone:
+            self.sessions.pop(t, None)
+        return len(gone)
 
     async def totp_secret(self, name: str) -> str:
         row = await self.db.fetchone("SELECT totp_secret FROM app_user WHERE name=?", (name,))
