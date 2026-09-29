@@ -195,16 +195,25 @@ def _prebuild_filter(cfg: Config):
     if not cfg.filtering.sources:
         return None
     from .filter import FilterEngine
+    from .filter.groups import GroupSpec
     from .filter.shared import SharedBlockTable
     from .gravity import Gravity
-    from .gravity.manager import cached_table_age
+    from .gravity.manager import cached_table_age, sources_fingerprint, table_matches
     log = logmod.get("main")
     table_path = cfg.data_path / "gravity.table"
+    groups = [GroupSpec(name=n, sources=list(g.sources), allow=list(g.allow),
+                        deny=list(g.deny), inherit=g.inherit)
+              for n, g in (cfg.filtering.groups or {}).items()]
+    fingerprint = sources_fingerprint(cfg.filtering.sources, cfg.filtering.ip_sources,
+                                      groups)
     try:
         age = cached_table_age(table_path)
-        if age is not None and age < cfg.gravity.refresh_hours * 3600:
-            # Already compiled and still within its refresh interval: map it and
-            # start serving now. The workers' own schedule brings it up to date.
+        if (age is not None and age < cfg.gravity.refresh_hours * 3600
+                and table_matches(table_path, fingerprint)):
+            # Already compiled from these lists and still within its refresh
+            # interval: map it and start serving now. The workers' own schedule
+            # brings it up to date; the primary rebuilds address lists and
+            # groups, which live beside the table rather than in it.
             table = SharedBlockTable.open(table_path)
             engine = FilterEngine.from_table(table, operator_rules(cfg.filtering.allow,
                                                                   cfg.filtering.deny))
@@ -212,7 +221,8 @@ def _prebuild_filter(cfg: Config):
                      engine.size, age / 3600)
         else:
             gravity = Gravity(list(cfg.filtering.sources), list(cfg.filtering.allow),
-                              list(cfg.filtering.deny), table_path=table_path)
+                              list(cfg.filtering.deny), table_path=table_path,
+                              ip_sources=list(cfg.filtering.ip_sources), groups=groups)
             engine = asyncio.run(gravity.build())
     except Exception as e:  # noqa: BLE001 — any failure here just costs the optimisation
         log.warning("pre-fork blocklist build failed (%s); workers will each load their own", e)

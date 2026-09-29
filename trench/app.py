@@ -23,7 +23,13 @@ from .filter.safebrowse import SafeBrowse
 from .filter.services import Services
 from .filter.shared import SharedBlockTable
 from .gravity import Gravity
-from .gravity.manager import cached_table_age
+from .gravity.manager import (
+    cached_table_age,
+    mark_table_incomplete,
+    read_table_meta,
+    sources_fingerprint,
+    table_matches,
+)
 from .gravity.schedule import Scheduler
 from .log import get
 from .resolver.forwarder import Forwarder
@@ -468,6 +474,10 @@ class App:
         await self._audit("blocklist refresh rejected", "gravity",
                           contract.summarise(failures))
 
+    def _fingerprint(self) -> str:
+        f = self.config.filtering
+        return sources_fingerprint(f.sources, f.ip_sources, self._filter_groups())
+
     def _make_gravity(self, sources) -> Gravity:
         return Gravity(list(sources), list(self.config.filtering.allow),
                        list(self.config.filtering.deny), db=self.db,
@@ -501,7 +511,7 @@ class App:
             self.pipeline.filter = engine
             log.info("using pre-forked blocklist (%d domains)", engine.size)
             release_free_memory()
-            return False
+            return await self._complete_mapped_table(allow_fetch, fresh=True)
 
         # A resolver that cannot answer is worse than one answering from a
         # slightly old list, and re-parsing 600k domains takes a minute on small
@@ -518,9 +528,20 @@ class App:
                 log.info("mapped cached block table: %d domains, %.1f MB, %.1f h old",
                          len(table), table.nbytes / 1_048_576, age / 3600)
                 release_free_memory()
-                if age < self.config.gravity.refresh_hours * 3600 or not self.primary:
-                    return False  # still fresh, or a sibling worker owns the refresh
-                log.info("cached table is past its refresh interval; rebuilding now")
+                if not self.primary:
+                    return False  # a sibling worker owns the refresh
+                # Age alone is not enough: the table has to have been built from
+                # the lists this configuration names. Asking only "how old" meant
+                # an edited `filtering.sources` sat unapplied behind a young
+                # table until the next scheduled refresh — up to a day.
+                same = table_matches(self.table_path, self._fingerprint())
+                fresh = age < self.config.gravity.refresh_hours * 3600
+                if not same:
+                    log.info("cached table was built from other lists "
+                             "(or a failed refresh); rebuilding")
+                elif not fresh:
+                    log.info("cached table is past its refresh interval; rebuilding now")
+                return await self._complete_mapped_table(allow_fetch, fresh=same and fresh)
 
         if not self.primary and self.nworkers > 1:
             # Nothing cached and nothing pre-forked, so the primary is about to
@@ -546,6 +567,33 @@ class App:
         self.pipeline.filter = engine
         self.pipeline.set_group_filters(getattr(self._gravity, "group_engines", {}))
         release_free_memory()
+        return False
+
+    async def _complete_mapped_table(self, allow_fetch: bool, *, fresh: bool) -> bool:
+        """Finish a start that is already serving a mapped table.
+
+        The table holds the default corpus only. Address lists and groups live
+        beside it in memory, so they have to be rebuilt on every start — until
+        this existed, a restart silently dropped both until the next refresh.
+        `rpz-ip` triggers inside the name sources are the exception: they can
+        only come from re-reading those sources, so they cost a full refresh.
+        """
+        meta = read_table_meta(self.table_path)
+        if fresh and meta.get("rpz_ips"):
+            fresh = False
+        extras = bool(self.config.filtering.ip_sources or self.config.filtering.groups)
+        if fresh and not extras:
+            return False
+        if not allow_fetch:
+            return True
+        if not fresh:
+            # Through the ordinary refresh, so a failed source or a broken
+            # assertion keeps the mapped table instead of replacing it.
+            await self._refresh_locked()
+            return False
+        matcher = await self._gravity.build_extras()
+        self.filter.ips = matcher
+        self.pipeline.set_group_filters(self._gravity.group_engines)
         return False
 
     async def refresh_blocklists(self) -> None:
@@ -583,6 +631,7 @@ class App:
         # too. Keep what is already running instead; the schedule retries.
         report = getattr(self._gravity, "report", None)
         if report is not None and report.errors and previous is not None:
+            mark_table_incomplete(self.table_path)
             log.warning("blocklist refresh kept the previous rules: %d of %d "
                         "sources failed (%s)", len(report.errors),
                         len(self._gravity.sources), "; ".join(report.errors[:3]))
@@ -596,6 +645,7 @@ class App:
             self.contract_failures = failures
             log.error("blocklist refresh rejected: %s", contract.summarise(failures))
             await self._record_contract_failure(failures)
+            mark_table_incomplete(self.table_path)
             return
         self.contract_failures = []
         # Compare against what was running *before* swapping, so the operator

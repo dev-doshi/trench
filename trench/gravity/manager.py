@@ -6,6 +6,9 @@ Last-Modified conditional fetch, per-list groups, and scheduled refresh.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -53,6 +56,66 @@ def cached_table_age(path) -> float | None:
         return max(0.0, time.time() - path.stat().st_mtime)
     except OSError:
         return None
+
+
+def sources_fingerprint(sources, ip_sources=(), groups=()) -> str:
+    """What a compiled table was built *from*, as one comparable string.
+
+    Only the configuration that decides the table's contents: the default
+    sources, the address lists, and each group's sources. Operator allow/deny
+    are not part of it — they are re-applied on top of the mapped table at
+    load, so changing them never needs the corpus re-read.
+    """
+    doc = {
+        "sources": list(sources),
+        "ip_sources": list(ip_sources),
+        "groups": sorted(
+            [g.name, list(g.sources), list(g.allow), list(g.deny), bool(g.inherit)]
+            for g in groups),
+    }
+    raw = json.dumps(doc, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(raw).hexdigest()[:32]
+
+
+def table_meta_path(table_path) -> Path:
+    """The sidecar beside the compiled table: `gravity.table.json`."""
+    return Path(str(table_path) + ".json")
+
+
+def read_table_meta(table_path) -> dict:
+    """The sidecar's contents, or {} when it is missing or unreadable — which
+    every caller treats the same as "built from something else"."""
+    try:
+        meta = json.loads(table_meta_path(table_path).read_text())
+    except (OSError, ValueError):
+        return {}
+    return meta if isinstance(meta, dict) else {}
+
+
+def table_matches(table_path, fingerprint: str) -> bool:
+    """Was the table at `table_path` built, completely, from this configuration?
+
+    A table written before the sidecar existed does not match: nothing says
+    what it was built from, and one rebuild is cheaper than a day of guessing.
+    A table from a refresh where a source failed does not match either — its
+    corpus is short by that list.
+    """
+    meta = read_table_meta(table_path)
+    return meta.get("fingerprint") == fingerprint and bool(meta.get("complete"))
+
+
+def mark_table_incomplete(table_path) -> None:
+    """The table just written was not put into service (a source failed, or it
+    broke an assertion). The file stays — workers and the next restart can only
+    map what is on disk — but it stops claiming to be a complete build of this
+    configuration, so the next start rebuilds it instead of trusting it."""
+    meta = read_table_meta(table_path)
+    if meta:
+        meta["complete"] = False
+        try:
+            table_meta_path(table_path).write_text(json.dumps(meta))
+        except OSError:
+            pass
 
 
 @dataclass
@@ -266,11 +329,46 @@ class Gravity:
                      else "used on its own")
         return out
 
+    @property
+    def fingerprint(self) -> str:
+        return sources_fingerprint(self.sources, self.ip_sources, self.groups)
+
+    def _write_meta(self, report: GravityReport, rpz_ips: int, complete: bool) -> None:
+        """Record what the table on disk was built from, atomically, after it."""
+        if self.table_path is None:
+            return
+        meta = {"fingerprint": self.fingerprint, "built_at": int(time.time()),
+                "complete": complete, "rpz_ips": rpz_ips,
+                "rules": report.total}
+        path = table_meta_path(self.table_path)
+        tmp = path.with_name(path.name + ".tmp")
+        try:
+            tmp.write_text(json.dumps(meta))
+            os.replace(tmp, path)
+        except OSError as e:
+            log.warning("could not record what the block table was built from: %s", e)
+
+    async def build_extras(self) -> IPMatcher:
+        """The address lists and the groups, without touching the default corpus.
+
+        These live beside the compiled table in memory rather than in it, so a
+        restart that maps the table still has to build them. They are small —
+        a few thousand prefixes, one group's lists — which is the whole point
+        of not re-reading a million domains to get them back.
+        """
+        report = GravityReport()
+        matcher = await self._build_ip_matcher([], report)
+        self.group_engines = await self._build_groups(report)
+        self.report = report
+        await self._persist(report)
+        return matcher
+
     async def build(self) -> FilterEngine:
         report = GravityReport()
         texts = await self._fetch_all(report)
         matcher = await self._build_ip_matcher(texts, report)
-        self.group_engines = await self._build_groups(report)
+        rpz_ips = matcher.size - sum(
+            s.count for s in report.sources if s.src in self.ip_sources)
         # One cheap scan first: a $badfilter in one list disables a rule in
         # another, so the set has to be known before anything is compiled — and
         # knowing it up front is what lets the rules themselves be streamed.
@@ -286,7 +384,15 @@ class Gravity:
             FilterEngine.compile, self._stream_rules(texts, report),
             self.table_path, badfilter_keys=keys)
         engine.ips = matcher
+        # Whether the *table* is whole. A group whose list failed is rebuilt on
+        # every restart anyway, so it must not mark the table as short.
+        complete = not report.errors
+        # Groups after the default corpus, not before: by now every source's
+        # text has been consumed and dropped, so a group's fetch and compile no
+        # longer stack on top of the largest allocation this process makes.
+        self.group_engines = await self._build_groups(report)
         self.report = report
+        self._write_meta(report, rpz_ips, complete)
         await self._persist(report)
         log.info("gravity compiled: %d rules (%d block domains) from %d sources",
                  report.total, engine.size, len(self.sources))
