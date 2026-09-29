@@ -430,3 +430,17 @@ def test_the_quic_frontends_admit_and_release_through_the_tracker():
     b.note_quic_event(done)
     b.note_quic_event(done)
     assert tracker.total == 1
+
+
+@pytest.mark.asyncio
+async def test_queries_in_flight_are_answered_after_the_client_half_closes():
+    """Send, shut down the write side, read: the answers must still arrive."""
+    async with Server(echo({b"slow": 0.2}), idle_timeout=5) as srv:
+        reader, writer = await srv.connect()
+        writer.write(framed(b"slow") + framed(b"fast"))
+        await writer.drain()
+        writer.write_eof()
+        got = {await read_frame(reader), await read_frame(reader)}
+        assert got == {b"slow", b"fast"}, "the half-close cancelled the answers"
+        assert await asyncio.wait_for(reader.read(1), 2.0) == b""
+        writer.close()
