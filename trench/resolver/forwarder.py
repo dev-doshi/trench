@@ -26,16 +26,21 @@ _FAILOVER_RCODES = frozenset({Rcode.SERVFAIL, Rcode.REFUSED})
 _FAILURE_MEMORY = 30.0
 
 
-def _rank(up, now: float) -> tuple[int, float]:
-    """Sort key for `fastest`: recent failures first, then smoothed RTT.
+def _recent_failures(up, now: float) -> int:
+    """Failures within `_FAILURE_MEMORY`, else 0.
 
     An upstream that does not say when it last failed is taken to have failed
     just now — the conservative reading.
     """
     failures = getattr(up, "failures", 0)
     if failures and now - getattr(up, "failed_at", now) >= _FAILURE_MEMORY:
-        failures = 0
-    return failures, up.rtt
+        return 0
+    return failures
+
+
+def _rank(up, now: float) -> tuple[int, float]:
+    """Sort key for `fastest`: recent failures first, then smoothed RTT."""
+    return _recent_failures(up, now), up.rtt
 
 
 def parse_server(spec: str) -> tuple[str, int]:
@@ -113,8 +118,18 @@ class Forwarder:
         return resp
 
     async def _sequential(self, group: list[Upstream], query: Message, note=None) -> Message:
+        """Ask in configured order, with recently failed upstreams moved last.
+
+        Strict order made a dead first upstream cost every query the full
+        timeout before the second was asked — four seconds a lookup, for as long
+        as it stayed down. The sort is stable, so the operator's order still
+        holds among the healthy ones, and a failure is forgotten after
+        `_FAILURE_MEMORY`: the first upstream gets one query to prove itself
+        and takes the lead back as soon as it answers.
+        """
+        now = asyncio.get_running_loop().time()
         last: Exception | None = None
-        for up in group:
+        for up in sorted(group, key=lambda u: _recent_failures(u, now) > 0):
             try:
                 return self._won(await self._ask(up, query), note)
             except Exception as e:
