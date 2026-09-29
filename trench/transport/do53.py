@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import struct
 from typing import TYPE_CHECKING
 
 from ..errors import WireError
@@ -151,6 +152,98 @@ class _UDPProtocol(asyncio.DatagramProtocol):
             self.inflight -= 1
 
 
+def _wildcard(host: str) -> bool:
+    return host in ("", "0.0.0.0", "::")
+
+
+class _AnswerFromDestination(asyncio.DatagramTransport):
+    """A UDP listener on the wildcard address that answers from the address
+    each query was sent to.
+
+    A wildcard socket replies from whichever local address the kernel picks
+    for the route back. On a host with more than one address — a Docker
+    bridge, a second IPv6 prefix, a VPN — that is not always the address the
+    client asked, and a connected client (glibc's resolver is one) discards the
+    reply as coming from a stranger. Every container on a Docker bridge lost DNS
+    this way. asyncio's datagram transport drops the ancillary data that says
+    where a datagram was sent, so this reads it with `recvmsg` and answers with
+    `sendmsg`.
+
+    The protocol sees an address with one extra element, the reply's source
+    (as a control message); `addr[0]` is still the client.
+    """
+
+    _BATCH = 64            # datagrams per readiness callback, so others get a turn
+
+    def __init__(self, loop, sock: socket.socket, protocol) -> None:
+        super().__init__()
+        self._loop, self._sock, self._protocol = loop, sock, protocol
+        self._buf = bytearray(65535)
+        self._cspace = socket.CMSG_SPACE(20)          # in6_pktinfo, the larger
+        # A dual-stack socket reports IPv4 destinations as IPv4-mapped IPv6.
+        if sock.family == socket.AF_INET6:
+            sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_RECVPKTINFO, 1)
+        else:
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_PKTINFO, 1)
+        sock.setblocking(False)
+        loop.add_reader(sock.fileno(), self._readable)
+        protocol.connection_made(self)
+
+    def _readable(self) -> None:
+        for _ in range(self._BATCH):
+            try:
+                n, anc, _flags, src = self._sock.recvmsg_into([self._buf], self._cspace)
+            except (BlockingIOError, InterruptedError):
+                return
+            except OSError as e:           # an ICMP error queued on the socket
+                log.debug("udp: %s", e)
+                return
+            self._protocol.datagram_received(bytes(self._buf[:n]),
+                                             (*src, _reply_source(anc)))
+
+    def sendto(self, data, addr=None) -> None:
+        *dest, source = addr
+        try:
+            if source is not None:
+                self._sock.sendmsg([data], [source], 0, tuple(dest))
+            else:
+                self._sock.sendto(data, tuple(dest))
+        except (BlockingIOError, InterruptedError):
+            pass                   # kernel queue full: a UDP client retries
+        except OSError as e:
+            log.debug("udp: reply to %s failed: %s", dest[0], e)
+
+    def get_write_buffer_size(self) -> int:
+        return 0                   # nothing is buffered here; see `sendto`
+
+    def get_extra_info(self, name, default=None):
+        return self._sock if name == "socket" else default
+
+    def is_closing(self) -> bool:
+        return self._sock.fileno() < 0
+
+    def close(self) -> None:
+        if not self.is_closing():
+            self._loop.remove_reader(self._sock.fileno())
+            self._sock.close()
+            self._loop.call_soon(self._protocol.connection_lost, None)
+
+
+def _reply_source(anc) -> tuple | None:
+    """The control message that makes a reply leave from the address the query
+    was sent to, or None to let the kernel choose."""
+    for level, kind, data in anc:
+        if level == socket.IPPROTO_IP and kind == socket.IP_PKTINFO:
+            # in_pktinfo: ifindex, spec_dst, header destination. Reply from the
+            # header destination and let routing pick the interface.
+            return (level, kind, struct.pack("=I4s4s", 0, data[8:12], bytes(4)))
+        if level == socket.IPPROTO_IPV6 and kind == socket.IPV6_PKTINFO:
+            # in6_pktinfo: destination, ifindex. Echoed as is; the interface
+            # matters for a link-local destination.
+            return (level, kind, data[:20])
+    return None
+
+
 def _grow_rcvbuf(sock) -> None:
     """Raise the socket's receive buffer to `UDP_RCVBUF`; never lower it, since
     an operator may already have set it higher."""
@@ -161,6 +254,19 @@ def _grow_rcvbuf(sock) -> None:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, UDP_RCVBUF)
     except OSError as e:
         log.debug("could not raise the UDP receive buffer: %s", e)
+
+
+def _bind_udp(host: str, port: int, reuse_port: bool) -> socket.socket:
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    sock = socket.socket(family, socket.SOCK_DGRAM)
+    try:
+        if reuse_port:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        sock.bind((host or "0.0.0.0", port))
+    except OSError:
+        sock.close()
+        raise
+    return sock
 
 
 def _tcp_responder(pipeline: Pipeline, auth):
@@ -217,7 +323,10 @@ class Do53Server(Frontend):
                 self.udp_protocol = _UDPProtocol(self.pipeline, self.auth,
                                                  self.udp_max_inflight, self.fast)
                 return self.udp_protocol
-            if self.sock_udp is not None:
+            if _wildcard(self.host) and hasattr(socket, "IP_PKTINFO"):
+                sock = self.sock_udp or _bind_udp(self.host, self.port, self.reuse_port)
+                self._udp_transport = _AnswerFromDestination(loop, sock, make_udp())
+            elif self.sock_udp is not None:
                 self._udp_transport, _ = await loop.create_datagram_endpoint(
                     make_udp, sock=self.sock_udp)
             else:

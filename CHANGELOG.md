@@ -148,6 +148,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   queries for RFC 1918 / RFC 6303 space, `.local`, `.home.arpa` and the other
   `security.local_suffixes` get NXDOMAIN instead of being forwarded to a public
   resolver that cannot know them, unless an upstream route names the zone.
+- **UDP answers leave from the address that was asked.** A listener on
+  `0.0.0.0` or `::` replied from whatever address the kernel chose for the way
+  back, and a client using a connected socket (glibc's resolver) threw the
+  answer away. On a Docker host that was every container on a bridge network;
+  on any host, any client asking a second address.
 - **One dropped DoT/TCP connection no longer fails the one that replaced it.**
   A slow close of the old stream marked the new connection closed, failing every
   query in flight on it.
