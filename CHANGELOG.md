@@ -122,6 +122,19 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **DNSSEC: algorithm 7 validated as BOGUS.** RSASHA1-NSEC3-SHA1 (RFC 5155 §2)
+  was missing from the verifier's hash table, so every zone signed with it
+  failed validation.
+- **DNSSEC: an ancestor's delegation or DNAME record could forge NXDOMAIN.**
+  The parent's public NSEC for a delegation sorts every name in the child into
+  its gap; it is now refused as a proof for those names (RFC 6840 §4.1), and an
+  NSEC3 delegation is no longer accepted as a closest encloser (RFC 5155 §8.3).
+- **DoQ and DoH upstreams sent the client's message ID.** RFC 9250 §4.2.1
+  requires 0 over DoQ, and a conforming server rejects anything else; DoH
+  (RFC 8484 §4.1) now sends 0 too, for cacheability.
+- **DHCP options longer than 255 octets crashed the reply.** They are now split
+  and rejoined per RFC 3396, which the DNR option (RFC 9463) needs once several
+  endpoints and a long hostname are advertised.
 - A SERVFAIL or REFUSED from an upstream was accepted as the answer. The
   `sequential` and `fastest` strategies never asked the next upstream, a
   `parallel` race was won by whichever server failed quickest, and a retained

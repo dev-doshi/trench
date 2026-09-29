@@ -111,7 +111,14 @@ class DhcpPacket:
         out += b"\x00" * 128   # file
         out += MAGIC_COOKIE
         for code, val in self.options.items():
-            out += bytes([code, len(val)]) + val
+            # RFC 3396: a value longer than one option can carry is split into
+            # consecutive instances of the same code. Writing the length as one
+            # octet raised ValueError past 255 — reachable with the DNR option
+            # (RFC 9463), which grows with every advertised endpoint and the
+            # hostname, and which then failed every lease that asked for it.
+            for i in range(0, len(val), 255) if val else (0,):
+                chunk = val[i:i + 255]
+                out += bytes([code, len(chunk)]) + chunk
         out += bytes([OPT_END])
         # pad to BOOTP minimum
         if len(out) < 300:
@@ -144,7 +151,8 @@ def _parse_options(data: bytes) -> dict[int, bytes]:
         length = data[i + 1]
         if i + 2 + length > n:
             raise ValueError("DHCP option runs past the end of the packet")
-        opts[code] = data[i + 2:i + 2 + length]
+        # RFC 3396 §7: repeated instances of a code are one value, concatenated.
+        opts[code] = opts.get(code, b"") + data[i + 2:i + 2 + length]
         i += 2 + length
     return opts
 

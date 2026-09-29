@@ -442,18 +442,28 @@ class Upstream:
                 # the id is connection-local and already matched by the reader
                 _check_response(resp, msg, check_id=False)
                 resp.id = msg.id          # undo the connection-local id used to multiplex
-            elif scheme == "https":
-                resp = Message.parse(await self._doh(msg.to_wire()))
-                _check_response(resp, msg, check_id=False)  # RFC 8484: id is 0
-            elif scheme == "quic":
-                # The whole exchange is bounded, handshake included. Only the
-                # read used to be: aioquic's `connect` waits for the handshake
-                # until its idle timeout — 60 s by default — so a black-holed
-                # DoQ upstream held every query routed to it for a minute,
-                # far past any client's patience and the stale-serving timer.
-                resp = Message.parse(await asyncio.wait_for(
-                    self._doq(msg.to_wire()), self.timeout))
-                _check_response(resp, msg, check_id=False)
+            elif scheme in ("https", "quic"):
+                # RFC 9250 §4.2.1 (MUST) and RFC 8484 §4.1 (SHOULD): the
+                # message ID is 0 on these transports — the stream or HTTP
+                # exchange already pairs query with response, and a fixed ID
+                # keeps DoH GETs cacheable. A conforming DoQ server treats a
+                # non-zero ID as a protocol error and aborts, so passing the
+                # client's ID through failed every query to one.
+                sent = copy.copy(msg)
+                sent.id = 0
+                wire = sent.to_wire()
+                if scheme == "https":
+                    raw = await self._doh(wire)
+                else:
+                    # The whole exchange is bounded, handshake included. Only the
+                    # read used to be: aioquic's `connect` waits for the handshake
+                    # until its idle timeout — 60 s by default — so a black-holed
+                    # DoQ upstream held every query routed to it for a minute,
+                    # far past any client's patience and the stale-serving timer.
+                    raw = await asyncio.wait_for(self._doq(wire), self.timeout)
+                resp = Message.parse(raw)
+                _check_response(resp, sent, check_id=False)
+                resp.id = msg.id          # hand the client back its own id
             else:
                 raise ValueError(f"unknown scheme {scheme}")
             if not self._ad_trusted():
