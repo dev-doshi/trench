@@ -64,7 +64,8 @@ const cols = computed(() => props.times.map((t, i) => {
 const span = computed(() => (props.times.at(-1) ?? 0) - (props.times[0] ?? 0));
 function stamp(t: number, long = false): string {
   const d = new Date(t * 1000);
-  const hm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  // the same 24-hour clock as Trend, so two charts on one page read alike
+  const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
   if (long || span.value > 2 * 86400) {
     const day = d.toLocaleDateString([], { weekday: "short", day: "numeric" });
     return long ? `${day}, ${hm}` : day;
@@ -83,7 +84,7 @@ const xTicks = computed(() => {
     const keep = Math.ceil(days.length / Math.max(2, Math.floor(W.value / 70)));
     return days.filter((_, k) => k % keep === 0).map(at);
   }
-  const every = Math.max(1, Math.ceil(n / Math.min(6, Math.floor(W.value / 70))));
+  const every = Math.max(1, Math.ceil(n / Math.min(6, Math.floor(W.value / 80))));
   const out = [];
   for (let i = 0; i < n; i += every) out.push(at(i));
   return out;

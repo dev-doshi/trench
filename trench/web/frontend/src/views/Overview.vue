@@ -18,8 +18,9 @@ import Spark from "../ui/Spark.vue";
 import Trend from "../ui/Trend.vue";
 
 const RANGES = [{ hours: 24, label: "24 hours" }, { hours: 168, label: "7 days" }];
-const PALETTE = ["var(--o-upstream)", "var(--o-cache)", "var(--o-local)", "var(--o-failed)",
-  "#5fb3c4", "#c98a6b", "var(--b-ink-4)", "var(--o-blocked)"];
+/* Colour means an outcome and nothing else, so a ranking that is not one is
+ * drawn in ink weight, heaviest first — tokens, so it holds in either skin. */
+const INK = ["var(--b-ink)", "var(--b-ink-2)", "var(--b-ink-3)", "var(--b-ink-4)"];
 const nf = new Intl.NumberFormat();
 
 type Ranked = [string, number][];
@@ -56,9 +57,9 @@ async function load() {
       an({ bucket: "hour", group: "action", top: 12 }),
       an({ bucket: "hour", metric: "avg_latency" }),
       an({ metric: "avg_latency" }),
-      an({ group: "qtype", top: 7 }),
-      an({ group: "upstream", top: 7 }),
-      an({ bucket: "hour", group: "client_ip", top: 5 }),
+      an({ group: "qtype", top: INK.length - 1 }),
+      an({ group: "upstream", top: INK.length + 1 }),
+      an({ bucket: "hour", group: "client_ip", top: INK.length }),
       an({ group: "qname", top: 10 }),
       an({ group: "qname", action: "blocked", top: 10 }),
       an({ group: "client_ip", top: 10 }),
@@ -72,7 +73,7 @@ async function load() {
     latencyAll.value = latAll.rows?.[0]?.[1] ?? null;
     qtypes.value = qt.rows || [];
     // an empty upstream is a cache hit, a block or a local answer
-    upstreams.value = (up.rows || []).filter((x: [string, number]) => x[0]);
+    upstreams.value = (up.rows || []).filter((x: [string, number]) => x[0]).slice(0, INK.length);
     activity.value = act.series || [];
     names.value = n.rows || [];
     blocked.value = b.rows || [];
@@ -155,40 +156,45 @@ const stacks = computed(() => KINDS.filter((k) => byKind.value.has(k)).map((k) =
 const outcomeParts = computed(() => KINDS.filter((k) => totals.value.by[k]).map((k) => ({
   name: meta(k).label, value: totals.value.by[k], colour: colourOf(k),
 })));
-const ranked = (rows: Ranked) => rows.map(([name, value], i) =>
-  ({ name, value, colour: PALETTE[i % PALETTE.length] }));
+/* ranked in ink weight; `of` adds the remainder, so the ring still sums to it */
+const ranked = (rows: Ranked, of = 0) => {
+  const parts = rows.map(([name, value], i) => ({ name, value, colour: INK[i] }));
+  const rest = of - sum(rows.map((r) => r[1]));
+  if (rest > 0) parts.push({ name: "other", value: rest, colour: "var(--b-edge)" });
+  return parts;
+};
 
 const who = (ip: string) => deviceNames.value.get(ip.toLowerCase()) || "";
 const activitySeries = computed(() => activity.value.map((g, i) => ({
-  name: who(g.group) || g.group, colour: PALETTE[i % PALETTE.length],
+  name: who(g.group) || g.group, colour: INK[i],
   points: times.value.map((t) => [t, g.points.find((p) => p[0] === t)?.[1] ?? 0] as [number, number]),
 })));
 const latencySeries = computed(() => latency.value.length
-  ? [{ name: "avg ms", colour: "var(--o-upstream)", points: latency.value }] : []);
+  ? [{ name: "avg ms", colour: INK[1], points: latency.value }] : []);
 
-const cards = computed(() => {
+const figures = computed(() => {
   const by = byKind.value;
   const cacheRate = times.value.map((_, i) =>
     perHour.value[i] ? ((by.get("cache")?.[i] ?? 0) / perHour.value[i]) * 100 : 0);
   return [
-    { label: "Total queries", value: nf.format(totals.value.all),
-      sub: `${nf.format(Math.round(totals.value.all / hours.value))} per hour on average`,
-      colour: "var(--o-upstream)", spark: perHour.value },
-    { label: "Blocked", value: nf.format(totals.value.by.blocked),
-      sub: `${share(totals.value.by.blocked)} of all queries`,
-      colour: "var(--o-blocked)", spark: by.get("blocked") ?? [] },
-    { label: "Answered from cache", value: share(totals.value.by.cache),
-      sub: `${nf.format(totals.value.by.cache)} without leaving this box`,
-      colour: "var(--o-cache)", spark: cacheRate },
-    { label: "Average response", value: latencyAll.value === null ? "—" : `${latencyAll.value} ms`,
-      sub: totals.value.by.failed ? `${nf.format(totals.value.by.failed)} failed` : "no failed lookups",
-      colour: "var(--o-local)", spark: latency.value.map((p) => p[1]) },
+    { label: "Queries", value: nf.format(totals.value.all), unit: "",
+      sub: `${nf.format(Math.round(totals.value.all / hours.value))} an hour on average`,
+      colour: INK[2], spark: perHour.value },
+    { label: "Blocked", value: nf.format(totals.value.by.blocked), unit: share(totals.value.by.blocked),
+      sub: "of all queries", colour: fillVar("blocked"), spark: by.get("blocked") ?? [] },
+    { label: "Answered from cache", value: share(totals.value.by.cache), unit: "",
+      sub: `${nf.format(totals.value.by.cache)} never left this box`,
+      colour: fillVar("cache"), spark: cacheRate },
+    { label: "Average response", value: latencyAll.value === null ? "—" : String(latencyAll.value), unit: "ms",
+      sub: totals.value.by.failed ? `${nf.format(totals.value.by.failed)} failed` : "none failed",
+      colour: INK[2], spark: latency.value.map((p) => p[1]) },
   ];
 });
 
 const browse = (field: string, value: string) =>
   ({ path: "/browse", query: { q: term(field, value.replace(/\.$/, "").toLowerCase()) } });
 const width = (v: number, rows: Ranked) => `${(v / Math.max(1, rows[0]?.[1] || 1)) * 100}%`;
+const label = (n: string) => n.replace(/\.$/, "");
 const clock = computed(() => updated.value?.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
 </script>
 
@@ -196,14 +202,14 @@ const clock = computed(() => updated.value?.toLocaleTimeString([], { hour: "2-di
   <div class="vw ov">
     <header class="vw-head">
       <h2>Overview</h2>
-      <p v-if="clock">Updated {{ clock }}</p>
+      <span class="ov-sub" v-if="clock">updated {{ clock }}</span>
       <div class="acts">
-        <span class="ov-state" v-if="stats" :class="{ off: !stats.enabled }"
+        <span class="ov-state b-cap" v-if="stats" :class="{ off: !stats.enabled }"
               :title="`Trench ${stats.version}`">
-          <i />{{ stats.enabled ? "Filtering on" : "Filtering paused" }}
-          <em>{{ nf.format(stats.blocklist_size) }} domains on the lists</em>
+          <i />{{ stats.enabled ? "filtering" : "filtering paused" }}
+          <em>· {{ nf.format(stats.blocklist_size) }} names listed</em>
         </span>
-        <div class="ov-seg" role="group" aria-label="Time range">
+        <div class="seg ov-seg" role="group" aria-label="Time range">
           <button v-for="r in RANGES" :key="r.hours" :class="{ on: hours === r.hours }"
                   :aria-pressed="hours === r.hours" @click="pick(r.hours)">{{ r.label }}</button>
         </div>
@@ -213,152 +219,137 @@ const clock = computed(() => updated.value?.toLocaleTimeString([], { hour: "2-di
     <div class="vw-body">
       <p class="b-warn" v-if="err">{{ err }}</p>
 
-      <div class="ov-grid ov-cards">
-        <div class="ov-card ov-stat" v-for="c in cards" :key="c.label" :style="{ '--ac': c.colour }">
-          <span class="ov-k">{{ c.label }}</span>
-          <b class="ov-v">{{ loading && !updated ? "—" : c.value }}</b>
-          <span class="ov-s">{{ c.sub }}</span>
+      <!-- four figures, divided by hairlines: not tiles -->
+      <div class="sec ov-figs">
+        <div class="ov-fig" v-for="c in figures" :key="c.label">
+          <h5 class="b-cap">{{ c.label }}</h5>
+          <div class="ev-big">
+            <b>{{ loading && !updated ? "—" : c.value }}</b><span v-if="c.unit">{{ c.unit }}</span>
+          </div>
+          <span class="ov-sub">{{ c.sub }}</span>
           <Spark :values="c.spark" :colour="c.colour" />
         </div>
       </div>
 
-      <section class="ov-card">
-        <header class="ov-h">
-          <h3>Queries over time</h3>
-          <span>per hour, by outcome</span>
-        </header>
-        <Bars v-if="times.length && totals.all" :times="times" :stacks="stacks" :height="250" />
-        <p class="ov-empty" v-else>{{ loading ? "Reading the query log…" : "Nothing logged in this span." }}</p>
-      </section>
+      <div class="sec">
+        <div class="sec-h"><h5 class="b-cap">Queries over time</h5><span class="b-cap ov-note">per hour, by outcome</span></div>
+        <Bars v-if="times.length && totals.all" :times="times" :stacks="stacks" :height="240" />
+        <p class="b-void-state" v-else>{{ loading ? "Reading the query log…" : "Nothing logged in this span." }}</p>
+      </div>
 
-      <div class="ov-grid ov-thirds">
-        <section class="ov-card">
-          <header class="ov-h"><h3>Outcomes</h3><span>what happened to each query</span></header>
+      <div class="sec cols ov-cols">
+        <div>
+          <div class="sec-h"><h5 class="b-cap">Outcomes</h5></div>
           <Donut v-if="outcomeParts.length" :parts="outcomeParts" unit="queries" />
-          <p class="ov-empty" v-else>—</p>
-        </section>
-        <section class="ov-card">
-          <header class="ov-h"><h3>Record types</h3><span>the most asked for</span></header>
-          <Donut v-if="qtypes.length" :parts="ranked(qtypes)" unit="queries" />
-          <p class="ov-empty" v-else>—</p>
-        </section>
-        <section class="ov-card">
-          <header class="ov-h"><h3>Upstreams</h3><span>queries that left this box</span></header>
+          <p class="b-void-state" v-else>—</p>
+        </div>
+        <div>
+          <div class="sec-h"><h5 class="b-cap">Record types</h5><span class="b-cap ov-note">most asked for</span></div>
+          <Donut v-if="qtypes.length" :parts="ranked(qtypes, totals.all)" unit="queries" />
+          <p class="b-void-state" v-else>—</p>
+        </div>
+        <div>
+          <div class="sec-h"><h5 class="b-cap">Upstreams</h5></div>
           <Donut v-if="upstreams.length" :parts="ranked(upstreams)" unit="forwarded" />
-          <p class="ov-empty" v-else>Nothing forwarded in this span.</p>
-        </section>
+          <p class="b-void-state" v-else>Nothing forwarded in this span.</p>
+        </div>
       </div>
 
-      <div class="ov-grid ov-halves">
-        <section class="ov-card">
-          <header class="ov-h"><h3>Device activity</h3><span>queries per hour, busiest five</span></header>
+      <div class="sec cols ov-cols">
+        <div>
+          <div class="sec-h"><h5 class="b-cap">Device activity</h5><span class="b-cap ov-note">queries per hour, busiest four</span></div>
           <Trend v-if="activitySeries.length" :series="activitySeries" :height="200" />
-          <p class="ov-empty" v-else>—</p>
-        </section>
-        <section class="ov-card">
-          <header class="ov-h"><h3>Response time</h3><span>average per hour, cache hits included</span></header>
+          <p class="b-void-state" v-else>—</p>
+        </div>
+        <div>
+          <div class="sec-h"><h5 class="b-cap">Response time</h5><span class="b-cap ov-note">average per hour</span></div>
           <Trend v-if="latencySeries.length" :series="latencySeries" :height="200" />
-          <p class="ov-empty" v-else>—</p>
-        </section>
+          <p class="b-void-state" v-else>—</p>
+        </div>
       </div>
 
-      <div class="ov-grid ov-thirds">
-        <section class="ov-card">
-          <header class="ov-h"><h3>Top domains</h3><span>share of all queries</span></header>
-          <ol class="ov-list">
-            <li v-for="[n, v] in names" :key="n">
-              <RouterLink :to="browse('name', n)" class="ov-name" :title="n">{{ n.replace(/\.$/, "") }}</RouterLink>
-              <span class="ov-num">{{ nf.format(v) }}</span>
-              <span class="ov-pct">{{ share(v) }}</span>
-              <span class="ov-track"><i :style="{ width: width(v, names) }" /></span>
-            </li>
-          </ol>
-        </section>
-        <section class="ov-card">
-          <header class="ov-h"><h3>Top blocked</h3><span>share of blocked queries</span></header>
-          <ol class="ov-list" v-if="blocked.length">
-            <li v-for="[n, v] in blocked" :key="n">
-              <RouterLink :to="browse('name', n)" class="ov-name" :title="n">{{ n.replace(/\.$/, "") }}</RouterLink>
-              <span class="ov-num">{{ nf.format(v) }}</span>
-              <span class="ov-pct">{{ share(v, totals.by.blocked) }}</span>
-              <span class="ov-track"><i class="blocked" :style="{ width: width(v, blocked) }" /></span>
-            </li>
-          </ol>
-          <p class="ov-empty" v-else-if="!loading">Nothing blocked in this span.</p>
-        </section>
-        <section class="ov-card">
-          <header class="ov-h"><h3>Top devices</h3><span>share of all queries</span></header>
-          <ol class="ov-list">
-            <li v-for="[ip, v] in devices" :key="ip">
-              <RouterLink :to="browse('client', ip)" class="ov-name" :title="ip">
-                {{ who(ip) || ip }}<small v-if="who(ip)">{{ ip }}</small>
-              </RouterLink>
-              <span class="ov-num">{{ nf.format(v) }}</span>
-              <span class="ov-pct">{{ share(v) }}</span>
-              <span class="ov-track"><i class="device" :style="{ width: width(v, devices) }" /></span>
-            </li>
-          </ol>
-        </section>
+      <div class="sec cols ov-cols">
+        <div>
+          <div class="sec-h"><h5 class="b-cap">Top names</h5><span class="b-cap ov-note">share of all</span></div>
+          <table class="tb ov-tb">
+            <tbody>
+              <tr v-for="[n, v] in names" :key="n">
+                <td class="id"><RouterLink :to="browse('name', n)" class="lnk" :title="label(n)">{{ label(n) }}</RouterLink></td>
+                <td class="ov-m"><div class="mtr"><i :style="{ width: width(v, names), background: 'var(--b-ink-3)' }" /></div></td>
+                <td class="r">{{ nf.format(v) }}</td>
+                <td class="r ov-pct">{{ share(v) }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <p class="b-void-state" v-if="!names.length && !loading">Nothing logged in this span.</p>
+        </div>
+        <div>
+          <div class="sec-h"><h5 class="b-cap">Top blocked</h5><span class="b-cap ov-note">share of blocked</span></div>
+          <table class="tb ov-tb" v-if="blocked.length">
+            <tbody>
+              <tr v-for="[n, v] in blocked" :key="n">
+                <td class="id"><RouterLink :to="browse('name', n)" class="lnk" :title="label(n)">{{ label(n) }}</RouterLink></td>
+                <td class="ov-m"><div class="mtr"><i :style="{ width: width(v, blocked), background: 'var(--o-blocked)' }" /></div></td>
+                <td class="r">{{ nf.format(v) }}</td>
+                <td class="r ov-pct">{{ share(v, totals.by.blocked) }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <p class="b-void-state" v-else-if="!loading">Nothing blocked in this span.</p>
+        </div>
+        <div>
+          <div class="sec-h"><h5 class="b-cap">Top devices</h5><span class="b-cap ov-note">share of all</span></div>
+          <table class="tb ov-tb">
+            <tbody>
+              <tr v-for="[ip, v] in devices" :key="ip">
+                <td class="id"><RouterLink :to="browse('client', ip)" class="lnk" :title="ip">{{ who(ip) || ip }}</RouterLink>
+                  <span class="dim" v-if="who(ip)"> {{ ip }}</span></td>
+                <td class="ov-m"><div class="mtr"><i :style="{ width: width(v, devices), background: 'var(--b-ink-3)' }" /></div></td>
+                <td class="r">{{ nf.format(v) }}</td>
+                <td class="r ov-pct">{{ share(v) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div>
 </template>
 
 <style>
-.ov .vw-body { padding-top: var(--b-5); display: grid; gap: var(--b-4); }
-.ov-grid { display: grid; gap: var(--b-4); }
-.ov-cards { grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); }
-.ov-thirds { grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); }
-.ov-halves { grid-template-columns: repeat(auto-fit, minmax(min(100%, 440px), 1fr)); }
+/* Same furniture as every other view: ruled sections on one plane, the space
+ * scale, no boxes. Only what that furniture lacks is defined here. */
+.ov-note { color: var(--b-ink-4); }
 
-.ov-card {
-  background: var(--b-sunk); border: 1px solid var(--b-edge-soft); border-radius: 10px;
-  padding: 16px 18px; min-width: 0;
+/* four across, or two by two on a phone; a hairline only between neighbours */
+.ov-figs { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); row-gap: var(--b-5); }
+.ov-fig { display: grid; gap: var(--b-1); padding: 0 var(--b-4); min-width: 0;
+  border-left: 1px solid var(--b-edge-soft); }
+.ov-fig:first-child { padding-left: 0; border-left: 0; }
+@media (max-width: 720px) {
+  .ov-figs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ov-fig:nth-child(odd) { padding-left: 0; border-left: 0; }
 }
-.ov-h { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
-.ov-h h3 { margin: 0; font: 600 14px/1.2 var(--b-ui); color: var(--b-ink); }
-.ov-h span { font: 500 var(--b-cap)/1.2 var(--b-ui); color: var(--b-ink-4); }
-.ov-empty { margin: 0; padding: 28px 0; text-align: center;
-  font: 400 var(--b-ui-s)/1.5 var(--b-ui); color: var(--b-ink-4); }
+.ov-fig h5 { margin: 0; }
+.ov-sub { font: 500 var(--b-cap)/1.4 var(--b-ui); color: var(--b-ink-4); }
+.ov-fig .spk { margin-top: var(--b-1); height: 28px; }
 
-/* headline figures: a coloured rule, the figure, what it means, its shape */
-.ov-stat { display: flex; flex-direction: column; gap: 4px; padding-bottom: 12px;
-  border-top: 3px solid var(--ac); }
-.ov-k { font: 600 var(--b-cap)/1.2 var(--b-ui); letter-spacing: .06em; text-transform: uppercase;
-  color: var(--b-ink-3); }
-.ov-v { font: 650 28px/1.15 var(--b-ui); color: var(--b-ink); letter-spacing: -.02em;
-  font-variant-numeric: tabular-nums; margin-top: 4px; }
-.ov-s { font: 500 var(--b-cap)/1.3 var(--b-ui); color: var(--b-ink-4); margin-bottom: 6px; }
-.ov-stat .spk { margin-top: auto; }
-.ov-state { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap;
-  font: 600 var(--b-ui-s)/1 var(--b-ui); color: var(--o-ok); }
-.ov-state i { width: 8px; height: 8px; border-radius: 50%; background: currentColor;
-  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 22%, transparent); }
+.ov-cols { grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); }
+.ov-cols > div { min-width: 0; }
+.ov-cols .sec-h { flex-wrap: wrap; row-gap: var(--b-1); }
+.ov-cols .sec-h > * { white-space: nowrap; }
+
+.ov-state { display: inline-flex; align-items: center; gap: var(--b-2); white-space: nowrap; color: var(--o-ok); }
+.ov-state i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .ov-state.off { color: var(--o-failed); }
-.ov-state em { font: 500 var(--b-cap)/1 var(--b-ui); font-style: normal; color: var(--b-ink-4); }
+.ov-state em { font-style: normal; color: var(--b-ink-4); }
+.ov-seg button { padding: 6px 12px; }
 @media (max-width: 720px) { .ov-state em { display: none; } }
 
-/* the range switch */
-.ov-seg { display: inline-flex; border: 1px solid var(--b-edge); border-radius: 7px; padding: 2px; }
-.ov-seg button { background: none; border: 0; border-radius: 5px; padding: 6px 12px; cursor: pointer;
-  font: 500 var(--b-ui-s)/1 var(--b-ui); color: var(--b-ink-3); }
-.ov-seg button:hover { color: var(--b-ink); }
-.ov-seg button.on { background: var(--b-pick); color: var(--b-ink); }
-
-/* ranked lists: name, count, share, and a bar against the leader */
-.ov-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 9px; }
-.ov-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto 46px; align-items: baseline;
-  column-gap: 12px; row-gap: 4px; }
-.ov-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-decoration: none;
-  font: 400 var(--b-id-s)/1.3 var(--b-id); color: var(--b-ink); }
-.ov-name:hover { text-decoration: underline; text-underline-offset: 3px; }
-.ov-name small { margin-left: 8px; color: var(--b-ink-4); font-size: var(--b-cap); }
-.ov-num { font: 600 var(--b-ui-s)/1 var(--b-ui); color: var(--b-ink-2); font-variant-numeric: tabular-nums; }
-.ov-pct { text-align: right; font: 500 var(--b-cap)/1 var(--b-ui); color: var(--b-ink-4);
-  font-variant-numeric: tabular-nums; }
-.ov-track { grid-column: 1 / -1; height: 4px; border-radius: 2px; background: var(--b-edge-soft);
-  overflow: hidden; }
-.ov-track i { display: block; height: 100%; border-radius: 2px; background: var(--o-upstream); }
-.ov-track i.blocked { background: var(--o-blocked); }
-.ov-track i.device { background: var(--o-local); }
+.tb.ov-tb { table-layout: fixed; min-width: 0; }  /* four columns fold; the 560px floor is for wider tables */
+.ov-tb td:first-child { padding-left: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ov-tb td.ov-m { width: 22%; }
+.ov-tb td.r { width: 56px; }
+.ov-tb td.ov-pct { width: 44px; padding-right: 0; color: var(--b-ink-4); font-size: var(--b-cap); }
+.ov-tb .lnk { color: var(--b-ink); }
 </style>

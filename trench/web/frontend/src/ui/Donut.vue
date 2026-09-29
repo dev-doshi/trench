@@ -58,22 +58,24 @@ const centre = computed(() => {
 </template>
 
 <style>
-.dn { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 20px; }
-.dn-ring { width: 132px; height: 132px; flex: none; }
+/* the list is laid out like .ev-legend: fixed tracks, ids in the id face */
+.dn { display: flex; flex-wrap: wrap; align-items: center; gap: var(--b-4); }
+.dn-ring { width: 100px; height: 100px; flex: none; }
 .dn-ring circle { transition: opacity .12s; }
-.dn-track { fill: none; stroke: var(--b-edge-soft); stroke-width: 11; }
+.dn-track { fill: none; stroke: var(--b-sunk); stroke-width: 11; }
 .dn-v { fill: var(--b-ink); font: 600 15px var(--b-ui); font-variant-numeric: tabular-nums; }
 .dn-l { fill: var(--b-ink-4); font: 500 8.5px var(--b-ui); }
-.dn-list { list-style: none; margin: 0; padding: 0; flex: 1; min-width: 170px; display: grid; gap: 2px; }
+.dn-list { list-style: none; margin: 0; padding: 0; flex: 1; min-width: 150px; display: grid; gap: var(--b-1); }
 .dn-list li {
-  display: grid; grid-template-columns: 10px minmax(0, 1fr) auto 44px; align-items: center;
-  gap: 8px; padding: 3px 0; font: 500 var(--b-ui-s)/1.3 var(--b-ui); color: var(--b-ink-2);
+  display: grid; grid-template-columns: 9px minmax(0, 1fr) 48px 36px; align-items: center;
+  gap: var(--b-2); font: 500 var(--b-ui-s)/1.4 var(--b-ui); color: var(--b-ink-2);
   transition: opacity .12s;
 }
 .dn-list li.dim { opacity: .45; }
-.dn-list i { width: 10px; height: 10px; border-radius: 3px; }
+.dn-list i { width: 9px; height: 9px; display: block; border-radius: 2px; }
 .dn-n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dn-list u { text-decoration: none; color: var(--b-ink); font-variant-numeric: tabular-nums; }
-.dn-list s { text-decoration: none; text-align: right; color: var(--b-ink-4);
-  font-size: var(--b-cap); font-variant-numeric: tabular-nums; }
+.dn-list u { text-decoration: none; text-align: right; font: 500 var(--b-ui-s)/1.4 var(--b-id);
+  color: var(--b-ink); font-variant-numeric: tabular-nums; }
+.dn-list s { text-decoration: none; text-align: right; font: 500 var(--b-cap)/1.4 var(--b-ui);
+  color: var(--b-ink-3); font-variant-numeric: tabular-nums; }
 </style>
