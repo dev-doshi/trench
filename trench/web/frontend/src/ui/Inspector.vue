@@ -130,7 +130,7 @@ function go(where: "browse" | "log") {
   if (!ent.value) return;
   const q = term(isDomain.value ? "name" : "client", ent.value.value);
   opener = null;          // focus follows the navigation, not back to the old row
-  router.push({ path: where === "browse" ? "/" : "/log", query: { q } });
+  router.push({ path: where === "browse" ? "/browse" : "/log", query: { q } });
   store.closeInspector();
 }
 

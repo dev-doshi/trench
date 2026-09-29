@@ -64,6 +64,9 @@ function rate(seconds: number): number {
   const n = feed.value.filter((r) => r.ts >= cut).length;
   return Math.round((n / seconds) * 10) / 10;
 }
+/* Always one decimal: "1" beside "0.8" is a different width, and the rate
+ * changes every second. */
+const rateText = (v: number) => v.toFixed(1);
 const r10 = computed(() => rate(10));
 const r60 = computed(() => rate(60));
 /* Whether the last ten seconds are unusual for this network, stated as a
@@ -79,9 +82,12 @@ const drift = computed(() => {
 const split = computed(() => {
   const by: Record<string, number> = {};
   for (const r of feed.value) by[kindOf(r)] = (by[kindOf(r)] || 0) + 1;
-  return KINDS.filter((k) => by[k]).map((k) => ({
-    kind: k, label: meta(k).label, n: by[k],
-    pct: Math.round((by[k] / Math.max(1, feed.value.length)) * 100),
+  /* Every outcome keeps its place, at 0% if need be — a kind that came and went
+   * with the rolling buffer used to slide everything after it sideways. Unknown
+   * is last, so it alone may come and go without moving anything. */
+  return KINDS.filter((k) => k !== "unknown" || by[k]).map((k) => ({
+    kind: k, label: meta(k).label, n: by[k] || 0,
+    pct: Math.round(((by[k] || 0) / Math.max(1, feed.value.length)) * 100),
   }));
 });
 
@@ -93,7 +99,7 @@ const ms = (us?: number) => (!us ? "" : us >= 1000 ? `${(us / 1000).toFixed(0)}m
 
 /** Any row is a way into the browser, scoped to that name. */
 function open(r: Row) {
-  router.push({ path: "/", query: { q: term("name", r.qname.replace(/\.$/, "").toLowerCase()) } });
+  router.push({ path: "/browse", query: { q: term("name", r.qname.replace(/\.$/, "").toLowerCase()) } });
 }
 </script>
 
@@ -111,31 +117,36 @@ function open(r: Row) {
     </header>
 
     <div class="vw-body">
-      <!-- rate: two numbers and a comparison, no tiles -->
+      <!-- rate: two numbers and a comparison, no tiles.
+           Nothing in this row may change size as it updates: the drift line
+           keeps its height when empty, the rates keep their width, and the
+           row aligns on the numbers' baseline rather than on whichever block
+           happens to be tallest this second. -->
       <div class="sec">
-        <div style="display:flex;gap:44px;flex-wrap:wrap;align-items:flex-end">
+        <div class="lv-nums">
           <div>
-            <div class="ev-big"><b>{{ r10 }}</b><span>per second, last 10s</span></div>
-            <p class="sec-note" style="margin:4px 0 0" v-if="drift">{{ drift }}</p>
+            <div class="ev-big"><b class="lv-rate">{{ rateText(r10) }}</b><span>per second, last 10s</span></div>
+            <p class="sec-note lv-drift">{{ drift }}</p>
           </div>
           <div class="ev-big" style="color:var(--b-ink-3)">
-            <b style="font-size:var(--b-ui-s);color:var(--b-ink-2)">{{ r60 }}</b>
+            <b class="lv-rate" style="font-size:var(--b-ui-s);color:var(--b-ink-2)">{{ rateText(r60) }}</b>
             <span>per second, last minute</span>
           </div>
           <div class="ev-big" style="color:var(--b-ink-3)">
             <b style="font-size:var(--b-ui-s);color:var(--b-ink-2)">{{ nf.format(s.liveTotal) }}</b>
             <span>seen since this page opened</span>
           </div>
+          <div class="ev-big" style="color:var(--b-ink-3)" v-if="s.stats">
+            <b style="font-size:var(--b-ui-s);color:var(--b-ink-2)">{{ s.stats.latency_p95_ms }}</b>
+            <span>ms at p95</span>
+          </div>
           <!-- the server skips events for a tab that cannot keep up rather
-               than buffer without bound; say so instead of under-counting -->
+               than buffer without bound; say so instead of under-counting.
+               Last, so its arrival moves nothing. -->
           <div class="ev-big" v-if="s.dropped"
                title="This tab fell behind the live stream; the server skipped these events. The query log has every one.">
             <b style="font-size:var(--b-ui-s)">{{ nf.format(s.dropped) }}</b>
             <span>skipped, tab fell behind</span>
-          </div>
-          <div class="ev-big" style="color:var(--b-ink-3)" v-if="s.stats">
-            <b style="font-size:var(--b-ui-s);color:var(--b-ink-2)">{{ s.stats.latency_p95_ms }}</b>
-            <span>ms at p95</span>
           </div>
         </div>
       </div>
@@ -155,10 +166,10 @@ function open(r: Row) {
         <p class="b-void-state" v-else>
           Nothing yet.
         </p>
-        <div class="mtr-l" v-if="split.length">
+        <div class="mtr-l" v-if="feed.length">
           <span class="oc" v-for="k in split" :key="k.kind" :class="k.kind">
             <i :style="k.kind === 'unknown' ? '' : `background:var(--o-${k.kind})`" />
-            <span class="b-cap">{{ k.label }} {{ k.pct }}%</span>
+            <span class="b-cap">{{ k.label }} <span class="lv-pct">{{ k.pct }}%</span></span>
           </span>
         </div>
       </div>
@@ -200,3 +211,12 @@ function open(r: Row) {
     </div>
   </div>
 </template>
+
+<style>
+.lv-nums { display: flex; gap: 44px; flex-wrap: wrap; align-items: baseline; }
+/* right-aligned in a fixed box, so the label beside it and every tile after it
+   stay put while the digits change */
+.lv-rate { min-width: 4ch; text-align: right; }
+.lv-drift { margin: 4px 0 0; min-height: 1.5em; }
+.lv-pct { display: inline-block; min-width: 4ch; }
+</style>

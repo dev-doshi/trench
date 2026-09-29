@@ -18,20 +18,30 @@
  *   · colour is ink weight in ranked order; the two product hues are used only
  *     when a series *means* blocked or failed
  */
-import { computed, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 
-export interface Series { name: string; points: [number, number][]; kind?: string }
+export interface Series { name: string; points: [number, number][]; kind?: string; colour?: string }
 
 const props = withDefaults(defineProps<{
   series: Series[];
   height?: number;
 }>(), { height: 200 });
 
-const W = 1000;
+/* The viewBox is kept at the drawn width, so one unit is one pixel: text and
+ * strokes stay the same size whether the chart fills a page or a third of one. */
+const W = ref(1000);
+const box = ref<HTMLElement | null>(null);
+let ro: ResizeObserver | null = null;
+onMounted(() => {
+  ro = new ResizeObserver(([e]) => { if (e.contentRect.width) W.value = Math.round(e.contentRect.width); });
+  if (box.value) ro.observe(box.value);
+});
+onBeforeUnmount(() => ro?.disconnect());
 const PAD = { t: 12, b: 26, l: 48 };
 const INK = ["#f4f3f0", "#b9b8b2", "#8d8c86", "#6c6b67", "#55545f", "#43423d"];
 
 function stroke(s: Series, i: number): string {
+  if (s.colour) return s.colour;
   if (s.kind === "blocked") return "var(--o-blocked)";
   if (s.kind === "failed") return "var(--o-failed)";
   if (s.kind === "cache") return "var(--o-cache)";
@@ -61,7 +71,7 @@ const bounds = computed(() => {
 const H = computed(() => props.height);
 const px = (x: number) => {
   const { x0, x1 } = bounds.value;
-  return PAD.l + ((x - x0) / (x1 - x0)) * (W - PAD.l - rightPad.value);
+  return PAD.l + ((x - x0) / (x1 - x0)) * (W.value - PAD.l - rightPad.value);
 };
 const py = (y: number) => {
   const h = H.value - PAD.t - PAD.b;
@@ -165,7 +175,7 @@ const allX = computed(() => {
 const cursor = computed(() => {
   if (hoverX.value === null || !allX.value.length) return null;
   const { x0, x1 } = bounds.value;
-  const frac = (hoverX.value - PAD.l) / (W - PAD.l - rightPad.value);
+  const frac = (hoverX.value - PAD.l) / (W.value - PAD.l - rightPad.value);
   const want = x0 + frac * (x1 - x0);
   let best = allX.value[0];
   for (const x of allX.value) if (Math.abs(x - want) < Math.abs(best - want)) best = x;
@@ -179,14 +189,14 @@ const cursor = computed(() => {
 function track(e: MouseEvent) {
   const svg = e.currentTarget as SVGSVGElement;
   const r = svg.getBoundingClientRect();
-  hoverX.value = ((e.clientX - r.left) / r.width) * W;
+  hoverX.value = ((e.clientX - r.left) / r.width) * W.value;
 }
 
 const enough = computed(() => allX.value.length >= 2);
 </script>
 
 <template>
-  <div>
+  <div ref="box">
     <svg v-if="enough" class="lines" :viewBox="`0 0 ${W} ${H}`" role="img"
          :aria-label="`${shown.length} series over time`"
          @mousemove="track" @mouseleave="hoverX = null">

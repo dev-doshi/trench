@@ -29,7 +29,8 @@ const s = store.state;
 /* Grouped by what the operator is doing, not by which subsystem owns the code. */
 const PLACES = [
   { group: "Look", items: [
-    { to: "/", name: "Browse", of: "Group the traffic by anything, then by anything" },
+    { to: "/", name: "Overview", of: "The last day at a glance" },
+    { to: "/browse", name: "Browse", of: "Group the traffic by anything, then by anything" },
     { to: "/live", name: "Live", of: "Rates and the tape, as answers arrive" },
     { to: "/log", name: "Log", of: "The rows themselves, for reading and export" },
     { to: "/history", name: "History", of: "Aggregate over the whole retained log" },
@@ -138,7 +139,7 @@ async function signOut() {
       </button>
       <div class="bframe-state" :class="state.cls" role="status"
            :title="state.cls === 'bad' ? 'The live feed is down; it reconnects by itself.' : undefined">
-        <span class="led" aria-hidden="true" /><span class="lbl">{{ state.label }}</span>
+        <span class="led" aria-hidden="true" /><span class="lbl"><span>{{ state.label }}</span><span class="lbl-w" aria-hidden="true">not answering</span></span>
       </div>
       <div class="bframe-sep" />
       <button class="bframe-btn" @click="signOut">Sign out</button>

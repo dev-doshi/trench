@@ -1,5 +1,5 @@
 import { createApp } from "vue";
-import { createRouter, createWebHistory } from "vue-router";
+import { createRouter, createWebHistory, type RouteLocationNormalized } from "vue-router";
 import App from "./App.vue";
 import "./styles/bailiwick.css";
 import { local } from "./lib/local";
@@ -8,11 +8,16 @@ import { local } from "./lib/local";
 // paint first and then swap, which is a visible flash on every load.
 document.documentElement.dataset.skin = local.get("bw_skin") || "auto";
 
-/* One surface plus nine places. Each route is a question an operator has, not a
- * subsystem of the resolver — which is why there is no "dashboard" and no
- * "advanced". */
+/* A front page plus ten places. Each place is a question an operator has, not a
+ * subsystem of the resolver — which is why there is no "advanced". */
 const routes = [
-  { path: "/", name: "browse", component: () => import("./views/Browse.vue") },
+  {
+    path: "/", name: "overview", component: () => import("./views/Overview.vue"),
+    // Browse lived here, and its links carry the query in the URL
+    beforeEnter: (to: RouteLocationNormalized) =>
+      Object.keys(to.query).length ? { path: "/browse", query: to.query } : true,
+  },
+  { path: "/browse", name: "browse", component: () => import("./views/Browse.vue") },
   { path: "/live", name: "live", component: () => import("./views/Live.vue") },
   { path: "/log", name: "log", component: () => import("./views/Log.vue") },
   { path: "/history", name: "history", component: () => import("./views/History.vue") },
@@ -31,7 +36,7 @@ const routes = [
   { path: "/collateral", redirect: "/breakage" },
   { path: "/clients", redirect: "/devices" },
   { path: "/system", redirect: "/resolver" },
-  { path: "/activity", redirect: "/" },
+  { path: "/activity", redirect: "/browse" },
   { path: "/overview", redirect: "/" },
 ];
 

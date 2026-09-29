@@ -102,6 +102,6 @@ async def whatif_from_querylog(db, current: FilterEngine, delta: FilterEngine, *
     cutoff = int((time.time() - hours * 3600) * 1_000_000)
     rows = await db.fetchall(
         "SELECT qname, COUNT(*) AS hits FROM querylog "
-        "WHERE ts >= ? AND qname != '' GROUP BY qname ORDER BY hits DESC LIMIT ?",
+        "WHERE ts >= ? AND qname != '' GROUP BY +qname ORDER BY hits DESC LIMIT ?",  # +: see APIServer.analytics
         (cutoff, limit))
     return diff_decisions(current, delta, [(r["qname"], r["hits"]) for r in rows])

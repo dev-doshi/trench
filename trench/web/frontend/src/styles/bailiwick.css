@@ -232,6 +232,11 @@ body {
 .bframe-state.ok .led { background: var(--o-ok); }
 .bframe-state.bad { color: var(--o-failed); }
 .bframe-state.bad .led { background: var(--o-failed); }
+/* The label is sized by its longest word, stacked invisibly underneath, so a
+   reconnect ("answering" → "not answering") does not shove Search sideways. */
+.bframe-state .lbl { display: inline-grid; }
+.bframe-state .lbl > * { grid-area: 1 / 1; }
+.bframe-state .lbl-w { visibility: hidden; }
 
 /* ═════════════════════════════════════════════════════════ the sheet ════ */
 .bsheet { position: fixed; inset: 0; z-index: 40; background: #00000099; }

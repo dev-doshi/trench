@@ -298,7 +298,7 @@ class QueryLog:
             "       MAX(ts) AS last_seen,"
             "       SUM(CASE WHEN action = 'blocked' THEN 1 ELSE 0 END) AS blocked_hits"
             "  FROM querylog WHERE ts >= ?"
-            " GROUP BY qname ORDER BY hits DESC LIMIT ?", (since, limit))
+            " GROUP BY +qname ORDER BY hits DESC LIMIT ?", (since, limit))  # +: see APIServer.analytics
         return [dict(r) for r in rows]
 
     async def history(self, qname: str, *, since: int | None = None,

@@ -191,7 +191,7 @@ async function setFiltering(d: any, on: boolean) {
 }
 
 function browse(ip: string) {
-  router.push({ path: "/", query: { p: "device,domain,name", s: ip } });
+  router.push({ path: "/browse", query: { p: "device,domain,name", s: ip } });
 }
 </script>
 

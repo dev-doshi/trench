@@ -114,7 +114,7 @@ const listRows = computed(() => (lists.value?.lists || []) as any[]);
               {{ f.severity }}
             </span>
             <RouterLink class="mono" style="font-size:var(--b-read-s);color:var(--b-ink)"
-                        :to="{ path: '/', query: { q: term('name', f.domain) } }"
+                        :to="{ path: '/browse', query: { q: term('name', f.domain) } }"
                         :title="`Browse the traffic for ${f.domain}`">
               <span style="color:var(--b-ink-4)">{{ align(f.domain).sub }}{{ align(f.domain).sub ? "." : "" }}</span>{{ align(f.domain).reg }}
             </RouterLink>

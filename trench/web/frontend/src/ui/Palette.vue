@@ -15,7 +15,8 @@ const input = ref<HTMLInputElement | null>(null);
 const router = useRouter();
 
 const NAV = [
-  { icon: "levels", title: "Browse", sub: "Group traffic by anything, then by anything", to: "/" },
+  { icon: "span", title: "Overview", sub: "The last day at a glance", to: "/" },
+  { icon: "levels", title: "Browse", sub: "Group traffic by anything, then by anything", to: "/browse" },
   { icon: "span", title: "Live", sub: "Rates and the tape", to: "/live" },
   { icon: "list", title: "Log", sub: "The rows themselves", to: "/log" },
   { icon: "levels", title: "History", sub: "Aggregate over the retained log", to: "/history" },

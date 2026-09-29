@@ -255,7 +255,7 @@ function exportNdjson() {
                     </template>
                   </dl>
                   <div class="row-acts" style="padding-bottom:10px">
-                    <button class="btn" @click.stop="router.push({ path: '/', query: { q: term('name', r.qname) } })">
+                    <button class="btn" @click.stop="router.push({ path: '/browse', query: { q: term('name', r.qname) } })">
                       open in Browse
                     </button>
                     <button class="btn" @click.stop="store.inspect('client', r.client_ip)">

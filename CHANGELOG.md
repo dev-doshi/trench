@@ -8,6 +8,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Overview, the console's front page.** The last 24 hours or 7 days as
+  Pi-hole and Technitium show them: totals with sparklines, queries per hour
+  stacked by outcome, outcome, record-type and upstream shares, the busiest
+  devices and response time over the window, and top names, blocked names and
+  devices. Read from the query log, so it survives a restart and agrees with
+  History. Line and bar charts now draw at their real width, so their labels
+  stay legible in narrow cards. Browse moved to `/browse`; old links carrying
+  a query still land there.
 - **Filtering groups.** `filtering.groups` declares named list sets and
   `clients[].group` puts a device in one. A group holds only its own rules and is
   layered over the household's, so it costs its own list and not a second copy of
@@ -143,6 +151,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Top names over a day read the whole query log.** `/analytics` grouped by
+  name or device let SQLite walk that column's index end to end to save one
+  sort, ignoring the time range: on a Pi holding two weeks, a day's top names
+  took 85 s. Grouping by `+column` keeps the planner on the timestamp index
+  (0.8 s). The list-update review and the what-if preview had the same query.
 - **Policy-page rules are written to the config file** (`filtering.allow` /
   `filtering.deny`) and reach every worker. They used to live in the database
   and the memory of whichever worker served the request, so with two workers

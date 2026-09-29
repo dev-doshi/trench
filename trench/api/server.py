@@ -565,9 +565,13 @@ class APIServer:
         top = _num(q, "top", 8, 12)
 
         gcol = self._AN_GROUPS.get(group)
+        # `+{gcol}` keeps SQLite off the column's own index when grouping. With
+        # it, the planner walks ix_querylog_qname end to end to skip one sort,
+        # which reads every row ever logged instead of the requested span: top
+        # names over a day took 85 s on a Pi holding two weeks, 0.8 s without.
         if gcol:  # keep only the busiest groups so charts stay legible
             rows = await self.app.db.fetchall(
-                f"SELECT {gcol} FROM querylog WHERE {w} GROUP BY {gcol} "
+                f"SELECT {gcol} FROM querylog WHERE {w} GROUP BY +{gcol} "
                 f"ORDER BY COUNT(*) DESC LIMIT ?", (*args, top))
             keep = [r[0] for r in rows]
             if not keep:
@@ -585,7 +589,7 @@ class APIServer:
             if gcol:
                 rows = await self.app.db.fetchall(
                     f"SELECT {gcol}, {mexpr} v FROM querylog WHERE {w} "
-                    f"GROUP BY {gcol} ORDER BY v DESC", tuple(args))
+                    f"GROUP BY +{gcol} ORDER BY v DESC", tuple(args))
                 return web.json_response({"rows": [list(r) for r in rows]})
             rows = await self.app.db.fetchall(
                 f"SELECT {mexpr} FROM querylog WHERE {w}", tuple(args))
