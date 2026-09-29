@@ -4,7 +4,9 @@
 // WS protocol (server: trench/api/server.py `websocket`):
 //   {type:"hello", data:{stats, series, recent}}   on connect
 //   {type:"query", data:QueryEvent}                per resolved query
-//   {type:"stats", data:Stats, series?}            periodic snapshot
+//   {type:"stats", data:Stats, series?, dropped?}  periodic snapshot; `dropped`
+//                                                  counts events this connection
+//                                                  missed by falling behind
 import { reactive, readonly } from "vue";
 
 export interface QueryEvent {
@@ -41,6 +43,7 @@ const s = reactive({
   series: [] as SeriesPoint[],
   live: [] as QueryEvent[],       // newest first, capped at liveCap
   liveTotal: 0,                   // events observed since load (even when paused)
+  dropped: 0,                     // events the server skipped: this tab fell behind
   paused: false,
   toasts: [] as Toast[],
   // global entity inspector (ui/Inspector.vue): open from anywhere via
@@ -86,6 +89,7 @@ function applyPrefs() {
 let ws: WebSocket | null = null;
 let backoff = 500;
 let stopped = false;
+let retry: ReturnType<typeof setTimeout> | null = null;
 
 function pushLive(ev: QueryEvent) {
   s.liveTotal++;
@@ -95,32 +99,48 @@ function pushLive(ev: QueryEvent) {
 }
 
 function connect() {
+  retry = null;
   if (stopped) return;
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  ws = new WebSocket(`${proto}://${location.host}/api/v1/ws`);
+  const sock = new WebSocket(`${proto}://${location.host}/api/v1/ws`);
+  ws = sock;
   s.conn = "connecting";
-  ws.onopen = () => { backoff = 500; s.conn = "live"; };
-  ws.onmessage = (m) => {
+  // Every handler checks it still belongs to the current socket. A socket
+  // closed by stopWs() reports its close later, asynchronously — after a
+  // startWs() that followed (log out, log in) has already opened the next one
+  // — and used to schedule a reconnect of its own: two sockets, every event
+  // shown twice, and one more per repeat.
+  sock.onopen = () => {
+    if (ws !== sock) return;
+    backoff = 500; s.conn = "live";
+  };
+  sock.onmessage = (m) => {
+    if (ws !== sock) return;
     let frame: any;
     try { frame = JSON.parse(m.data); } catch { return; }
     if (frame.type === "hello") {
       s.stats = frame.data.stats;
       s.series = frame.data.series || [];
       s.live = (frame.data.recent || []).slice(0, liveCap);
+      s.dropped = 0;
     } else if (frame.type === "query") {
       pushLive(frame.data);
     } else if (frame.type === "stats") {
       s.stats = frame.data;
       if (frame.series) s.series = frame.series;
+      // events the server skipped because this tab fell behind, per connection
+      if (typeof frame.dropped === "number") s.dropped = frame.dropped;
     }
   };
-  ws.onclose = () => {
-    if (stopped) return;
+  sock.onclose = () => {
+    if (stopped || ws !== sock) return;
     s.conn = "reconnecting";
-    setTimeout(connect, backoff);
+    // jittered, so every console open on a restarted server does not
+    // reconnect in the same instant
+    retry = setTimeout(connect, backoff * (0.75 + Math.random() * 0.5));
     backoff = Math.min(backoff * 1.7, 8000);
   };
-  ws.onerror = () => ws?.close();
+  sock.onerror = () => sock.close();
 }
 
 export const store = {
@@ -134,8 +154,15 @@ export const store = {
   setPref<K extends keyof typeof s.prefs>(k: K, v: (typeof s.prefs)[K]) {
     s.prefs[k] = v; applyPrefs();
   },
-  startWs() { stopped = false; if (!ws || ws.readyState > 1) connect(); },
-  stopWs() { stopped = true; ws?.close(); ws = null; s.conn = "offline"; },
+  startWs() {
+    stopped = false;
+    if (retry === null && (!ws || ws.readyState > 1)) connect();
+  },
+  stopWs() {
+    stopped = true;
+    if (retry !== null) { clearTimeout(retry); retry = null; }
+    ws?.close(); ws = null; s.conn = "offline";
+  },
 };
 
 applyPrefs();

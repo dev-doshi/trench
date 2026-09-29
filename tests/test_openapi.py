@@ -113,3 +113,63 @@ def test_every_operation_meets_what_openapi_requires():
                 problems.append(f"{verb.upper()} {path}: path params {sorted(declared)}"
                                 f" != {sorted(templated)}")
     assert not problems, "\n  ".join(["invalid OpenAPI operations:", *problems])
+
+
+def _handlers() -> dict[tuple[str, str], str]:
+    out = {}
+    for method, _f, raw, handler in _ADD_ROUTE.findall(inspect.getsource(APIServer._add_routes)):
+        out[(raw.replace("{API}", API).replace("{{", "{").replace("}}", "}"), method)] = handler
+    return out
+
+
+def test_operation_ids_are_unique():
+    """Generators name client methods after these; a duplicate is a collision
+    and a missing one leaves each generator to invent its own."""
+    ids = [op.get("operationId") for item in _OPENAPI["paths"].values() for op in item.values()]
+    assert None not in ids
+    assert len(ids) == len(set(ids))
+
+
+def test_the_security_declared_is_the_security_enforced():
+    """An operation marked public must not call `_require`, and one that calls
+    it must not be marked public — otherwise a generated client either sends no
+    credentials and gets a 401, or is told to authenticate for nothing."""
+    assert set(_OPENAPI["components"]["securitySchemes"]) == {"session", "bearer"}
+    wrong = []
+    for (path, method), handler in _handlers().items():
+        if path in NOT_API:
+            continue
+        enforced = "_require(" in inspect.getsource(getattr(APIServer, handler))
+        security = _OPENAPI["paths"][path][method].get("security", _OPENAPI["security"])
+        anonymous_ok = security == [] or {} in security
+        if enforced == anonymous_ok:
+            wrong.append(f"{method.upper()} {path}: enforced={enforced}, security={security}")
+    assert not wrong, "\n  ".join(["security does not match the handler:", *wrong])
+
+
+_READS_QUERY = re.compile(r'(?:\bq|request\.query)\.get\(\s*"(\w+)"|'
+                          r'_num\(\s*(?:q|request\.query),\s*"(\w+)"')
+_READS_BODY = re.compile(r'(?:_str|_num)\(\s*body,\s*"(\w+)"|body\.get\(\s*"(\w+)"|'
+                         r'for key in \(([^)]*)\)')
+
+
+def test_every_parameter_a_handler_reads_is_documented():
+    """A query parameter or body field the handler honours but the document
+    omits is a feature no generated client can reach."""
+    missing = []
+    for (path, method), handler in _handlers().items():
+        if path in NOT_API:
+            continue
+        source = inspect.getsource(getattr(APIServer, handler))
+        op = _OPENAPI["paths"][path][method]
+        query = {p["name"] for p in op.get("parameters", []) if p["in"] == "query"}
+        body = set(op.get("requestBody", {}).get("content", {})
+                   .get("application/json", {}).get("schema", {}).get("properties", {}))
+        for m in _READS_QUERY.finditer(source):
+            name = m.group(1) or m.group(2)
+            if name not in query:
+                missing.append(f"{method.upper()} {path}: query {name}")
+        for m in _READS_BODY.finditer(source):
+            names = [m.group(1) or m.group(2)] if not m.group(3) else re.findall(r'"(\w+)"', m.group(3))
+            missing += [f"{method.upper()} {path}: body {n}" for n in names if n not in body]
+    assert not missing, "\n  ".join(["read by the handler, absent from the document:", *missing])

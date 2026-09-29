@@ -118,6 +118,13 @@ function open(r: Row) {
             <b style="font-size:var(--b-ui-s);color:var(--b-ink-2)">{{ nf.format(s.liveTotal) }}</b>
             <span>seen since this page opened</span>
           </div>
+          <!-- the server skips events for a tab that cannot keep up rather
+               than buffer without bound; say so instead of under-counting -->
+          <div class="ev-big" v-if="s.dropped"
+               title="This tab fell behind the live stream; the server skipped these events. The query log has every one.">
+            <b style="font-size:var(--b-ui-s)">{{ nf.format(s.dropped) }}</b>
+            <span>skipped, tab fell behind</span>
+          </div>
           <div class="ev-big" style="color:var(--b-ink-3)" v-if="s.stats">
             <b style="font-size:var(--b-ui-s);color:var(--b-ink-2)">{{ s.stats.latency_p95_ms }}</b>
             <span>ms at p95</span>

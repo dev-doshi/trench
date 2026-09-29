@@ -33,6 +33,22 @@ Roles: `viewer` (reads), `editor` (mutations), `admin` (everything). Optional TO
 | POST | `/gravity/refresh` | editor | re-fetch blocklists |
 | GET | `/clients` | viewer | top clients |
 | GET | `/system` | viewer | version / uptime / upstreams |
-| GET | `/ws` | — | WebSocket live stats stream |
+| GET | `/ws` | viewer | WebSocket live stream (see below) |
 | GET | `/metrics` | — | Prometheus exposition |
 | GET | `/healthz`, `/readyz` | — | liveness / readiness |
+
+## Errors
+
+Every refusal under `/api/v1` is JSON of one shape, `{"error": "…"}`, with the
+status carrying the meaning: 400 for a malformed or wrongly typed request, 401
+without credentials, 403 for a role too low, 404 for an unknown id or path,
+405 for a method the path does not take. The OpenAPI document declares each
+operation's security and parameters, and gives it a stable `operationId`.
+
+## Live stream
+
+`/api/v1/ws` sends typed JSON frames: one `hello` (`stats`, `series`, `recent`)
+on connect, a `query` per resolved query, and a `stats` snapshot every two
+seconds. A client that cannot keep up is not buffered without bound; the server
+skips events for it and reports the running count in the `dropped` field of
+`stats` frames. The query log keeps every event.
