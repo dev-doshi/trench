@@ -483,7 +483,7 @@ class Upstream:
                     # until its idle timeout — 60 s by default — so a black-holed
                     # DoQ upstream held every query routed to it for a minute,
                     # far past any client's patience and the stale-serving timer.
-                    raw = await asyncio.wait_for(self._doq(wire), self.timeout)
+                    raw = await self._doq(wire)
                 resp = Message.parse(raw)
                 _check_response(resp, sent, check_id=False)
                 resp.id = msg.id          # hand the client back its own id
@@ -617,9 +617,11 @@ class Upstream:
         return await asyncio.wait_for(self._doq_exchange(wire), self.timeout)
 
     async def _doq_exchange(self, wire: bytes) -> bytes:
-        from aioquic.asyncio import QuicConnectionProtocol, connect
+        from aioquic.asyncio import QuicConnectionProtocol
         from aioquic.quic.configuration import QuicConfiguration
         from aioquic.quic.events import StreamDataReceived
+
+        from .quicclient import quic_connect
 
         cfg = QuicConfiguration(is_client=True, alpn_protocols=["doq"],
                                 idle_timeout=self.timeout)
@@ -631,20 +633,30 @@ class Upstream:
                 super().__init__(*a, **k)
                 self.fut = asyncio.get_running_loop().create_future()
                 self.buf = bytearray()
+                self.sid: int | None = None
             def quic_event_received(self, event):
-                if isinstance(event, StreamDataReceived):
+                if isinstance(event, StreamDataReceived) and event.stream_id == self.sid:
                     self.buf += event.data
-                    if event.end_stream and not self.fut.done():
+                    if self.fut.done():
+                        return
+                    # One length-prefixed message, never more: a peer streaming
+                    # without end is cut off at the largest a DNS message can be.
+                    if len(self.buf) > 2 + 65535:
+                        self.fut.set_exception(UpstreamError("DoQ response too long"))
+                    elif event.end_stream:
                         self.fut.set_result(bytes(self.buf))
 
-        async with connect(self.spec.host, self.spec.port, configuration=cfg,
-                           create_protocol=_C) as client:
-            sid = client._quic.get_next_available_stream_id()
+        async with quic_connect(self.spec.host, self.spec.port, configuration=cfg,
+                                create_protocol=_C) as client:
+            sid = client.sid = client._quic.get_next_available_stream_id()
             client._quic.send_stream_data(sid, len(wire).to_bytes(2, "big") + wire,
                                           end_stream=True)
             client.transmit()
             data = await client.fut
-            return data[2:]  # strip 2-byte length prefix
+            n = int.from_bytes(data[:2], "big") if len(data) >= 2 else -1
+            if n != len(data) - 2:
+                raise UpstreamError("DoQ response length prefix does not match")
+            return data[2:]
 
     async def close(self) -> None:
         if self._session is not None and not self._session.closed:

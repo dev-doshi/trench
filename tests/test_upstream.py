@@ -181,3 +181,24 @@ async def test_a_timeout_is_not_retried():
         await up._stream(b"q")
     assert up._conn.attempts == 1
     assert up._conn.closes == 0, "a timeout says nothing about the connection"
+
+
+@pytest.mark.asyncio
+async def test_a_silent_doq_upstream_fails_within_its_timeout():
+    """A black-holed DoQ upstream used to hold the query for aioquic's 60 s idle
+    timeout, and the close afterwards waited out the draining period on top."""
+    import asyncio
+    import time
+
+    from trench.transport.upstream import Upstream, parse_upstream
+    hole = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)   # bound, never answers
+    hole.bind(("127.0.0.1", 0))
+    try:
+        up = Upstream(parse_upstream(f"quic://127.0.0.1:{hole.getsockname()[1]}"),
+                      timeout=0.5, verify=False)
+        t = time.monotonic()
+        with pytest.raises((asyncio.TimeoutError, TimeoutError, OSError)):
+            await up._doq(mkquery().to_wire())
+        assert time.monotonic() - t < 1.5
+    finally:
+        hole.close()

@@ -125,11 +125,12 @@ async def test_doh_wire_and_json():
 # --- DoQ ---
 @pytest.mark.asyncio
 async def test_doq():
-    from aioquic.asyncio import QuicConnectionProtocol, connect
+    from aioquic.asyncio import QuicConnectionProtocol
     from aioquic.quic.configuration import QuicConfiguration
     from aioquic.quic.events import StreamDataReceived
 
     from trench.transport.doq import DoQServer
+    from trench.transport.quicclient import quic_connect as connect
 
     port = free_port()
     srv = DoQServer(build_pipeline(), "127.0.0.1", port, None, None, CERT_DIR)
@@ -167,12 +168,13 @@ async def test_doq():
 # --- DoH3 (HTTP/3) ---
 @pytest.mark.asyncio
 async def test_doh3():
-    from aioquic.asyncio import QuicConnectionProtocol, connect
+    from aioquic.asyncio import QuicConnectionProtocol
     from aioquic.h3.connection import H3Connection
     from aioquic.h3.events import DataReceived, HeadersReceived
     from aioquic.quic.configuration import QuicConfiguration
 
     from trench.transport.doh3 import DoH3Server
+    from trench.transport.quicclient import quic_connect as connect
 
     port = free_port()
     srv = DoH3Server(build_pipeline(), "127.0.0.1", port, "/dns-query", None, None, CERT_DIR)
