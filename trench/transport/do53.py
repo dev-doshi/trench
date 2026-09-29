@@ -40,6 +40,18 @@ def _try_parse(data: bytes) -> Message | None:
         return None
 
 
+def _limited(pipeline, client_ip: str) -> bool:
+    """The pipeline's per-client rate limit, for what bypasses the pipeline.
+
+    Transfers, NOTIFY and UPDATE go to the zone handler before the pipeline,
+    and so also before its rate limiter: each one a zone walk, an HMAC or a
+    database write, unmetered. Over the limit they are dropped rather than
+    refused — a reply to a source that may be spoofed is owed nothing.
+    """
+    limiter = getattr(pipeline, "ratelimiter", None)
+    return bool(limiter is not None and limiter.enabled and not limiter.allow(client_ip))
+
+
 class _UDPProtocol(asyncio.DatagramProtocol):
     """UDP listener with a bound on concurrent work.
 
@@ -123,6 +135,8 @@ class _UDPProtocol(asyncio.DatagramProtocol):
             if self.auth is not None:
                 query = _try_parse(data)
                 if query is not None and self.auth.claims(query):
+                    if _limited(self.pipeline, addr[0]):
+                        return
                     out = self.auth.handle_udp(data, query, addr[0])
                     if out:
                         self._send(out, addr)
@@ -162,6 +176,8 @@ def _tcp_responder(pipeline: Pipeline, auth):
         if auth is not None:
             query = _try_parse(data)
             if query is not None and auth.claims(query):
+                if _limited(pipeline, client_ip):
+                    return []
                 return list(auth.handle_tcp(data, query, client_ip))
         out = await process_query(pipeline, data, client_ip, "tcp", stream=True)
         return [out] if out else []
