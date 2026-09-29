@@ -54,9 +54,9 @@ Fuzzing found no crashes. I recommend adding Hypothesis targets like these to `t
 | Severity | Count |
 | --- | --- |
 | Critical | 1 |
-| High | 3 |
-| Medium | 9 |
-| Low | 12 |
+| High | 4 |
+| Medium | 10 |
+| Low | 15 |
 
 ---
 
@@ -238,6 +238,40 @@ Over HTTP, the equivalent is to send about 50 `POST /api/v1/auth/login` requests
 - Run `verify_password` in a thread pool (`loop.run_in_executor`), with a small semaphore to cap concurrent scrypt jobs.
 - Consider running the API in its own process.
 
+### H4. Any viewer can read TSIG secrets and DoH client tokens from `GET /api/v1/settings`
+
+**Where:**
+
+- `trench/api/server.py:746`: `settings_get` requires only `viewer` and returns `st.describe(self.app.config)`.
+- `trench/api/settings.py`: `current()` blanks `Field_.secret` fields, but `collection_values()` does not redact anything. `describe()` returns it verbatim.
+
+`collection_values()` includes:
+
+- `tsig_keys`, with the `secret` column (`settings.py` ~576-587).
+- `clients`, with each ident. That includes `type: "token"` idents, which are the per-client DoH path tokens.
+
+A viewer is the lowest role, and it is the default scope of API tokens (`tokens_create`, `server.py:340`). So any read-only token or viewer account can take the zone's TSIG key and forge signed UPDATEs (H-level zone takeover wherever `allow_update` + `tsig_key` is set) or AXFR it. It can also impersonate any token-identified client and wear its filtering policy.
+
+**PoC:**
+
+```python
+from trench.config import Config
+from trench.api import settings as st
+c = Config.model_validate({
+    "tsig_keys": [{"name": "upd.", "algorithm": "hmac-sha256", "secret": "c2VjcmV0c2VjcmV0"}],
+    "clients": [{"ident": "s3cr3t-doh-token", "type": "token", "name": "phone"}],
+})
+print(st.describe(c)["collection_values"])   # prints the TSIG secret and the token
+```
+
+Over HTTP: `curl -H "Authorization: Bearer <viewer token>" https://host/api/v1/settings`.
+
+**Fix:**
+
+- Mark secret columns in collection schemas and redact them in `collection_values()`, the same way `current()` handles `Field_.secret`.
+- On `settings_put`, treat a redacted placeholder as "unchanged".
+- Alternatively, require `admin` for the collection values.
+
 ---
 
 ## Medium
@@ -357,6 +391,35 @@ Five bad passwords for `admin` from any address lock the account for up to 300 s
 - Key the lockout on (user, IP), or on IP alone, with a global per-user rate as a soft signal.
 - Let a correct password plus TOTP bypass the per-user component.
 
+### M10. The ReDoS guard misses alternation and wildcard shapes: one blocklist line stalls the resolver
+
+**Where:** `trench/filter/parser.py:150-164` (`_REDOS`, `_safe_regex`) and `:186-188` (wildcard rules).
+
+`_REDOS` only rejects a group that contains a quantifier and is itself quantified, plus repeated `[...]+` classes. It misses:
+
+- **Overlapping alternation:** `/^(a|aa)+$/` has no quantifier inside the group, so it compiles. Backtracking grows as a Fibonacci number in the name length.
+- **Wildcard rules:** `||a*a*a*a*a*a*a*a*a*b^` becomes `^a.*a.*…b$` with no ReDoS check and no length cap. That is polynomial of degree k, and names reach 253 chars.
+
+The match runs synchronously on the event loop against the attacker-chosen query name. So one line in any subscribed list (compromised, or fetched over `http://`, see L11), plus one query, freezes DNS for that worker.
+
+**PoC:**
+
+```python
+import time
+from trench.filter.parser import parse_line
+r = parse_line("/^(a|aa)+$/"); t = time.time(); r.regex.search("a"*32 + "b"); print(time.time() - t)
+r = parse_line("||a*a*a*a*a*a*a*a*a*b^"); r.regex.search("a"*60 + ".c")   # never returns
+```
+
+**Observed:** both rules compiled. The first took **0.5 s** for a 33-character name, and each extra `a` multiplies that by about 1.6. The second was still running when the 120 s timeout killed it.
+
+**Fix:**
+
+- Use a linear-time engine (`re2` / `google-re2`) for list-supplied patterns.
+- If that isn't possible, turn wildcard rules into a non-backtracking glob matcher.
+- Cap the number of `*` in a rule.
+- Run regex matching with a time budget, off the event loop.
+
 ---
 
 ## Low
@@ -465,6 +528,25 @@ An admin, or a stolen admin session, can point a source at `file:///etc/...`-sty
 See M4. `do53.py:92-98` handles AXFR/NOTIFY/UPDATE before the pipeline's rate limiter runs, and the refusal replies are small.
 
 **Fix:** rate-limit these requests too.
+
+### L13. Editors can purge the query log
+
+`querylog_purge` in `trench/api/server.py` requires only `editor`. An editor can therefore erase the query history that would show what they changed and what clients resolved afterwards.
+
+**Fix:** require `admin` for the purge, and write an audit entry that survives it.
+
+### L14. Admin settings can load arbitrary Python modules
+
+The `plugins` collection holds module paths, and they are imported at startup. An admin, or a stolen admin session (see H3, M6, M7), therefore gets code execution as the service user after the next restart. That is expected admin power, but it is not documented as such.
+
+**Fix:** document it, or restrict plugins to an entry-point allow-list that the API cannot edit.
+
+### L15. The DoH HTTP server has no connection caps, and the JSON API accepts `type` > 65535
+
+- `trench/transport/doh.py` runs aiohttp without the per-client and global connection limits that `StreamLimits` gives DoT and TCP.
+- The JSON API's `type` parameter is not range-checked, so values above 65535 are silently truncated on the wire.
+
+**Fix:** apply `StreamLimits`-equivalent caps to the DoH listener, and reject `type` outside 0-65535.
 
 ---
 
