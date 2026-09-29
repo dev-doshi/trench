@@ -348,7 +348,7 @@ class FastPath:
         if rl.enabled and not rl.allow(client_ip):
             return None                     # the normal path owes them a REFUSED
 
-        # The detectors carry per-client state and must see every query, or
+        # The detectors must see every query (DGA carries per-client state), or
         # enabling them would quietly switch this path off (which is exactly
         # what happened on the first deployment: the live config has cookies,
         # DGA and tunnel detection all on, and the fast path served nothing).

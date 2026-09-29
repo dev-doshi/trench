@@ -371,7 +371,7 @@ FIELDS: list[Field_] = [
     Field_("filtering.allow", "Always allow", "list", "Filtering",
            adopter="rules", placeholder="bank.example",
            help="One domain per line; these beat every imported block rule. "
-                "Ad-hoc rules made from the Policy page live separately."),
+                "Rules made from the Policy page are added here too."),
     Field_("filtering.deny", "Always block", "list", "Filtering",
            adopter="rules", placeholder="tracker.example"),
     Field_("filtering.protective_sources", "Protective lists", "list", "Filtering",

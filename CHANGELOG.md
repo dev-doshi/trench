@@ -130,9 +130,34 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   client resolved. Groups are now declared in `filtering.groups` and enforced;
   `GET /api/v1/groups` reports what is in force and creates nothing.
 - **The `ts_stat` table**, written by nothing and read by nothing.
+- **Volume scoring in the tunnel detector.** On a live home network 96% of its
+  blocks scored exactly the threshold, pushed there by query rate alone: a busy
+  device is not a tunnel. The detector now scores the name's structure only, and
+  an allowed name is no longer screened at all.
+- **`FilterEngine.add_deny` / `add_allow` / `remove_rule`**, the runtime rule
+  edits the Policy page used to make in one worker's memory.
 
 ### Fixed
 
+- **Policy-page rules are written to the config file** (`filtering.allow` /
+  `filtering.deny`) and reach every worker. They used to live in the database
+  and the memory of whichever worker served the request, so with two workers
+  roughly half the queries never saw them, and a restart or refresh could drop
+  them. Rules left in the old table are moved into the config on start.
+- **Private reverse zones and special-use names are answered locally.** PTR
+  queries for RFC 1918 / RFC 6303 space, `.local`, `.home.arpa` and the other
+  `security.local_suffixes` get NXDOMAIN instead of being forwarded to a public
+  resolver that cannot know them, unless an upstream route names the zone.
+- **One dropped DoT/TCP connection no longer fails the one that replaced it.**
+  A slow close of the old stream marked the new connection closed, failing every
+  query in flight on it.
+- Queries rejected at the header (a router's DNS UPDATE, a bad EDNS version)
+  now record why in the query log.
+- Plain-text logs carry the date and no colour codes when stderr is not a
+  terminal; cache prewarm logs at debug instead of flooding the log at info.
+- `deploy/raspi.yaml` runs one worker (the 1 GB board was deep in swap with
+  two), routes `fritz.box` and the LAN's reverse zone to the router, and drops
+  root after binding.
 - Encrypted-DNS discovery follows RFC 9462 §4 and RFC 9463 §5.1: the
   `_dns.resolver.arpa` answer now carries `ipv4hint`/`ipv6hint` and the
   designated name's A/AAAA records, so clients can upgrade without resolving

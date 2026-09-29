@@ -125,3 +125,13 @@ def test_two_opt_records_are_rejected():
 def test_an_opt_not_owned_by_the_root_is_rejected():
     with pytest.raises(WireError):
         Message.parse(_with_opts(1, owner=b"\x01a\x00"))
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_header_says_why():
+    """A Fritz!Box repeater's DNS UPDATEs sat in the log 2,600 times as
+    'refused' with nothing to say which check turned them away."""
+    ctx = await pipeline().resolve_ctx(mkquery("myfritz.net", opcode=Opcode.UPDATE),
+                                       "192.0.2.1")
+    assert ctx.response.rcode == Rcode.NOTIMP
+    assert ctx.reason == "opcode not supported"

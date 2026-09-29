@@ -11,7 +11,7 @@ import pytest
 
 from trench.analyze import list_effectiveness
 from trench.filter import FilterEngine, compile_rules
-from trench.filter.rule import Rule
+from trench.filter.rule import Rule, operator_rules
 
 
 def engine_with(**per_source: int) -> FilterEngine:
@@ -89,10 +89,11 @@ def test_duplicate_domains_are_attributed_to_the_first_list_only():
 
 
 def test_operator_rules_are_excluded():
-    eng = engine_with(gravity=2000)
-    eng.add_deny("mine.example")          # source="custom"
-    stats = by_source(list_effectiveness(eng, blocked("custom", 50)))
-    assert "custom" not in stats, "operator rules are intentional, not an ROI question"
+    text = "\n".join(f"||d{i}.example^" for i in range(2000))
+    eng = FilterEngine.compile([*compile_rules(text, "gravity"),
+                                *operator_rules([], ["mine.example"])])
+    stats = by_source(list_effectiveness(eng, blocked("denylist", 50)))
+    assert "denylist" not in stats, "operator rules are intentional, not an ROI question"
     assert "gravity" in stats
 
 

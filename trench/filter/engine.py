@@ -155,32 +155,13 @@ class FilterEngine:
                 d = self.block_suffix if r.block else self.allow_suffix
                 d.setdefault(r.suffix, []).append(r)
 
-    # --- runtime edits (API) ---
-    def add_deny(self, domain: str, source: str = "custom") -> None:
-        self.block_suffix.setdefault(domain.strip().lower(), []).append(
-            Rule(raw=domain, block=True, suffix=domain.strip().lower(), source=source))
-
-    def add_allow(self, domain: str, source: str = "custom") -> None:
-        self.allow_suffix.setdefault(domain.strip().lower(), []).append(
-            Rule(raw=domain, block=False, important=True,
-                 suffix=domain.strip().lower(), source=source))
-
-    def remove_rule(self, domain: str) -> None:
-        d = domain.strip().lower()
-        self.block_plain.pop(d, None)
-        self.block_table.discard(d)
-        self.block_suffix.pop(d, None)
-        self.allow_suffix.pop(d, None)
-        self.block_exact.pop(d, None)
-        self.allow_exact.pop(d, None)
-
     @property
     def size(self) -> int:
         return (len(self.block_plain) + len(self.block_table) + len(self.block_suffix)
                 + len(self.block_exact) + len(self.block_regex))
 
     def custom_rules(self) -> tuple[list[str], list[str]]:
-        """Deny/allow domains the operator set (API or config), excluding imported
+        """Deny/allow domains the operator set in the config, excluding imported
         blocklists. The API surfaces these; returning the whole gravity corpus
         instead would be a multi-megabyte response nobody can read."""
         def picked(table: dict[str, list[Rule]]) -> list[str]:

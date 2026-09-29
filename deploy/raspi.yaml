@@ -19,15 +19,21 @@ server:
   doq: { enabled: false }
   doh3: { enabled: false }
   edns_udp_size: 1232
-  # This used to have to be 1. Each worker held its own copy of the compiled
-  # blocklist (~317 MB resident), so `workers: 0` (auto = 4) OOM-killed the box.
-  # The blocklist now lives in a shared-memory table built once by the
-  # supervisor before it forks, so the per-worker cost is the interpreter and
-  # the caches, not the 600k domains. All four cores are affordable.
-  workers: 4
+  # One. The blocklist is a shared-memory table, but every worker is still a
+  # full interpreter with its own caches, detectors and upstream connections
+  # (~100 MB each), and this box also runs Home Assistant. Measured on the
+  # deployment this file came from: two workers pushed the host 545 MB into
+  # swap on the SD card and cached answers took 337 ms on average. A home LAN
+  # is ~1 query/s with bursts of a few hundred; one worker does not notice.
+  workers: 1
+  user: trench # shed root once :53 is bound (the image creates the account)
 
 upstream:
   servers:
+    # The router's own names and reverse zone go to the router. Everything in
+    # security.local_suffixes without a route is answered NXDOMAIN locally
+    # rather than asked of Quad9, which cannot know it.
+    - "[/fritz.box/178.168.192.in-addr.arpa/]192.168.178.1"
     - "tls://9.9.9.9#dns.quad9.net" # Quad9 — DoT, malware-filtered, DNSSEC-validating
     - "tls://149.112.112.112#dns.quad9.net" # Quad9 secondary
   strategy: fastest # race the two lowest-RTT upstreams, fall back on failure
@@ -51,7 +57,7 @@ cache:
   serve_stale: true # keep answering if upstreams go down
   serve_stale_max: 86400
   prefetch: true
-  shared: true # 4 workers: one shared cache beats four cold private ones
+  shared: true # only used with more than one worker
   shared_slots: 16384
   shared_payload: 1232
   persist: true # survive restarts warm

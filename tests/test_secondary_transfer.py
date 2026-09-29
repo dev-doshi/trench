@@ -68,8 +68,9 @@ async def _serve(envelopes, host="127.0.0.1", hang=False, wrong_id=False):
                 hdr = await reader.readexactly(2)
                 data = await reader.readexactly(int.from_bytes(hdr, "big"))
                 state["requests"].append(data)
-                if hang:
-                    await asyncio.sleep(60)
+                if hang:  # silent until the client gives up and hangs up
+                    await reader.read()
+                    return
                 for wire in envelopes:
                     wire = _answering(data, wire, wrong_id)
                     writer.write(len(wire).to_bytes(2, "big") + wire)
@@ -82,6 +83,22 @@ async def _serve(envelopes, host="127.0.0.1", hang=False, wrong_id=False):
 
     server = await asyncio.start_server(handle, host, 0)
     return server, server.sockets[0].getsockname()[1], state
+
+
+async def _start(handle):
+    """Serve `handle`, closing each connection when it returns.
+
+    From 3.12 `Server.wait_closed()` waits for every connection, and a plain
+    TCP stream stays half-open after the peer's EOF until its writer is
+    closed, so a handler that simply returns hangs the test's teardown.
+    """
+    async def closing(reader, writer):
+        try:
+            await handle(reader, writer)
+        finally:
+            writer.close()
+
+    return await asyncio.start_server(closing, "127.0.0.1", 0)
 
 
 def _full_axfr(serial=1, extra=()):
@@ -230,7 +247,7 @@ async def test_a_reply_for_another_zone_is_not_loaded():
         writer.write(len(wire).to_bytes(2, "big") + wire)
         await writer.drain()
 
-    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    server = await _start(handle)
     port = server.sockets[0].getsockname()[1]
     try:
         with pytest.raises(TransferError):
@@ -250,7 +267,7 @@ async def test_a_notify_ack_with_another_id_is_not_an_ack():
         writer.write(len(wire).to_bytes(2, "big") + wire)
         await writer.drain()
 
-    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    server = await _start(handle)
     port = server.sockets[0].getsockname()[1]
     try:
         assert await send_notify("127.0.0.1", port, ORIGIN, timeout=1) is False
@@ -272,7 +289,7 @@ async def test_a_notify_that_is_acked_reports_success():
         writer.write(len(wire).to_bytes(2, "big") + wire)
         await writer.drain()
 
-    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    server = await _start(handle)
     port = server.sockets[0].getsockname()[1]
     try:
         assert await send_notify("127.0.0.1", port, ORIGIN) is True
@@ -289,9 +306,9 @@ async def test_a_notify_to_nothing_reports_failure():
 @pytest.mark.asyncio
 async def test_a_notify_that_is_not_answered_reports_failure():
     async def handle(reader, writer):
-        await asyncio.sleep(30)
+        await reader.read()  # silent until the client gives up and hangs up
 
-    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    server = await _start(handle)
     port = server.sockets[0].getsockname()[1]
     try:
         assert await send_notify("127.0.0.1", port, ORIGIN, timeout=0.2) is False
@@ -313,7 +330,7 @@ async def test_a_notify_carries_the_right_opcode_and_question():
         writer.write(len(wire).to_bytes(2, "big") + wire)
         await writer.drain()
 
-    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    server = await _start(handle)
     port = server.sockets[0].getsockname()[1]
     try:
         await send_notify("127.0.0.1", port, ORIGIN)

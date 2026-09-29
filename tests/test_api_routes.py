@@ -164,30 +164,54 @@ async def test_top_clients_reflect_the_counters(api):
 
 # --- rules ---
 @pytest.mark.asyncio
-async def test_rules_round_trip_and_persist(api):
+async def test_rules_round_trip_through_the_config(api):
     async with api.s.post(f"{api.base}/api/v1/rules",
                           json={"domain": "Bad.Example.COM", "action": "deny"}) as r:
         assert r.status == 200
     async with api.s.get(f"{api.base}/api/v1/rules") as r:
         body = await r.json()
     assert "bad.example.com" in body["deny"]           # normalised to lower case
-    rows = await api.app.db.fetchall("SELECT raw, kind FROM custom_rule")
-    assert [dict(r) for r in rows] == [{"raw": "bad.example.com", "kind": "block"}]
+    assert api.app.config.filtering.deny == ["bad.example.com"]
 
     async with api.s.post(f"{api.base}/api/v1/rules",
                           json={"domain": "bad.example.com", "action": "remove"}) as r:
         assert r.status == 200
-    assert await api.app.db.fetchall("SELECT raw FROM custom_rule") == []
+    assert api.app.config.filtering.deny == []
+    assert "bad.example.com" not in api.app.filter.custom_rules()[0]
 
 
 @pytest.mark.asyncio
-async def test_an_allow_rule_is_recorded_as_allow(api):
+async def test_an_allow_rule_survives_a_rebuilt_engine(api):
+    """The rule used to be patched into the running engine only, so the next
+    blocklist refresh or restart dropped it without a word."""
     await api.s.post(f"{api.base}/api/v1/rules",
                      json={"domain": "ok.example.com", "action": "allow"})
-    rows = await api.app.db.fetchall("SELECT kind FROM custom_rule")
-    assert rows[0]["kind"] == "allow"
-    async with api.s.get(f"{api.base}/api/v1/rules") as r:
-        assert "ok.example.com" in (await r.json())["allow"]
+    assert api.app.config.filtering.allow == ["ok.example.com"]
+    await api.app._adopt_rules()
+    assert "ok.example.com" in api.app.filter.custom_rules()[1]
+
+
+@pytest.mark.asyncio
+async def test_a_rule_is_written_to_the_config_file(tmp_path):
+    import yaml
+    cfg = tmp_path / "trench.yaml"
+    cfg.write_text("filtering:\n  allow: [keep.example]\n")
+    app, base = await api_app(tmp_path, filtering={"allow": ["keep.example"]})
+    app._config_path = str(cfg)
+    await app.db.execute("INSERT INTO custom_rule(raw, kind) VALUES('Old.Example','allow')")
+    await app.db.execute("INSERT INTO custom_rule(raw, kind) VALUES('old.example','allow')")
+    await app.api._fold_legacy_rules()
+    async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True)) as s:
+        await s.post(f"{base}/api/v1/auth/login", json={"name": "admin", "password": "pw"})
+        async with s.post(f"{base}/api/v1/rules",
+                          json={"domain": "bad.example", "action": "deny"}) as r:
+            assert r.status == 200
+    rows = await app.db.fetchall("SELECT raw FROM custom_rule")
+    await shutdown_api(app)
+    tree = yaml.safe_load(cfg.read_text())
+    assert tree["filtering"] == {"allow": ["keep.example", "old.example"],
+                                 "deny": ["bad.example"]}
+    assert rows == []
 
 
 @pytest.mark.asyncio

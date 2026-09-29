@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import re
 
 from trench import log
 
@@ -62,10 +63,17 @@ def test_json_formatter_interpolates_args():
 
 
 def test_human_formatter_colours_known_levels():
-    line = log._HumanFormatter().format(_record("hi", level=logging.WARNING))
+    line = log._HumanFormatter(color=True).format(_record("hi", level=logging.WARNING))
     assert log._HumanFormatter.COLORS["WARNING"] in line
     assert log._HumanFormatter.RESET in line
     assert "WARN" in line and "trench.test: hi" in line
+
+
+def test_human_formatter_is_plain_off_a_terminal():
+    """`docker logs` and journald store the escape codes verbatim."""
+    line = log._HumanFormatter().format(_record("hi", level=logging.WARNING))
+    assert "\033" not in line
+    assert re.match(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d WARN trench.test: hi", line)
 
 
 def test_human_formatter_unknown_level_has_no_colour():

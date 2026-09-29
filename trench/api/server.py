@@ -183,6 +183,7 @@ class APIServer:
     async def start(self) -> None:
         await self.auth.ensure_admin(self.app.config.web.admin_password,
                                      data_dir=self.app.config.data_path)
+        await self._fold_legacy_rules()
         # Headers outermost, so a refusal raised by the auth layer carries them too.
         webapp = web.Application(middlewares=[self._headers_mw, self._auth_mw])
         from ..security.clientaddr import TRUSTED_KEY
@@ -194,6 +195,31 @@ class APIServer:
         await site.start()
         log.info("admin/API on %s://%s:%d", "https" if self.ssl_context else "http",
                  self.host, self.port)
+
+    async def _fold_legacy_rules(self) -> None:
+        """Move rules older releases left in the `custom_rule` table into the
+        config file, where they are actually enforced, then empty the table.
+
+        Those rows were written by the Policy page and never read back, so the
+        operator believes rules are in force that stopped applying at the first
+        restart. Moving them honours what was asked for.
+        """
+        if self.app.db is None or not _config_writable(self.app._config_path)[0]:
+            return
+        rows = await self.app.db.fetchall(
+            "SELECT DISTINCT lower(raw) AS raw, kind FROM custom_rule WHERE enabled=1")
+        if not rows:
+            return
+        f = self.app.config.filtering
+        allow, deny = list(f.allow), list(f.deny)
+        for r in rows:
+            target = allow if r["kind"] == "allow" else deny
+            if r["raw"] not in target:
+                target.append(r["raw"])
+        await self._save_settings({"filtering.allow": allow, "filtering.deny": deny})
+        await self.app.db.execute("DELETE FROM custom_rule")
+        log.warning("moved %d Policy-page rules into %s: %s", len(rows),
+                    self.app._config_path, ", ".join(r["raw"] for r in rows))
 
     async def stop(self) -> None:
         for task in list(self._bg):
@@ -639,23 +665,28 @@ class APIServer:
         })
 
     async def rules_post(self, request: web.Request) -> web.Response:
+        """Add or remove one operator rule.
+
+        The rule lands in `filtering.allow`/`filtering.deny` in the config file,
+        the same place the Settings page edits. It used to be patched into this
+        worker's engine and inserted into a table nothing ever read back, so it
+        reached one worker out of N and vanished at the next blocklist refresh
+        or restart.
+        """
         self._require(request, "editor")
         body = await _json(request)
-        domain = _str(body, "domain").strip().lower()
+        domain = _str(body, "domain").strip().lower().rstrip(".")
         action = _str(body, "action")
-        f = self.app.filter
         if not domain or action not in ("deny", "allow", "remove"):
             return web.json_response({"error": "bad request"}, status=400)
-        if action == "deny":
-            f.add_deny(domain)
-            await self._persist_rule(domain, "block")
-        elif action == "allow":
-            f.add_allow(domain)
-            await self._persist_rule(domain, "allow")
-        else:
-            f.remove_rule(domain)
-            await self._unpersist_rule(domain)
-        self.app.cache.flush()
+        f = self.app.config.filtering
+        allow = [d for d in f.allow if d.lower() != domain]
+        deny = [d for d in f.deny if d.lower() != domain]
+        if action == "allow":
+            allow.append(domain)
+        elif action == "deny":
+            deny.append(domain)
+        await self._save_settings({"filtering.allow": allow, "filtering.deny": deny})
         await self._audit(request, f"rule.{action}", domain)
         return web.json_response({"ok": True})
 
@@ -678,16 +709,6 @@ class APIServer:
             "SELECT ts, actor, action, target, ip FROM audit ORDER BY ts DESC LIMIT 200") \
             if self.app.db is not None else []
         return web.json_response({"audit": [dict(r) for r in rows]})
-
-    async def _persist_rule(self, domain: str, kind: str) -> None:
-        if self.app.db is not None:
-            await self.app.db.execute(
-                "INSERT INTO custom_rule(raw, kind, created) VALUES(?,?,?)",
-                (domain, kind, int(time.time())))
-
-    async def _unpersist_rule(self, domain: str) -> None:
-        if self.app.db is not None:
-            await self.app.db.execute("DELETE FROM custom_rule WHERE raw=?", (domain,))
 
     async def toggle(self, request: web.Request) -> web.Response:
         self._require(request, "editor")
@@ -815,50 +836,73 @@ class APIServer:
                            and (v is None or v == ""))}
         if not changes:
             raise _bad_request("no changes")
-
-        path = self.app._config_path
-        ok, why = _config_writable(path)
+        ok, why = _config_writable(self.app._config_path)
         if not ok:
             raise _bad_request(why)
 
+        applied = await self._save_settings(changes)
+        await self._audit(request, "settings.write", ",".join(sorted(changes)))
+        return web.json_response({"ok": True, "reloaded": applied,
+                                  "restart": st.needs_restart(list(changes))})
+
+    async def _save_settings(self, changes: dict) -> bool:
+        """Validate `changes`, write them to the config file, and apply them in
+        every worker. Returns False if they were saved but could not be applied.
+
+        The file stays the source of truth — this writes YAML and then reloads
+        it, so a change made here is identical to one made by hand, and anything
+        already in the file that this form does not cover is preserved. Without
+        a config file (tests, `--config` omitted) the change is applied to the
+        running config only.
+        """
         from pathlib import Path
 
         import yaml
 
         from ..config import Config
-        src = Path(path)
-        try:
-            tree = yaml.safe_load(src.read_text()) or {} if src.exists() else {}
-        except Exception as e:
-            raise _bad_request(f"the config file could not be read: {e}") from e
+        from . import settings as st
 
-        try:
-            for key, raw in changes.items():
-                # Collections carry structured JSON; the flat fields carry
-                # scalars. Both land in the same tree and are validated by the
-                # same `Config.model_validate` below.
-                if key in st._COL_BY_PATH:
-                    st.merge(tree, key, st.coerce_collection(key, raw))
-                else:
-                    st.merge(tree, key, st.coerce(key, raw))
-        except KeyError as e:
-            raise _bad_request(f"unknown setting {e}") from e
-        except (ValueError, TypeError) as e:
-            raise _bad_request(str(e)) from e
+        def fold(tree: dict) -> dict:
+            try:
+                for key, raw in changes.items():
+                    # Collections carry structured JSON; the flat fields carry
+                    # scalars. Both land in the same tree and are validated by
+                    # the same `Config.model_validate` below.
+                    if key in st._COL_BY_PATH:
+                        st.merge(tree, key, st.coerce_collection(key, raw))
+                    else:
+                        st.merge(tree, key, st.coerce(key, raw))
+            except KeyError as e:
+                raise _bad_request(f"unknown setting {e}") from e
+            except (ValueError, TypeError) as e:
+                raise _bad_request(str(e)) from e
+            # Validate before writing: a config file that fails to parse would
+            # take the resolver down on its next start, from a form submission.
+            try:
+                Config.model_validate(tree)
+            except Exception as e:
+                raise _bad_request(f"rejected: {e}") from e
+            return tree
 
-        # Validate before writing: a config file that fails to parse would take
-        # the resolver down on its next start, from a form submission.
-        try:
-            Config.model_validate(tree)
-        except Exception as e:
-            raise _bad_request(f"rejected: {e}") from e
-
-        text = yaml.safe_dump(tree, sort_keys=False, allow_unicode=True)
-        try:
-            _write_config(src, text)
-        except OSError as e:
-            raise _bad_request(f"the config file could not be written: {e}") from e
-        await self._audit(request, "settings.write", ",".join(sorted(changes)))
+        path = self.app._config_path
+        if not path:
+            tree = fold(self.app.config.model_dump())
+            self.app.config = Config.model_validate(tree)
+            self.app.pipeline.config = self.app.config
+        else:
+            ok, why = _config_writable(path)
+            if not ok:
+                raise _bad_request(why)
+            src = Path(path)
+            try:
+                tree = yaml.safe_load(src.read_text()) or {} if src.exists() else {}
+            except Exception as e:
+                raise _bad_request(f"the config file could not be read: {e}") from e
+            text = yaml.safe_dump(fold(tree), sort_keys=False, allow_unicode=True)
+            try:
+                _write_config(src, text)
+            except OSError as e:
+                raise _bad_request(f"the config file could not be written: {e}") from e
         try:
             # Apply, do not "reload": a full reload re-downloads and recompiles
             # every blocklist, which is several seconds of the interface sitting
@@ -871,10 +915,8 @@ class APIServer:
             self.app.notify_workers()
         except Exception:
             log.exception("settings saved but could not be applied")
-            return web.json_response({"ok": True, "reloaded": False,
-                                      "restart": st.needs_restart(list(changes))})
-        return web.json_response({"ok": True, "reloaded": True,
-                                  "restart": st.needs_restart(list(changes))})
+            return False
+        return True
 
     async def cache_flush(self, request: web.Request) -> web.Response:
         self._require(request, "editor")

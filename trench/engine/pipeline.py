@@ -33,6 +33,7 @@ from . import zerox20
 from .access import PLAINTEXT, RecursionAcl
 from .context import QueryContext
 from .cookies import COOKIE
+from .localonly import is_local_only
 from .rebinding import scrub
 from .responses import build_block, build_rewrite
 
@@ -170,7 +171,7 @@ class Pipeline:
         if sec.tunnel_detection:
             from ..filter.tunnel import TunnelDetector
             self.tunnel = TunnelDetector(threshold=sec.tunnel_threshold,
-                                         block=sec.tunnel_block, workers=self.workers)
+                                         block=sec.tunnel_block)
         self._refresh_client_rules()
         self.enabled = True  # global blocking toggle
         # Timed pauses. `enabled` is the permanent switch; these are the "let it
@@ -361,6 +362,7 @@ class Pipeline:
         if bad is not None:
             ctx.response = ctx.query.reply(bad)
             ctx.action = "refused"
+            ctx.reason = _HEADER_REASON[bad]
             return
         if q is None:
             # RFC 7873 §5.4: a query with no question and a client cookie is how
@@ -431,6 +433,16 @@ class Pipeline:
                 ctx.reason = "dhcp lease"
                 return
 
+        # 2b-iii. Names that are never forwarded (see engine/localonly.py): after
+        # zones, discovery and DHCP names, which may answer them, and before
+        # the filter, whose lists have no business with them. A route the
+        # operator configured for one — the router's reverse zone — still wins.
+        if is_local_only(ctx.qname, self.local_suffixes) and not self._routed(ctx):
+            ctx.response = ctx.query.reply(Rcode.NXDOMAIN)
+            ctx.action = "authoritative"
+            ctx.reason = "local-only name"
+            return
+
         # 2c. Firefox's DoH canary. Checked ahead of any client-specific policy:
         # the point is that no client's browser gets to unilaterally exit every
         # policy below this by auto-enabling encrypted DNS.
@@ -481,7 +493,10 @@ class Pipeline:
                 self._block(ctx, reason=f"{cat} protection", source=cat)
                 return
 
-        # 6. filter (gravity + custom rules)
+        # 6. filter (gravity + custom rules). An allow rule, or a client whose
+        # policy says unfiltered, also exempts the name from the detectors
+        # below: they are guesses, and the operator has already answered.
+        screen = active and pol_block
         if active and fc.enabled and pol_block:
             # $client rules match on the source IP, a CIDR containing it, or the
             # client's configured name — all three appear in real lists.
@@ -504,12 +519,14 @@ class Pipeline:
                 ctx.reason, ctx.rule = d.reason, d.rule
                 return
             # ALLOW falls through to resolution (just skips blocking)
+            if d.action == Action.ALLOW:
+                screen = False
 
         # 6b. real-time DGA detection: a random-looking name is only a prior, so
         # it is flagged and still resolved. Blocking waits until the client has
         # actually been seen cycling through failed random names (a campaign) —
         # scoring alone cannot tell malware from WiFi-calling or CDN hostnames.
-        if active and self.dga is not None:
+        if screen and self.dga is not None:
             res = self.dga.check(ctx.qname, ctx.client_ip)
             if res.suspicious:
                 self.counters.note_dga(ctx.qname)
@@ -521,7 +538,7 @@ class Pipeline:
                 # flag-only: annotate and keep resolving
 
         # 6c. DNS tunneling / exfiltration detection
-        if active and self.tunnel is not None:
+        if screen and self.tunnel is not None:
             tun = self.tunnel.inspect(ctx.qname, ctx.qtype, ctx.client_ip)
             if tun.suspicious:
                 self.counters.note_tunnel(ctx.qname)
@@ -633,6 +650,10 @@ class Pipeline:
 
     def _forwarder_for(self, ctx: QueryContext):
         return self.forwarders.get(self._view(ctx), self.forwarder)
+
+    def _routed(self, ctx: QueryContext) -> bool:
+        router = getattr(self._forwarder_for(ctx), "router", None)
+        return router is not None and router.routed(ctx.qname)
 
     async def _forward(self, fwd: Message, ctx: QueryContext) -> Message:
         """Send upstream and record which server answered.
@@ -1030,6 +1051,14 @@ class Pipeline:
             answers = ([rr.rdata.to_text() for rr in resp.answers if rr.rtype != Type.OPT]
                        if getattr(ql, "records_answers", True) else [])
             ql.enqueue(record_from_ctx(qname, qtype, ctx, rcode, answers))
+
+
+_HEADER_REASON = {
+    Rcode.REFUSED: "a response, not a query",
+    Rcode.NOTIMP: "opcode not supported",   # e.g. a router's DNS UPDATE
+    Rcode.BADVERS: "EDNS version not supported",
+    Rcode.FORMERR: "not exactly one question",
+}
 
 
 def _header_error(query: Message) -> int | None:

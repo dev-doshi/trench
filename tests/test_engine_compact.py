@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from trench.filter import Action, FilterEngine, compile_rules
 from trench.filter.engine import _is_plain
-from trench.filter.rule import Rule
+from trench.filter.rule import Rule, operator_rules
 from trench.wire.rrtypes import Type
 
 
@@ -105,28 +105,11 @@ def test_duplicate_across_lists_keeps_first_source():
     assert e.match("dup.example").source == "list-a"
 
 
-# --- runtime edits ---
-def test_remove_clears_compact_entry():
-    e = eng("||ads.example^")
-    assert e.match("ads.example").action == Action.BLOCK
-    e.remove_rule("ads.example")
-    assert e.match("ads.example").action == Action.NONE
-    assert e.size == 0
-
-
-def test_add_deny_then_remove_roundtrip():
-    e = eng("")
-    e.add_deny("bad.example")
-    assert e.match("sub.bad.example").action == Action.BLOCK
-    e.remove_rule("bad.example")
-    assert e.match("bad.example").action == Action.NONE
-
-
 # --- API surface: operator rules only ---
 def test_custom_rules_excludes_imported_lists():
-    e = eng("||imported-one.example^\n||imported-two.example^", source="hagezi")
-    e.add_deny("blocked-by-admin.example")
-    e.add_allow("allowed-by-admin.example")
+    e = FilterEngine.compile([
+        *compile_rules("||imported-one.example^\n||imported-two.example^", "hagezi"),
+        *operator_rules(["allowed-by-admin.example"], ["blocked-by-admin.example"])])
     deny, allow = e.custom_rules()
     assert deny == ["blocked-by-admin.example"]
     assert allow == ["allowed-by-admin.example"]

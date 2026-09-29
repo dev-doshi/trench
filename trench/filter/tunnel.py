@@ -2,15 +2,19 @@
 
 Malware uses DNS as a covert channel (iodine, dnscat2, DNS data exfil): data is
 base32/hex-encoded into long, high-entropy subdomain labels and pulled out with
-TXT/NULL/CNAME queries, often at high volume to one registrable domain. This
-detector flags it structurally (per query) and volumetrically (rate to one
-domain from one client) — no signature feed.
+TXT/NULL/CNAME queries. This detector flags that shape per query — no
+signature feed.
+
+It used to add up to 0.4 for query *volume* to one "registrable" domain (the
+last two labels) from one client. Busy is not suspicious: a phone syncing
+through `*.s3.amazonaws.com`, a PTR sweep, an Apple device polling its push
+hosts all crossed the rate, and one more trivial signal took them over the
+threshold — on one deployment 96% of this detector's blocks scored exactly the
+threshold that way. A tunnel moving data has the payload shape regardless.
 """
 from __future__ import annotations
 
 import math
-import time
-from collections import defaultdict, deque
 from dataclasses import dataclass
 
 from ..wire.rrtypes import Type
@@ -35,11 +39,6 @@ def _entropy(s: str) -> float:
     return -sum((c / n) * math.log2(c / n) for c in counts.values())
 
 
-def _registrable(qname: str) -> str:
-    parts = qname.rstrip(".").lower().split(".")
-    return ".".join(parts[-2:]) if len(parts) >= 2 else qname
-
-
 def _hexish_ratio(s: str) -> float:
     if not s:
         return 0.0
@@ -48,50 +47,11 @@ def _hexish_ratio(s: str) -> float:
 
 
 class TunnelDetector:
-    def __init__(self, *, threshold: float = 0.45, block: bool = False,
-                 window: float = 60.0, rate_limit: int = 100, workers: int = 1):
+    def __init__(self, *, threshold: float = 0.45, block: bool = False):
         self.threshold = threshold
         self.block = block
-        self.window = window
-        self.workers = max(1, int(workers))
-        # queries / window to one 2LD before the volumetric flag. Divided per
-        # worker for the same reason as DGADetector.burst_min_names: each worker
-        # only sees its share of a client's traffic, so an unscaled 100 means
-        # 100 x N in aggregate before anything notices.
-        self.rate_limit = max(2, round(rate_limit / self.workers))
-        # Keyed on (client, registrable domain), both attacker-chosen. Unlike
-        # DGADetector this had no ceiling at all, so one host cycling distinct
-        # second-level domains retained a deque per name until the box died.
-        self.max_tracked = 20_000
-        self._seen: dict[tuple[str, str], deque] = defaultdict(deque)
 
-    def _volumetric(self, client: str, reg: str, now: float) -> float:
-        key = (client, reg)
-        if key not in self._seen and len(self._seen) >= self.max_tracked:
-            self._sweep(now)
-        dq = self._seen[key]
-        dq.append(now)
-        cutoff = now - self.window
-        while dq and dq[0] < cutoff:
-            dq.popleft()
-        if len(dq) >= self.rate_limit:
-            return min(0.4, 0.2 + (len(dq) - self.rate_limit) / (self.rate_limit * 5))
-        return 0.0
-
-    def _sweep(self, now: float) -> None:
-        """Drop entries whose window has emptied; clear outright if that is not
-        enough. This state is advisory, so losing it costs a detection delay,
-        never correctness — the same trade DGADetector makes."""
-        cutoff = now - self.window
-        for key, dq in list(self._seen.items()):
-            while dq and dq[0] < cutoff:
-                dq.popleft()
-            if not dq:
-                del self._seen[key]
-        if len(self._seen) >= self.max_tracked:
-            self._seen.clear()
-
-    def score(self, qname: str, qtype: int, client: str = "", now: float | None = None) -> float:
+    def score(self, qname: str, qtype: int) -> float:
         name = qname.rstrip(".").lower()
         labels = name.split(".")
         if len(labels) < 2:
@@ -117,13 +77,10 @@ class TunnelDetector:
             s += 0.15                            # NULL/TXT carrying a long payload
         if len(labels) >= 6:
             s += 0.05
-        s += self._volumetric(client, _registrable(name),
-                              now if now is not None else time.time())
         return min(1.0, s)
 
-    def inspect(self, qname: str, qtype: int, client: str = "",
-                now: float | None = None) -> TunnelResult:
-        sc = round(self.score(qname, qtype, client, now), 3)
+    def inspect(self, qname: str, qtype: int, client: str = "") -> TunnelResult:
+        sc = round(self.score(qname, qtype), 3)
         if sc >= self.threshold:
             return TunnelResult(True, sc, reason=f"DNS tunneling/exfil (score {sc:.2f})")
         return TunnelResult(False, sc)

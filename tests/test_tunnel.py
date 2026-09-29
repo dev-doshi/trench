@@ -1,4 +1,4 @@
-"""DNS tunneling/exfiltration detection: structural + volumetric + pipeline."""
+"""DNS tunneling/exfiltration detection: structural scoring + pipeline."""
 from __future__ import annotations
 
 import asyncio
@@ -29,14 +29,13 @@ def test_tunnel_separation():
     assert not any(d.inspect(n, Type.A).suspicious for n in NORMAL)
 
 
-def test_tunnel_volumetric():
-    d = TunnelDetector(rate_limit=20, window=60)
-    # many queries to one registrable domain from one client -> volumetric boost
-    base_score = d.score("x.beacon.evil.io", Type.A, "10.0.0.1", now=1000.0)
-    for i in range(40):
-        d.score(f"q{i}.beacon.evil.io", Type.A, "10.0.0.1", now=1000.0)
-    boosted = d.score("y.beacon.evil.io", Type.A, "10.0.0.1", now=1000.0)
-    assert boosted > base_score        # rate tracking raised the score
+def test_volume_alone_is_not_suspicious():
+    """Busy is not a tunnel: a device polling one domain hard scored its way
+    over the threshold on query rate alone."""
+    d = TunnelDetector()
+    for i in range(500):
+        assert not d.inspect(f"q{i}.a.b.c.s3.amazonaws.com", Type.A, "10.0.0.1").suspicious
+    assert not d.inspect("4.3.2.1.in-addr.arpa", Type.PTR, "10.0.0.1").suspicious
 
 
 class FakeForwarder:

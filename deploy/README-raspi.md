@@ -35,8 +35,10 @@ This board has 955 MB. The previous deployment was OOM-killed repeatedly
 1. **`workers: 0` (auto = 4).** Every worker held its own compiled blocklist,
    so worker count multiplied memory. The blocklist is now one file-backed
    shared table, built once by the supervisor before it forks and mapped by
-   every worker, so `raspi.yaml` runs `workers: 4` again. Each extra worker
-   costs its interpreter and private caches, not another copy of the lists.
+   every worker. Each extra worker still costs its interpreter, caches and
+   upstream connections (~100 MB), and on a 1 GB board shared with other
+   services that is swap. `raspi.yaml` runs `workers: 1`; a home LAN does not
+   need more.
 2. **Rule objects per domain.** The filter engine stored a `Rule` object plus a
    list wrapper for every domain (~600 B each). Modifier-free rules — 99.9% of
    any blocklist — are now stored as `suffix -> source` strings and only

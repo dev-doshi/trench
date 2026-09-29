@@ -26,10 +26,16 @@ class _HumanFormatter(logging.Formatter):
     COLORS = {"DEBUG": "\033[2m", "INFO": "\033[36m", "WARNING": "\033[33m", "ERROR": "\033[31m"}
     RESET = "\033[0m"
 
+    def __init__(self, color: bool = False):
+        super().__init__()
+        self.color = color
+
     def format(self, record: logging.LogRecord) -> str:
-        t = time.strftime("%H:%M:%S", time.localtime(record.created))
-        color = self.COLORS.get(record.levelname, "")
-        line = (f"{color}{t} {record.levelname[:4]:<4}{self.RESET} "
+        # A full date: `docker logs` and journald keep days of this, and a bare
+        # time of day cannot say which day an error was.
+        t = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(record.created))
+        color, reset = (self.COLORS.get(record.levelname, ""), self.RESET) if self.color else ("", "")
+        line = (f"{color}{t} {record.levelname[:4]:<4}{reset} "
                 f"{record.name}: {record.getMessage()}")
         # Every `log.exception(...)` in this package went out as a bare sentence
         # in the default (non-JSON) configuration, because the traceback was
@@ -48,7 +54,8 @@ def setup(level: str = "info", json_logs: bool = False) -> None:
     root.setLevel(getattr(logging, level.upper(), logging.INFO))
     root.handlers.clear()
     h = logging.StreamHandler(sys.stderr)
-    h.setFormatter(_JsonFormatter() if json_logs else _HumanFormatter())
+    h.setFormatter(_JsonFormatter() if json_logs
+                   else _HumanFormatter(color=sys.stderr.isatty()))
     root.addHandler(h)
     root.propagate = False
 

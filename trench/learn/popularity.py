@@ -124,5 +124,5 @@ async def prewarm(tracker: PopularityTracker, cache, resolve, *, top: int = 50,
             if resp is not None and resp.rcode == Rcode.NOERROR:
                 warmed += 1   # `resolve` has already cached it
     if warmed:
-        log.info("prewarmed %d cache entries from learned top-%d", warmed, top)
+        log.debug("prewarmed %d cache entries from learned top-%d", warmed, top)
     return warmed

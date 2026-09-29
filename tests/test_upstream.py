@@ -5,6 +5,7 @@ encrypted forwarding path end to end.
 """
 from __future__ import annotations
 
+import asyncio
 import socket
 from pathlib import Path
 
@@ -213,25 +214,20 @@ async def test_upstream_doq_needs_no_ipv6(monkeypatch):
 class _FlakyConn:
     """Stands in for `_StreamConn`, failing the first `fail_first` attempts.
 
-    `_stream` owns the reconnect loop; the connection object only reports what
-    the peer did. Each failure must be followed by a close, or the next attempt
-    reuses a socket the peer has already dropped.
+    `_stream` owns the retry loop; the connection object drops whichever link
+    failed (see `test_a_dropped_link_does_not_fail_its_replacement`).
     """
 
     def __init__(self, fail_first: int, exc: BaseException | None = None):
         self.fail_first = fail_first
         self.exc = exc or ConnectionResetError(104, "Connection reset by peer")
         self.attempts = 0
-        self.closes = 0
 
     async def query(self, wire: bytes) -> bytes:
         self.attempts += 1
         if self.attempts <= self.fail_first:
             raise self.exc
         return b"answer"
-
-    async def close(self) -> None:
-        self.closes += 1
 
 
 def _upstream(spec: str = "tls://9.9.9.9#dns.quad9.net"):
@@ -249,7 +245,50 @@ async def test_a_reset_handshake_is_retried_rather_than_failing_the_query():
     up._conn = _FlakyConn(fail_first=2)
     assert await up._stream(b"q") == b"answer"
     assert up._conn.attempts == 3
-    assert up._conn.closes == 2, "each failed attempt must drop the dead connection"
+
+
+@pytest.mark.asyncio
+async def test_a_dropped_link_does_not_fail_its_replacement(monkeypatch):
+    """The peer drops a connection with two queries in flight. Both must be
+    answered on one replacement. When the connection state was shared, a close
+    still waiting on the dead socket (a TLS close_notify, say) finished after a
+    sibling query had reconnected, and cleared the new connection's writer —
+    one idle-timeout from the upstream became a burst of SERVFAILs."""
+    conns = []
+    slow = [True]
+    wait_closed = asyncio.StreamWriter.wait_closed
+
+    async def slow_first_close(self):
+        if slow.pop() if slow else False:
+            await asyncio.sleep(0.1)
+        await wait_closed(self)
+
+    monkeypatch.setattr(asyncio.StreamWriter, "wait_closed", slow_first_close)
+
+    async def handle(reader, writer):
+        conns.append(writer)
+        first = len(conns) == 1
+        try:
+            for _ in range(2):
+                n = int.from_bytes(await reader.readexactly(2), "big")
+                msg = await reader.readexactly(n)
+                if not first:
+                    writer.write(n.to_bytes(2, "big") + msg)
+        except asyncio.IncompleteReadError:
+            pass
+        if first:
+            writer.close()
+
+    srv = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = srv.sockets[0].getsockname()[1]
+    up = _upstream(f"tcp://127.0.0.1:{port}")
+    try:
+        got = await asyncio.gather(up._stream(b"\x00\x01aa"), up._stream(b"\x00\x02bb"))
+        assert [g[2:] for g in got] == [b"aa", b"bb"]
+        assert len(conns) == 2, "the replacement connection was torn down too"
+    finally:
+        await up.close()
+        srv.close()
 
 
 @pytest.mark.asyncio
@@ -271,7 +310,6 @@ async def test_a_timeout_is_not_retried():
     with pytest.raises(TimeoutError):
         await up._stream(b"q")
     assert up._conn.attempts == 1
-    assert up._conn.closes == 0, "a timeout says nothing about the connection"
 
 
 @pytest.mark.asyncio

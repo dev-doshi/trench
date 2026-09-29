@@ -365,6 +365,68 @@ class UdpPool:
         self._socks = []
 
 
+class _Link:
+    """One TCP/TLS connection and the queries in flight on it.
+
+    Everything that belongs to a connection lives here rather than on
+    `_StreamConn`, which outlives many of them. When the pending table and the
+    closed flag were shared, the reader of a connection being torn down ran its
+    abort *after* the replacement had opened, failing queries that were in flight
+    on the new connection; each of those then closed the new one in turn. One
+    dropped idle connection became a burst of SERVFAILs.
+    """
+
+    def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        self.reader, self.writer = reader, writer
+        self.pending: dict[int, asyncio.Future] = {}
+        self.dead = False
+        self.last_rx = 0.0      # loop time of the latest reply read off the wire
+        self._next_id = 0
+        self._task = asyncio.ensure_future(self._read_loop())
+
+    async def _read_loop(self) -> None:
+        try:
+            while True:
+                n = int.from_bytes(await self.reader.readexactly(2), "big")
+                data = await self.reader.readexactly(n)
+                self.last_rx = asyncio.get_running_loop().time()
+                if len(data) >= 2:
+                    fut = self.pending.pop(int.from_bytes(data[:2], "big"), None)
+                    if fut is not None and not fut.done():
+                        fut.set_result(data)
+        except (asyncio.IncompleteReadError, ConnectionError, ssl.SSLError, OSError) as e:
+            self._fail(e)
+        except asyncio.CancelledError:
+            self._fail(ConnectionError("connection closed"))
+
+    def _fail(self, exc: BaseException) -> None:
+        self.dead = True
+        for fut in self.pending.values():
+            if not fut.done():
+                fut.set_exception(exc)
+        self.pending.clear()
+
+    @property
+    def usable(self) -> bool:
+        return not self.dead and not self.writer.is_closing()
+
+    def alloc_id(self) -> int:
+        for _ in range(65536):
+            self._next_id = (self._next_id + 1) & 0xFFFF
+            if self._next_id not in self.pending:
+                return self._next_id
+        raise RuntimeError("no free DNS message id")
+
+    async def close(self) -> None:
+        self._task.cancel()
+        self._fail(ConnectionError("closed"))
+        self.writer.close()
+        try:
+            await self.writer.wait_closed()
+        except Exception:
+            pass
+
+
 class _StreamConn:
     """One persistent DNS-over-TCP/TLS connection (RFC 7766).
 
@@ -378,78 +440,51 @@ class _StreamConn:
 
     def __init__(self, up: Upstream):
         self.up = up
-        self.reader: asyncio.StreamReader | None = None
-        self.writer: asyncio.StreamWriter | None = None
-        self._pending: dict[int, asyncio.Future] = {}
-        self._reader_task: asyncio.Task | None = None
+        self._link: _Link | None = None
         self._lock = asyncio.Lock()
-        self._next_id = 0
-        self.closed = True
-        self.last_rx = 0.0      # loop time of the latest reply read off the wire
 
-    async def _open(self) -> None:
-        spec = self.up.spec
-        ssl_ctx = self.up._tls_ctx(["dot"]) if spec.scheme == "tls" else None
-        self.reader, self.writer = await asyncio.wait_for(
-            asyncio.open_connection(
-                spec.host, spec.port, ssl=ssl_ctx,
-                server_hostname=(spec.sni or spec.host) if ssl_ctx else None),
-            self.up.timeout)
-        self.closed = False
-        self._reader_task = asyncio.ensure_future(self._read_loop())
+    @property
+    def closed(self) -> bool:
+        return self._link is None or not self._link.usable
 
-    async def _read_loop(self) -> None:
-        try:
-            while True:
-                hdr = await self.reader.readexactly(2)          # type: ignore[union-attr]
-                n = int.from_bytes(hdr, "big")
-                data = await self.reader.readexactly(n)         # type: ignore[union-attr]
-                self.last_rx = asyncio.get_running_loop().time()
-                if len(data) >= 2:
-                    fut = self._pending.pop(int.from_bytes(data[:2], "big"), None)
-                    if fut is not None and not fut.done():
-                        fut.set_result(data)
-        except (asyncio.IncompleteReadError, ConnectionError, ssl.SSLError, OSError) as e:
-            self._abort(e)
-        except asyncio.CancelledError:
-            self._abort(ConnectionError("connection closed"))
-        finally:
-            self.closed = True
+    async def _current(self) -> _Link:
+        async with self._lock:
+            link = self._link
+            if link is None or not link.usable:
+                if link is not None:
+                    await link.close()
+                spec = self.up.spec
+                ssl_ctx = self.up._tls_ctx(["dot"]) if spec.scheme == "tls" else None
+                reader, writer = await asyncio.wait_for(
+                    asyncio.open_connection(
+                        spec.host, spec.port, ssl=ssl_ctx,
+                        server_hostname=(spec.sni or spec.host) if ssl_ctx else None),
+                    self.up.timeout)
+                link = self._link = _Link(reader, writer)
+            return link
 
-    def _abort(self, exc: BaseException) -> None:
-        for fut in self._pending.values():
-            if not fut.done():
-                fut.set_exception(exc)
-        self._pending.clear()
-        self.closed = True
-
-    def _alloc_id(self) -> int:
-        for _ in range(65536):
-            self._next_id = (self._next_id + 1) & 0xFFFF
-            if self._next_id not in self._pending:
-                return self._next_id
-        raise RuntimeError("no free DNS message id")
+    async def _drop(self, link: _Link) -> None:
+        """Close `link`, and forget it only if it is still the current one: a
+        concurrent query may already have replaced it with a healthy one."""
+        if self._link is link:
+            self._link = None
+        await link.close()
 
     async def query(self, wire: bytes) -> bytes:
-        async with self._lock:
-            if self.closed or self.writer is None or self.writer.is_closing():
-                await self._open()
-        mid = self._alloc_id()
+        link = await self._current()
+        mid = link.alloc_id()
         out = mid.to_bytes(2, "big") + wire[2:]         # rewrite id for multiplexing
         loop = asyncio.get_running_loop()
         fut: asyncio.Future = loop.create_future()
-        self._pending[mid] = fut
+        link.pending[mid] = fut
         sent = loop.time()
-        writer = self.writer
         try:
-            self.writer.write(len(out).to_bytes(2, "big") + out)   # type: ignore[union-attr]
+            link.writer.write(len(out).to_bytes(2, "big") + out)
             # `drain` is inside the budget: a peer that stops reading fills the
             # send buffer, and an unbounded drain then held the query forever.
-            return await asyncio.wait_for(self._send_and_wait(fut), self.up.timeout)
+            return await asyncio.wait_for(self._send_and_wait(link, fut), self.up.timeout)
         except TimeoutError:
-            # Only the connection this query went out on: another query may
-            # already have replaced it with a fresh one.
-            if self.last_rx < sent and self.writer is writer:
+            if link.last_rx < sent:
                 # Not one reply on this connection in a whole timeout, to this
                 # query or any other. That is a dead path — a NAT that dropped
                 # the mapping, a peer that vanished without a FIN — not a slow
@@ -458,28 +493,22 @@ class _StreamConn:
                 # time out too. Drop it so the next query reconnects.
                 log.info("closing silent %s connection to %s",
                          self.up.spec.scheme, self.up)
-                await self.close()
+                await self._drop(link)
+            raise
+        except (ConnectionError, asyncio.IncompleteReadError, ssl.SSLError, OSError):
+            await self._drop(link)
             raise
         finally:
-            self._pending.pop(mid, None)
+            link.pending.pop(mid, None)
 
-    async def _send_and_wait(self, fut: asyncio.Future) -> bytes:
-        await self.writer.drain()                              # type: ignore[union-attr]
+    @staticmethod
+    async def _send_and_wait(link: _Link, fut: asyncio.Future) -> bytes:
+        await link.writer.drain()
         return await fut
 
     async def close(self) -> None:
-        if self._reader_task is not None:
-            self._reader_task.cancel()
-            self._reader_task = None
-        self._abort(ConnectionError("closed"))
-        if self.writer is not None:
-            self.writer.close()
-            try:
-                await self.writer.wait_closed()
-            except Exception:
-                pass
-            self.writer = None
-        self.closed = True
+        if self._link is not None:
+            await self._drop(self._link)
 
 
 def _check_response(resp: Message, sent: Message, *, check_id: bool) -> None:
@@ -710,7 +739,7 @@ class Upstream:
 
     async def _stream(self, wire: bytes) -> bytes:
         """Query over the pooled TCP/DoT connection, reopening if the peer drops
-        or refuses it."""
+        or refuses it. The connection drops the link that failed itself."""
         if self._conn is None:
             self._conn = _StreamConn(self)
         last: Exception = UpstreamError("no attempt was made")
@@ -727,7 +756,6 @@ class Upstream:
             except (ConnectionError, asyncio.IncompleteReadError, ssl.SSLError,
                     OSError) as e:
                 last = e
-                await self._conn.close()
         raise last
 
     async def _tcp(self, wire: bytes, ssl_ctx=None) -> bytes:
@@ -847,6 +875,10 @@ class Router:
             if group:
                 return group
         return self.default
+
+    def routed(self, qname: str) -> bool:
+        """True if the operator configured a domain route covering `qname`."""
+        return bool(self.routes) and any(self.routes.get(c) for c in suffixes(qname))
 
     async def close(self) -> None:
         """Release every upstream's persistent connection and HTTP session.

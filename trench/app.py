@@ -818,7 +818,7 @@ class App:
         if sec.tunnel_detection:
             from .filter.tunnel import TunnelDetector
             p.tunnel = TunnelDetector(threshold=sec.tunnel_threshold,
-                                      block=sec.tunnel_block, workers=self.nworkers)
+                                      block=sec.tunnel_block)
         else:
             p.tunnel = None
         if p.fast is not None:
