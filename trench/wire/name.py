@@ -119,10 +119,12 @@ class Name:
         return Name(self.labels[1:])
 
     def is_subdomain_of(self, other: Name) -> bool:
-        # Length-prefixed labels make a byte-suffix test exact: `ample.com`
-        # cannot match inside `example.com`, because the octet preceding
-        # "ample" there is 'x', not the length 5 the key would require.
-        return self.key.endswith(other.key)
+        # A byte-suffix test on the keys is almost exact — `ample.com` cannot
+        # match inside `example.com`, because the octet before "ample" there is
+        # 'x', not the length 5 — but not quite: a label may carry any octet,
+        # and `ab\007example.com` (one label, `ab` then octet 7 then "example")
+        # ends with the key of `example.com` without being under it.
+        return key_is_under(self.key, other.key)
 
     def canonicalize(self) -> Name:
         """Lowercase form, used when computing/verifying DNSSEC signatures."""
@@ -147,9 +149,22 @@ class Name:
 
 def wire_key(text: str) -> bytes:
     """The lowercased wire form of a name given as text — `Name.key` without
-    building a Name. Suffix containment in this encoding is exact: every label
-    is length-prefixed, so a shorter key can only match at a label boundary."""
+    building a Name. Test containment with `key_is_under`, not `endswith`."""
     return Name.from_text(text).key
+
+
+def key_is_under(key: bytes, suffix: bytes) -> bool:
+    """True when the name with wire key `key` is `suffix` or below it.
+
+    `endswith` is the fast filter; the walk confirms the match starts on a label
+    boundary, since a label's own octets can imitate a length prefix.
+    """
+    if not key.endswith(suffix):
+        return False
+    start, i = len(key) - len(suffix), 0
+    while i < start:
+        i += key[i] + 1
+    return i == start
 
 
 #: Every octet a label may carry verbatim: printable ASCII except `.` and `\`,

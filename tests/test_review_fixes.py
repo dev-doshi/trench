@@ -173,3 +173,66 @@ def test_the_qr_flag_constant_matches_the_wire_check():
     m = mkquery()
     m.set_flag(Flags.QR, True)
     assert not_a_query(m.to_wire())
+
+
+# --- names: suffix matches only on a label boundary --------------------------
+def test_a_label_imitating_a_length_octet_is_not_a_subdomain():
+    from trench.wire.name import Name, key_is_under
+    zone = Name.from_text("example.com")
+    tricky = Name([b"ab\x07example", b"com"])          # one label, then "com"
+    assert tricky.key.endswith(zone.key)                # what used to fool it
+    assert not tricky.is_subdomain_of(zone)
+    assert Name.from_text("www.example.com").is_subdomain_of(zone)
+    assert zone.is_subdomain_of(zone)
+    assert key_is_under(zone.key, Name.from_text(".").key)
+
+
+def test_flush_does_not_take_a_lookalike_label():
+    from trench.cache.cache import Cache
+    from trench.wire import Class, Question, Type
+    from trench.wire.name import Name
+    c = Cache()
+    tricky = mkquery()
+    tricky.questions[0] = Question(Name([b"ab\x07example", b"com"]), Type.A, Class.IN)
+    for m in (mkquery("www.example.com"), tricky, mkquery("other.org")):
+        c.put(c.key_for(m), mkanswer(m))
+    assert c.size == 3
+    assert c.flush("example.com") == 1
+    assert c.size == 2
+
+
+# --- cache ------------------------------------------------------------------
+def test_a_stale_hit_counts_as_recent_use():
+    import time as _t
+
+    from trench.cache.cache import Cache
+    c = Cache(max_entries=2)
+    a, b, d = mkquery("a.test"), mkquery("b.test"), mkquery("d.test")
+    ka, kb, kd = c.key_for(a), c.key_for(b), c.key_for(d)
+    c.put(ka, mkanswer(a))
+    c.put(kb, mkanswer(b))
+    c._store[ka].inserted = _t.monotonic() - 10_000     # expired, still retained
+    assert c.get(ka, allow_stale=True)[1] is True
+    c.put(kd, mkanswer(d))                               # evicts the coldest
+    assert ka in c._store and kb not in c._store
+
+
+def test_an_ecs_probe_is_one_miss():
+    from trench.cache.cache import Cache
+    c = Cache()
+    k = c.key_for(mkquery())
+    assert c.get(k._replace(ecs="198.51.100.0/24"), count_miss=False) is None
+    assert c.get(k) is None
+    assert c.stats["misses"] == 1
+
+
+def test_dump_async_round_trips(tmp_path):
+    from trench.cache.cache import Cache
+    c = Cache()
+    m = mkquery()
+    c.put(c.key_for(m), mkanswer(m))
+    path = tmp_path / "cache.json"
+    assert asyncio.run(c.dump_async(path)) == 1
+    assert not (tmp_path / "cache.json.tmp").exists()
+    fresh = Cache()
+    assert fresh.load(path) == 1

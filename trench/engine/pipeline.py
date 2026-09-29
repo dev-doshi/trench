@@ -63,6 +63,10 @@ _NO_NAMES: frozenset[str] = frozenset()
 #: fast path replayed inside a window the cache would not refresh in, it would
 #: schedule a refresh on every query for the rest of the entry's life.
 PREFETCH_WINDOW = 30
+#: Most prefetches in flight at once. Every popular entry near expiry spawns
+#: one, and without a bound a burst of them — after a restart restores a cache
+#: whose entries all expire together — hit the upstream all at the same moment.
+PREFETCH_MAX = 64
 
 
 class _Answer(NamedTuple):
@@ -513,10 +517,12 @@ class Pipeline:
         ecs_scope = self._ecs_scope(ctx)
         key = self.cache.key_for(ctx.query, ecs=ecs_scope, view=self._view(ctx))
         if key is not None:
-            hit = self.cache.get(key)
-            if hit is None and key.ecs:
+            hit = self.cache.get(key, count_miss=not key.ecs)
+            if key.ecs and hit is None:
                 # An answer the upstream marked scope 0 is filed globally, so a
                 # subnet-scoped miss still has to check there before forwarding.
+                # One lookup as far as the statistics go: counting both probes
+                # reported every ECS miss twice and halved the hit rate shown.
                 hit = self.cache.get(key._replace(ecs=""))
             if hit is not None:
                 resp, stale = hit
@@ -744,6 +750,9 @@ class Pipeline:
                             client_names=frozenset(
                                 n for n in (getattr(pol, "name", "") or "",) if n))
             except Exception:
+                # Fail open, as before — but visibly: a bug here silently
+                # switched CNAME-cloak blocking off for every answer it hit.
+                log.exception("cname-cloak inspection failed for %s", ctx.qname)
                 d = None
             if d is not None and d.blocked:
                 return _Answer(None, d)   # and deliberately not cached
@@ -876,7 +885,7 @@ class Pipeline:
         rem = self.cache.remaining(key)
         if rem is None or rem > PREFETCH_WINDOW:
             return
-        if key in self._prefetching:
+        if key in self._prefetching or len(self._prefetching) >= PREFETCH_MAX:
             return
         self._prefetching.add(key)
 
@@ -884,7 +893,9 @@ class Pipeline:
 
         async def refresh():
             try:
-                await self._fetch(ctx, key)
+                # Coalesced: a client query for the same key already in
+                # flight is joined, not duplicated upstream.
+                await self._fetch_coalesced(ctx, key)
             except Exception:
                 self.prefetch_failures += 1
             finally:

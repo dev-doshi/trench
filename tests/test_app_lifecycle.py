@@ -404,8 +404,10 @@ async def test_stop_persists_the_cache_when_configured(tmp_path):
 async def test_a_cache_dump_failure_does_not_break_shutdown(tmp_path, monkeypatch):
     app = App(_cfg(tmp_path, cache={"persist": True}))
     await app.setup_storage()
-    monkeypatch.setattr(app.cache, "dump",
-                        lambda p: (_ for _ in ()).throw(OSError("disk full")))
+    async def full(path):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(app.cache, "dump_async", full)
     await app.stop()                       # must not raise
     assert not (tmp_path / "cache.json").exists()
 

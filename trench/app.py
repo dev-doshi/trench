@@ -1228,7 +1228,7 @@ class App:
                 task.cancel()
         if self.primary and self.config.cache.persist:
             try:
-                self.cache.dump(self._cache_file())
+                await self.cache.dump_async(self._cache_file())
             except Exception:
                 log.exception("cache dump failed")
         if self.primary and self.learn is not None:

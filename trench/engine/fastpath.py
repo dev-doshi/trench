@@ -469,8 +469,13 @@ class FastPath:
                     return              # a cookie we cannot recompute: not recorded
                 cookie_at, q_cookie_at = found_r[0], found_q[0]
         answers = [rr.rdata.to_text() for rr in resp.answers if rr.rtype != Type.OPT]
-        if len(self.table) >= self.max_entries:
-            self.table.clear()              # cheaper than LRU, and rare
+        while self.table and len(self.table) >= self.max_entries:
+            # Oldest first, one at a time. Clearing the whole table here threw
+            # away every hot answer at once, and a busy resolver refilling past
+            # the limit did that over and over — each time a burst of queries
+            # fell back to the slow path together. A dict keeps insertion
+            # order, so this is FIFO at O(1) with no bookkeeping on a hit.
+            del self.table[next(iter(self.table))]
         self.table[key + self._policy_tag(ctx.client_ip, ctx.client_id)] = WireAnswer(
             bytes(blob), offs, base, time.monotonic(), qend, original=original,
             qname=ctx.qname or ".", qtype=type_to_text(ctx.qtype),

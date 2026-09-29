@@ -26,7 +26,7 @@ from dataclasses import dataclass, replace
 from typing import NamedTuple
 
 from ..wire import RR, Message, Type
-from ..wire.name import wire_key
+from ..wire.name import key_is_under, wire_key
 from ..wire.rrtypes import Rcode
 from .shared import key64
 
@@ -115,7 +115,8 @@ class Cache:
     def _clamp(self, ttl: int) -> int:
         return max(self.min_ttl, min(self.max_ttl, ttl))
 
-    def get(self, key: CacheKey, *, allow_stale: bool = False) -> tuple[Message, bool] | None:
+    def get(self, key: CacheKey, *, allow_stale: bool = False,
+            count_miss: bool = True) -> tuple[Message, bool] | None:
         """Return (response, is_stale) or None on miss. Response TTLs are
         decremented by elapsed age; is_stale True means serve-stale was used.
 
@@ -123,6 +124,9 @@ class Cache:
         data — see the module docstring. The entry is kept until its stale
         deadline passes, so the caller can come back for it if the refresh it
         goes on to attempt fails.
+
+        `count_miss=False` is for a probe the caller follows with another lookup
+        for the same question, which counts the miss if there is one.
         """
         if not self.enabled:
             return None
@@ -137,6 +141,10 @@ class Cache:
                 return self._with_ttl(entry.msg, max(0, int(remaining))), False
             if self.serve_stale and now < entry.stale_until:
                 if allow_stale:
+                    # Served, so recently used: without this the entry an
+                    # outage is leaning on sat at the cold end and was the
+                    # first thing evicted while the upstream was down.
+                    self._store.move_to_end(key)
                     self.stats["stale_hits"] += 1
                     return self._with_ttl(entry.msg, 1), True  # RFC 8767
                 # expired: treat as a miss so it gets refetched, but keep the
@@ -147,7 +155,8 @@ class Cache:
         shared_hit = self._shared_get(key, now)
         if shared_hit is not None:
             return shared_hit
-        self.stats["misses"] += 1
+        if count_miss:
+            self.stats["misses"] += 1
         return None
 
     def _shared_get(self, key: CacheKey, now: float):
@@ -265,8 +274,7 @@ class Cache:
                 self.shared.clear()
             return n
         d = wire_key(domain)
-        victims = [k for k in self._store
-                   if k.qname == d or k.qname.endswith(d) and len(k.qname) > len(d)]
+        victims = [k for k in self._store if key_is_under(k.qname, d)]
         for k in victims:
             self._store.pop(k, None)
             # also drop it from the shared L2, or the next miss reads the
@@ -289,8 +297,25 @@ class Cache:
 
     def dump(self, path) -> int:
         """Persist fresh entries (wire + remaining TTL) to disk."""
+        text, n = self._serialize()
+        _write_atomic(path, text)
+        return n
+
+    async def dump_async(self, path) -> int:
+        """`dump` with the file write off the event loop.
+
+        The entries are serialised here, on the loop — the store is not safe to
+        walk from another thread while queries still mutate it — and only the
+        write and fsync, which can stall for as long as the disk likes, move to
+        a worker thread.
+        """
+        import asyncio
+        text, n = self._serialize()
+        await asyncio.to_thread(_write_atomic, path, text)
+        return n
+
+    def _serialize(self) -> tuple[str, int]:
         import json
-        from pathlib import Path
         now = time.monotonic()
         items = []
         for key, e in self._store.items():
@@ -302,15 +327,7 @@ class Cache:
                 items.append([[key.qname.hex(), *key[1:]], e.msg.to_wire().hex(), rem])
             except Exception:
                 continue
-        # Written aside and renamed into place. The dump runs at shutdown, which
-        # is exactly when a supervisor's stop timeout sends SIGKILL; a write in
-        # place cut off there left a truncated file that restored nothing.
-        import os
-        target = Path(path)
-        tmp = target.with_name(target.name + ".tmp")
-        tmp.write_text(json.dumps(items))
-        os.replace(tmp, target)
-        return len(items)
+        return json.dumps(items), len(items)
 
     def load(self, path) -> int:
         """Restore a previously dumped cache (entries keep their remaining TTL)."""
@@ -356,3 +373,18 @@ class Cache:
             self._store.popitem(last=False)
             self.stats["evictions"] += 1
         return min(n, len(self._store))
+
+
+def _write_atomic(path, text: str) -> None:
+    """Written aside, synced and renamed into place. The dump runs at shutdown,
+    which is exactly when a supervisor's stop timeout sends SIGKILL; a write in
+    place cut off there left a truncated file that restored nothing."""
+    import os
+    from pathlib import Path
+    target = Path(path)
+    tmp = target.with_name(target.name + ".tmp")
+    with open(tmp, "w") as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, target)
