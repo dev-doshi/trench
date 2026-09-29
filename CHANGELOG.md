@@ -122,6 +122,13 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Encrypted-DNS discovery follows RFC 9462 §4 and RFC 9463 §5.1: the
+  `_dns.resolver.arpa` answer now carries `ipv4hint`/`ipv6hint` and the
+  designated name's A/AAAA records, so clients can upgrade without resolving
+  it in plaintext first; and with no IPv4 address configured the DHCP DNR
+  option is sent in ADN-only form instead of as a malformed instance with a
+  zero address length followed by SvcParams.
+
 - **Authoritative wildcards follow RFC 4592.** Only `*.<closest encloser>`
   synthesizes, so `*.example.com` no longer answers `x.foo.example.com` when
   `foo.example.com` exists, and nothing below an empty non-terminal. A

@@ -61,6 +61,19 @@ def test_svcb_answer_carries_one_record_per_encrypted_endpoint():
     assert doh[DOHPATH] == b"/dns-query{?dns}"    # a template, not a bare path
 
 
+def test_the_answer_carries_the_designated_resolvers_addresses():
+    """RFC 9462 §4: hints in the record and A/AAAA in the additional section,
+    so the client can upgrade without first resolving the target in plaintext."""
+    c = cfg(dot={"enabled": True})
+    c.server.discovery.addresses = ["192.168.1.2", "fd00::2"]
+    resp = from_config(c).answers(query(DDR_QNAME))
+    params = dict(iter_params(resp.answers[0].rdata.params))
+    assert params[4] == ipaddress.IPv4Address("192.168.1.2").packed
+    assert params[6] == ipaddress.IPv6Address("fd00::2").packed
+    extra = {(rr.name.to_text(), rr.rtype) for rr in resp.additional}
+    assert extra == {("dns.example.com.", Type.A), ("dns.example.com.", Type.AAAA)}
+
+
 def test_other_types_under_the_name_are_nodata_not_nxdomain():
     disc = from_config(cfg(dot={"enabled": True}))
     resp = disc.answers(query(DDR_QNAME, Type.A))
@@ -135,6 +148,18 @@ def test_dnr_option_round_trips():
     assert doq["params"][PORT] == struct.pack("!H", 8854)
     # ipv4hint/ipv6hint are forbidden here: the addresses field supersedes them
     assert 4 not in dot["params"] and 6 not in dot["params"]
+
+
+def test_without_an_ipv4_address_the_dnr_instance_is_adn_only():
+    """RFC 9463 §5.1: no Addr Length and no SvcParams at all, rather than a
+    zero-length address list followed by parameters."""
+    c = cfg(dot={"enabled": True}, doq={"enabled": True})
+    c.server.discovery.addresses = []
+    option = from_config(c).dhcp_option()
+    (length,) = struct.unpack_from("!H", option, 0)
+    assert length + 2 == len(option)                    # one instance
+    adn = b"\x03dns\x07example\x03com\x00"
+    assert option[2:] == struct.pack("!H", 1) + bytes([len(adn)]) + adn
 
 
 def packet(kind: MessageType, *, request_dnr: bool) -> DhcpPacket:
