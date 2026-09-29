@@ -58,6 +58,51 @@ Fuzzing found no crashes. I recommend adding Hypothesis targets like these to `t
 | Medium | 10 |
 | Low | 15 |
 
+## Fix status
+
+Every finding has been fixed or deliberately accepted. Each fix has regression tests that fail without it. The findings below are left as originally written, so the "Where" line numbers refer to the base commit.
+
+| ID | Status | What changed |
+| --- | --- | --- |
+| C1 | Fixed | Every CNAME hop is validated; an unsigned hop in a signed zone is BOGUS. |
+| H1 | Fixed | Unexpected validator errors are BOGUS (SERVFAIL, EDE 6) and are logged. |
+| H2 | Fixed | 0x20 bits, transaction IDs and source ports come from the OS CSPRNG. 0x20 is learned per upstream rather than dropped wholesale when one upstream folds case. |
+| H3 | Fixed | Lockout is checked and charged before the scrypt work, under a per-event-loop gate, and scrypt runs off the loop. A follow-up bound the gate to its own loop: shared across worker loops it raised "attached to a different loop". |
+| H4 | Fixed | TSIG secrets and DoH client tokens are redacted from settings reads for anyone below `admin`. Client identifiers are masked. |
+| M1 | Fixed | DNSSEC key and state caches store `min(TTL, RRSIG expiry)` and treat expired entries as misses. |
+| M2 | Fixed | Reserved labels (`wpad`, `isatap`, `localhost`, …) and static names cannot be registered. A name is bound to its lease, dropped on RELEASE, DECLINE or expiry, and not taken over by another chaddr while that lease is live. |
+| M3 | Fixed, with a residual | DISCOVER holds an address for 60 s instead of the lease time. Outstanding offers may fill at most a quarter of the pool, and an expired offer frees its address immediately. **Residual:** a host that follows up with REQUEST can still take real leases. Stopping that needs link-layer controls (DHCP snooping, port security), which a DHCP server cannot provide. |
+| M4 | Fixed | New `security.recursion_clients`. The default is dnsmasq's `local-service`: loopback, RFC 1918, ULA, link-local, 100.64/10, and whatever networks are attached to the host (so a global IPv6 LAN still works). Plain UDP/TCP queries from outside it get REFUSED, whose reply is no larger than the query. Startup warns when an exposed listener serves beyond the local networks with no rate limit. See the design notes below. |
+| M5 | Fixed | 100.64/10 is still treated as local (Tailscale and other CGNAT overlays use it). SVCB/HTTPS `ipv4hint`/`ipv6hint` values pointing at local addresses are scrubbed. |
+| M6 | Fixed | A `/ws` upgrade is refused when `Sec-Fetch-Site` says cross-site or same-site, or when `Origin` is not the request host (or, from a trusted proxy, `X-Forwarded-Host`). |
+| M7 | Fixed | Mutating requests get the same check as M6, which catches a `text/plain` simple request before its handler runs. Clients that send neither header, such as scripts and bearer-token callers, are not browsers and carry no ambient credential, so they are unaffected. |
+| M8 | Fixed | AD from an upstream is trusted only when the transport is encrypted **and** its certificate is verified. |
+| M9 | Fixed | Failures are counted per /64 for IPv6. The per-account lock does not apply to a prefix the account has logged in from before, so an outsider cannot lock the owner out. |
+| M10 | Fixed | Wildcards are matched with a linear-time matcher. The ReDoS guard walks the regex parse tree, so it catches nested and alternated quantifiers. |
+| L1 | Fixed | A BADSIG or BADKEY reply carries the error in a TSIG RR with an empty MAC, never one computed under the zone key. Only BADTIME, where the request MAC was valid, is signed. |
+| L2 | Fixed | Transfer IDs come from `secrets`. Replies must have QR set, the query's ID and, when a question is present, the zone and type asked for. A NOTIFY ack must also carry the NOTIFY's ID. |
+| L3 | Fixed | See H2. |
+| L4 | Fixed | Used TOTP codes are kept for as long as they can be valid, pruned by time rather than by count. |
+| L5 | Fixed | Turning TOTP off needs a current code, and guesses are subject to the same backoff as login. |
+| L6 | Fixed | Turning TOTP on or off ends the user's other sessions. Passwords can be changed only with the CLI (`trench passwd`), and it already says that the running daemon must be restarted to end existing sessions. |
+| L7 | Accepted | `/metrics` exposes aggregates only (counters and a count of distinct clients), which is the norm for Prometheus endpoints. Bind it to a trusted interface, or put it behind a proxy, if even that is sensitive. |
+| L8 | Fixed | Malformed path IDs return 404 and bad numbers return 400. `POST /pause` now also refuses `NaN`, which Python's JSON parser accepts and which slipped past both of its range comparisons. |
+| L9 | Fixed | DoH upstream bodies are capped at 65535 bytes, whether sized by `Content-Length` or chunked. The DoH server caps request bodies the same way. |
+| L10 | Fixed | A NOERROR or NXDOMAIN reply with no question is rejected. A bare FORMERR, SERVFAIL, NOTIMP or REFUSED is still accepted, because those legitimately omit it and are not cached as answers. |
+| L11 | Accepted | Sources can be edited only by `admin`, and an admin can already run code (L14), so a restriction here would not change who can do what. |
+| L12 | Fixed | AXFR, NOTIFY and UPDATE go through the per-client rate limit. Over the limit they are dropped. |
+| L13 | Fixed | Purging the query log needs `admin`. The purge is written to the audit table, which it does not touch. |
+| L14 | Accepted | Loading plugins is admin power by design. The admin role is what protects it, and H3, M6, M7 and M9 now guard that role. |
+| L15 | Partly fixed | The JSON API rejects `type` outside 0-65535, and request bodies are capped at 65535 bytes. **Residual:** the DoH listener has no per-client connection cap like `StreamLimits`. Deploy it behind a reverse proxy when it faces untrusted networks. |
+
+### Design notes for M4
+
+- **Only plain UDP/TCP is covered.** DoT, DoH and DoQ need a TLS handshake, so they cannot be used for reflection, and they are the protocols meant for clients outside the LAN.
+- **Authoritative zones stay open to everyone**, so ACME DNS-01 and public secondaries keep working. Only recursion is refused.
+- **An empty list means "local networks"**, not "everyone", so a settings form saved blank cannot lock the LAN out. `local` adds the default to a list of extra networks. To serve everyone, list `0.0.0.0/0` and `::/0`.
+- **Attached networks are read from the routing table**, ignoring routes shorter than /8 (IPv4) or /32 (IPv6), so a VPN that splits the default route into two /1s does not open the resolver.
+- **REFUSED is not an amplifier**, because the reply is no larger than the query. The rate limit still applies to it.
+
 ---
 
 ## Critical
@@ -431,7 +476,7 @@ r = parse_line("||a*a*a*a*a*a*a*a*a*b^"); r.regex.search("a"*60 + ".c")   # neve
 - `verify_wire:286-288` attaches `key=key, tsig=tsig` to the BADSIG result.
 - `sign_error` (`:220-241`) then MACs the error response with the real key.
 
-RFC 8945 §5.3.2 says a BADSIG/BADKEY response must be unsigned. As written, an unauthenticated sender gets an HMAC under the zone key over data it partly controls: its request MAC is folded into the response digest.
+RFC 8945 §5.3.2 says a BADSIG/BADKEY response must not carry a MAC. As written, an unauthenticated sender gets an HMAC under the zone key over data it partly controls: its request MAC is folded into the response digest.
 
 **Fix:** sign error replies only for BADTIME, where the request MAC was valid.
 
@@ -559,7 +604,7 @@ The `plugins` collection holds module paths, and they are imported at startup. A
 - **Fast-path replay:** it applies the rate limiter (`fastpath.py:345-346`).
 - **UDP `max_inflight` cap (2048):** drops excess datagrams before creating a task.
 - **Session cookie:** `HttpOnly`, `SameSite=Strict`, and `Secure` when TLS is on.
-- **Pause endpoint:** a `NaN` duration clamps to 0, so it is harmless.
+- **Pause endpoint:** a `NaN` duration clamped to 0, so it did no harm, but it was recorded as a pause. It is now refused (see L8).
 - **Query log SQL:** every filter is bound as a parameter, and API `limit` values are clamped.
 - **Cache key:** includes DO, CD, ECS scope and view. The on-disk dump is JSON, not pickle.
 - **Name decompression:** caps pointer hops and total length, and rejects forward pointers.
