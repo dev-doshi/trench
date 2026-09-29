@@ -291,3 +291,24 @@ def test_signing_an_error_never_raises():
     err = e.value
     err.key = TSIGKey.from_base64("k.", SECRET, algorithm="hmac-nonsense.")
     assert sign_error(b"\x00" * 12, err) == b"\x00" * 12
+
+
+def test_a_badsig_reply_is_never_signed():
+    """RFC 8945 §5.3.2. Signing it let anyone get an HMAC under the zone key
+    over a digest that includes a request MAC of their choosing (audit L1)."""
+    from trench.auth_zone.tsig import _locate_tsig, sign_error
+    key = _key()
+    signed, _ = sign_wire(_msg().to_wire(), key, time_signed=1000)
+    tsig_start, _, _ = _locate_tsig(signed)
+    bad = bytearray(signed)
+    bad[tsig_start - 1] ^= 0xFF
+    with pytest.raises(TSIGError) as e:
+        verify_wire(bytes(bad), {"xfr-key.": key}, now=1000)
+    assert e.value.tsig_error == 16
+    reply = _msg().to_wire()
+    forced = TSIGError("x", tsig_error=16, key=key, tsig=Message.parse(signed).additional[-1].rdata)
+    for err in (e.value, forced):
+        out = sign_error(reply, err)
+        if out != reply:                    # the error RR, but never a MAC
+            _, tsig, _ = _locate_tsig(out)
+            assert tsig.mac == b"" and tsig.error == 16

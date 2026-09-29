@@ -235,8 +235,9 @@ def sign_error(reply_wire: bytes, err: TSIGError, *,
 
     RFC 8945 §5.3.2. For BADTIME the `other` field carries our own 48-bit clock,
     which is the whole mechanism by which a peer with a skewed clock discovers
-    the skew and corrects it. When the failure was BADKEY we never identified a
-    key, so the reply necessarily goes back unsigned.
+    the skew and corrects it. Only BADTIME is signed: it is the one error that
+    follows a MAC that verified. BADKEY and BADSIG replies carry an empty MAC,
+    or anyone could have the zone key sign a digest of their choosing.
     """
     if err.key is None or err.tsig is None:
         return reply_wire
@@ -305,6 +306,8 @@ def verify_wire(wire: bytes, keyring: dict[str, TSIGKey], *,
     if len(got) > full or len(got) < max(10, full // 2):
         raise TSIGError("bad MAC length", tsig_error=16)  # BADSIG
     if not hmac.compare_digest(expected[:len(got)], got):
+        # The key rides along only to name the algorithm: sign_error answers
+        # BADSIG with an empty MAC, never one computed under this key.
         raise TSIGError("MAC verification failed", tsig_error=16,
                         key=key, tsig=tsig)  # BADSIG
     if tsig.error:
