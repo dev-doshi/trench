@@ -3,7 +3,8 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-# `trench` is taken on PyPI, so the distribution carries a suffix. It is the
+# The distribution carries a suffix so it cannot be confused with the unrelated
+# `trench` package, and the updater only accepts wheels named for it. It is the
 # only place the project is not simply called Trench: the import package,
 # both commands, the service and the image are all `trench`.
 name = "trench-dns"

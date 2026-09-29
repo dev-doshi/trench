@@ -38,8 +38,8 @@ jobs:
           pip install pip-audit
           pip install -e .
       # Audit the resolved dependency tree, not the environment: the
-      # environment also holds Trench itself, which is not on PyPI to be
-      # audited against, and under --strict that absence fails the job for a
+      # environment also holds Trench itself, which is not on any package
+      # index to be audited against, and under --strict that absence fails the job for a
       # reason nobody can act on. `pip freeze --exclude-editable` leaves
       # exactly the pinned dependencies, so --strict keeps its meaning — an
       # unauditable dependency is still a failure.

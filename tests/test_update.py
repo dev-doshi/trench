@@ -75,19 +75,28 @@ def test_prerelease_detection():
 
 
 # ────────────────────────────────────────────────────────────────── indexes ──
-def _index(*versions: str, digest: str = "ab" * 32, yanked: set[str] | None = None) -> dict:
-    yanked = yanked or set()
-    return {
-        "info": {"name": "trench-dns", "version": versions[-1] if versions else ""},
-        "releases": {
-            v: [{"packagetype": "bdist_wheel",
-                 "url": f"https://example.invalid/trench-{v}-py3-none-any.whl",
-                 "digests": {"sha256": digest},
-                 "size": 1234,
-                 "yanked": v in yanked}]
-            for v in versions
-        },
-    }
+def _index(*versions: str, digest: str = "ab" * 32, draft: set[str] | None = None,
+           prerelease: set[str] | None = None) -> list:
+    """The shape of GitHub's `GET /repos/{owner}/{repo}/releases`."""
+    draft, prerelease = draft or set(), prerelease or set()
+    return [
+        {"tag_name": f"v{v}", "draft": v in draft, "prerelease": v in prerelease,
+         "assets": [
+             {"name": f"trench_dns-{v}.tar.gz",
+              "browser_download_url": f"https://example.invalid/trench_dns-{v}.tar.gz",
+              "digest": "sha256:" + "cd" * 32, "size": 999},
+             {"name": f"trench_dns-{v}-py3-none-any.whl",
+              "browser_download_url":
+                  f"https://example.invalid/trench_dns-{v}-py3-none-any.whl",
+              "digest": f"sha256:{digest}", "size": 1234},
+         ]}
+        for v in reversed(versions)
+    ]
+
+
+def _wheel(index: list, version: str) -> dict:
+    entry = next(e for e in index if e["tag_name"] == f"v{version}")
+    return next(a for a in entry["assets"] if a["name"].endswith(".whl"))
 
 
 def test_the_newest_stable_release_wins():
@@ -107,10 +116,25 @@ def test_nothing_newer_means_nothing_to_do():
     assert pick_release(_index("1.9.0"), current="2.0.0") is None
 
 
-def test_a_yanked_artifact_is_not_offered():
-    """A yank is the publisher saying 'not this one'."""
-    index = _index("2.0.0", "2.1.0", yanked={"2.1.0"})
+def test_a_draft_release_is_not_offered():
+    """A draft is not published; it is the publisher saying 'not yet'."""
+    index = _index("2.0.0", "2.1.0", draft={"2.1.0"})
     assert pick_release(index, current="2.0.0") is None
+
+
+def test_a_release_github_marks_as_prerelease_is_skipped_on_stable():
+    """The flag on the release counts even when the tag looks final."""
+    index = _index("2.0.0", "2.1.0", prerelease={"2.1.0"})
+    assert pick_release(index, current="2.0.0") is None
+    got = pick_release(index, current="2.0.0", allow_prerelease=True)
+    assert got is not None and got.version == "2.1.0"
+
+
+def test_the_release_carries_the_wheel_its_digest_and_its_size():
+    got = pick_release(_index("2.0.0", "2.1.0", digest="AB" * 32), current="2.0.0")
+    assert got is not None
+    assert got.url == "https://example.invalid/trench_dns-2.1.0-py3-none-any.whl"
+    assert got.sha256 == "ab" * 32 and got.size == 1234
 
 
 def test_an_exact_version_can_be_pinned_which_is_how_rollback_works():
@@ -120,7 +144,7 @@ def test_an_exact_version_can_be_pinned_which_is_how_rollback_works():
 
 def test_a_release_with_no_wheel_is_not_installable():
     index = _index("2.1.0")
-    index["releases"]["2.1.0"][0]["packagetype"] = "sdist"
+    index[0]["assets"] = [a for a in index[0]["assets"] if not a["name"].endswith(".whl")]
     assert pick_release(index, current="2.0.0") is None
 
 
@@ -128,7 +152,9 @@ def test_a_release_with_no_digest_is_not_installable():
     """Without a digest there is nothing to verify the download against, and an
     unverifiable artifact is worse than no update."""
     index = _index("2.1.0")
-    index["releases"]["2.1.0"][0]["digests"] = {}
+    del _wheel(index, "2.1.0")["digest"]
+    assert pick_release(index, current="2.0.0") is None
+    _wheel(index, "2.1.0")["digest"] = "md5:" + "ab" * 16
     assert pick_release(index, current="2.0.0") is None
 
 
@@ -366,8 +392,9 @@ def test_the_artifact_name_comes_from_the_index_and_is_checked():
     from trench.ops.update import _artifact_name
 
     assert _artifact_name(
-        "https://files.pythonhosted.org/x/trench-2.1.0-py3-none-any.whl"
-    ) == "trench-2.1.0-py3-none-any.whl"
+        "https://github.com/dev-doshi/trench/releases/download/v2.1.0/"
+        "trench_dns-2.1.0-py3-none-any.whl"
+    ) == "trench_dns-2.1.0-py3-none-any.whl"
     # Anything that is not a wheel, or has no name at all, is refused outright.
     for hostile in ("https://x/trench-2.1.0.tar.gz", "https://x/", "https://x/..%2f"):
         with pytest.raises(UpdateError):
@@ -380,15 +407,13 @@ def test_the_artifact_name_comes_from_the_index_and_is_checked():
 
 @pytest.mark.asyncio
 async def test_an_index_for_another_project_is_refused(tmp_path):
-    """`trench` is a real, unrelated PyPI project (a deep-learning library), so
-    one wrong character in `updates.index` points the updater at somebody
-    else's code — and every other rail would pass it, because the digest comes
-    from that same index and their wheel imports fine."""
-    impostor = {"info": {"name": "trench", "summary": "Deep learning library"},
-                "releases": {"9.9.9": [{"packagetype": "bdist_wheel",
-                                        "url": "https://x/trench-9.9.9-py3-none-any.whl",
-                                        "digests": {"sha256": "ab" * 32},
-                                        "size": 1}]}}
+    """One wrong character in `updates.index` points the updater at somebody
+    else's releases — and every other rail would pass them, because the digest
+    comes from that same index and their wheel imports fine."""
+    impostor = [{"tag_name": "v9.9.9", "draft": False, "prerelease": False,
+                 "assets": [{"name": "trench-9.9.9-py3-none-any.whl",
+                             "browser_download_url": "https://x/trench-9.9.9-py3-none-any.whl",
+                             "digest": "sha256:" + "ab" * 32, "size": 1}]}]
     up = _updater(tmp_path, impostor, mode="auto")
     assert await up.check() is None                    # recorded, not raised
     assert "not 'trench-dns'" in up.status()["last_error"]
@@ -397,20 +422,35 @@ async def test_an_index_for_another_project_is_refused(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_an_index_that_names_nothing_is_refused(tmp_path):
-    up = _updater(tmp_path, {"releases": {}}, mode="auto")
+async def test_an_index_that_is_not_a_release_list_is_refused(tmp_path):
+    up = _updater(tmp_path, {"message": "Not Found"}, mode="auto")
     assert await up.check() is None
-    assert "unnamed project" in up.status()["last_error"]
+    assert "not a list of GitHub releases" in up.status()["last_error"]
+
+
+def test_a_single_release_object_is_accepted():
+    """`/releases/latest` answers with one release rather than a list."""
+    from trench.ops.update import _check_index
+
+    one = _index("2.1.0")[0]
+    assert _check_index(one) == [one]
+    got = pick_release(_check_index(one), current="2.0.0")
+    assert got is not None and got.version == "2.1.0"
 
 
 def test_the_distribution_name_is_compared_the_way_packaging_does():
     from trench.ops.update import _check_index
 
-    for spelling in ("trench-dns", "Trench_DNS", "trench.dns", "TRENCH--DNS"):
-        assert _check_index({"info": {"name": spelling}, "releases": {}})
-    for wrong in ("trench", "trenchdns", "trench-dnssec"):
+    def listing(wheel: str) -> list:
+        return [{"tag_name": "v2.1.0", "assets": [{"name": wheel}]}]
+
+    for spelling in ("trench_dns", "Trench_DNS", "trench.dns", "TRENCH__DNS"):
+        assert _check_index(listing(f"{spelling}-2.1.0-py3-none-any.whl"))
+    for wrong in ("trench", "trenchdns", "trench_dnssec"):
         with pytest.raises(UpdateError):
-            _check_index({"info": {"name": wrong}, "releases": {}})
+            _check_index(listing(f"{wrong}-2.1.0-py3-none-any.whl"))
+    # A listing with no wheels at all says nothing about whose it is.
+    assert _check_index([]) == []
 
 
 @pytest.mark.asyncio

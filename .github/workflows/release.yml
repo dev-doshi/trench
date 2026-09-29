@@ -10,9 +10,10 @@ on:
       tag:
         description: "Tag to release (e.g. v2.0.0)"
         required: true
-      # Manual runs rehearse by default. Publishing is irreversible — a PyPI
-      # version number can be yanked but never reused — so the button that is
-      # easy to press by accident must not be the one that claims a version.
+      # Manual runs rehearse by default. Publishing is effectively
+      # irreversible — installs that already updated themselves from a GitHub
+      # release keep whatever it held — so the button that is easy to press
+      # by accident must not be the one that claims a version.
       # A tag push is unaffected: it publishes, which is what a tag means.
       dry_run:
         description: "Rehearse only: run verify and the tests, publish nothing"
@@ -67,27 +68,6 @@ jobs:
       - run: python3 scripts/mypy_gate.py
       - run: pytest -q
 
-  pypi:
-    needs: [verify, test]
-    if: ${{ !inputs.dry_run }}
-    runs-on: ubuntu-latest
-    environment: release
-    permissions:
-      id-token: write        # trusted publishing — no long-lived API token
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: |
-          pip install build twine
-          python3 -m build
-          twine check dist/*
-      # Pinned by digest, not by tag: this step runs in the `release`
-      # environment with id-token: write, so a moved tag would be a
-      # supply-chain change nobody reviewed. Dependabot bumps the pin.
-      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
-
   ghcr:
     needs: [verify, test]
     if: ${{ !inputs.dry_run }}
@@ -135,8 +115,12 @@ jobs:
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
 
+  # The GitHub Release is the publication: installs from GitHub pull this
+  # wheel, and the updater (trench/ops/update.py) reads this release's assets
+  # and the sha256 GitHub records for each of them.
   github_release:
-    needs: [verify, pypi, ghcr]
+    needs: [verify, test, ghcr]
+    if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
     permissions:
       contents: write

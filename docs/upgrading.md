@@ -16,13 +16,26 @@ files keep working and the database migrates itself forward on first start.
 Anything that changes defaults or on-the-wire behaviour is called out in
 [the changelog](https://github.com/dev-doshi/trench/blob/main/CHANGELOG.md).
 
-## pip
+## From GitHub
+
+Let Trench do it — it checks
+[GitHub Releases](https://github.com/dev-doshi/trench/releases), verifies the
+wheel's sha256 and smoke-tests it before installing:
 
 ```bash
-pip install --upgrade trench
+trench upgrade apply
 systemctl restart trench
 journalctl -u trench -n 50
 ```
+
+Or by hand, into the same virtual environment it was installed into:
+
+```bash
+/opt/trench/bin/pip install --upgrade "git+https://github.com/dev-doshi/trench@v2.1.0"
+systemctl restart trench
+```
+
+From a checkout, `git pull && pip install -e .` instead.
 
 ## Docker
 

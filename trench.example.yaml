@@ -277,7 +277,7 @@ updates:
   mode: notify                # off | notify | auto
   channel: stable             # stable | prerelease
   check_interval_hours: 24    # 0 stops checking
-  index: "https://pypi.org/pypi/trench-dns/json"
+  index: "https://api.github.com/repos/dev-doshi/trench/releases?per_page=100"
   timeout: 15.0
   window: ""                  # "03:00-05:00" local time, may wrap midnight
   # Installing stages new code; the running process keeps serving the old code

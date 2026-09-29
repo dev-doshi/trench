@@ -55,7 +55,7 @@ name is resolved right now, including the RFC 8914 reason if one comes back.
 
 ```bash
 trench upgrade status        # what is installed, what is available
-trench upgrade check         # ask the release index now
+trench upgrade check         # ask GitHub Releases now
 trench upgrade apply         # install the newest release
 trench upgrade apply --version 2.1.0
 trench upgrade rollback      # go back to the previous version
@@ -68,8 +68,8 @@ cannot be sidestepped by running the command as someone else.
 `trench update` still means "refresh the blocklists", as it has since 1.x —
 hence `upgrade` for the software.
 
-What applying does and does not do: it downloads the artifact, checks its
-sha256 against the index, proves the new build imports and validates the live
+What applying does and does not do: it downloads the wheel from the GitHub
+release, checks its sha256 against the digest GitHub states for it, proves the new build imports and validates the live
 configuration inside a throwaway environment, and only then installs. The
 running process is not touched, so resolution and filtering continue across
 the whole of that, and an install is refused outright while a blocklist build

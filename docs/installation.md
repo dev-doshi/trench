@@ -4,16 +4,31 @@ Trench is pure Python and needs 3.11 or newer. Nothing else is required —
 the admin console ships prebuilt inside the package, so there is no Node
 toolchain and no build step.
 
-!!! warning "Nothing is published yet"
+Trench is installed from GitHub. It is not published to any package index,
+so a bare `pip install trench` does not install this project — whatever it
+finds under that name is somebody else's.
 
-    There is no tagged release, so **`pip install trench-dns` and
-    `docker pull ghcr.io/dev-doshi/trench` both fail today** — the wheel and
-    the image do not exist on a registry. The two routes below are the ones
-    that work right now, and both start from a checkout.
+!!! warning "Nothing is tagged yet"
 
-    `pip install trench` is worse than failing: the name `trench` on PyPI
-    belongs to an unrelated deep-learning library, and that is what you get.
-    This project publishes as **`trench-dns`**.
+    There is no tagged release, so the release wheel and
+    `docker pull ghcr.io/dev-doshi/trench` do not exist yet. Install from the
+    `main` branch or from a checkout until the first `v*` tag is pushed.
+
+## From GitHub
+
+Into a virtual environment of its own — that is also the one shape of install
+Trench can update itself in (see [Updating Trench itself](cli.md#updating-trench-itself)):
+
+```bash
+python3 -m venv /opt/trench
+/opt/trench/bin/pip install "git+https://github.com/dev-doshi/trench"
+```
+
+Pin a tag once releases exist:
+
+```bash
+/opt/trench/bin/pip install "git+https://github.com/dev-doshi/trench@v2.0.0"
+```
 
 ## From source
 
@@ -72,8 +87,11 @@ Neither of these works until a `v*` tag has been pushed and the release
 workflow has published the artifacts. They are here so the commands are
 written down, not because they will work today.
 
+Each [GitHub release](https://github.com/dev-doshi/trench/releases) carries
+the wheel as an asset, and GitHub shows its sha256 next to it:
+
 ```bash
-pip install trench-dns
+pip install https://github.com/dev-doshi/trench/releases/download/v2.0.0/trench_dns-2.0.0-py3-none-any.whl
 ```
 
 ```bash

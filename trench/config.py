@@ -457,9 +457,10 @@ class UpdatesConfig(Section):
     mode: Literal["off", "notify", "auto"] = "notify"
     channel: Literal["stable", "prerelease"] = "stable"
     check_interval_hours: int = 24        # 0 disables the periodic check
-    # The release index. PyPI's JSON API states a sha256 for every artifact, so
-    # the same response that names a version also proves which bytes are it.
-    index: str = "https://pypi.org/pypi/trench-dns/json"
+    # The release index: this project's GitHub Releases. The API states a
+    # sha256 for every asset, so the same response that names a version also
+    # proves which bytes are it.
+    index: str = "https://api.github.com/repos/dev-doshi/trench/releases?per_page=100"
     timeout: float = 15.0
     # "HH:MM-HH:MM" local time, may wrap midnight. Empty means any time.
     # Applies to `auto` only; an operator asking for an update gets it now.

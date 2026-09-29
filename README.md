@@ -33,10 +33,11 @@ It is pure Python, with no C extensions and no external resolver. That is a
 deliberate trade: you can read it, audit it, and patch it on the box it runs
 on, and you give up throughput against a C resolver to do so.
 
-> **Status.** The code is at 2.0.0 and CI is green, but nothing is tagged or
-> published yet, so install from a checkout or with Compose. When releases
-> start, the distribution will be `trench-dns` on PyPI (`trench` there belongs
-> to an unrelated project) and the image will be `ghcr.io/dev-doshi/trench`.
+> **Status.** The code is at 2.0.0 and CI is green, but nothing is tagged
+> yet, so install from GitHub or with Compose. Releases are published on
+> [GitHub Releases](https://github.com/dev-doshi/trench/releases) — that is
+> also where Trench looks for its own updates — and the image will be
+> `ghcr.io/dev-doshi/trench`.
 
 ## Quickstart
 
