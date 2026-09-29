@@ -9,7 +9,7 @@ import socket
 from pathlib import Path
 
 import pytest
-from support import blocked_engine
+from support import blocked_engine, free_port
 
 from trench.cache import Cache
 from trench.config import Config
@@ -23,14 +23,6 @@ from trench.wire.name import Name
 from trench.wire.rrtypes import Rcode
 
 CERT_DIR = Path("./data")
-
-
-def free_port() -> int:
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.bind(("127.0.0.1", 0))
-    p = s.getsockname()[1]
-    s.close()
-    return p
 
 
 def test_parse_upstream_forms():
