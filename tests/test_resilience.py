@@ -276,3 +276,32 @@ async def test_the_truncation_fallback_has_one_budget():
         assert time.monotonic() - t0 < 0.3, "each read got its own timeout"
     finally:
         srv.close()
+
+
+# --- retention: chunked ---
+@pytest.mark.asyncio
+async def test_retention_prunes_a_backlog_in_chunks(tmp_path, monkeypatch):
+    from trench.store import querylog as qlmod
+
+    monkeypatch.setattr(qlmod, "_PRUNE_CHUNK", 7)
+    d = dbmod.Database(tmp_path / "t.db")
+    await d.connect()
+    old = int((time.time() - 5 * 86400) * 1_000_000)
+    now = int(time.time() * 1_000_000)
+    await d.executemany("INSERT INTO querylog(ts, qname) VALUES (?, ?)",
+                        [(old + i, "old") for i in range(30)] + [(now, "new")])
+    statements: list[str] = []
+    real = d.execute
+
+    async def spy(sql, params=()):
+        statements.append(sql)
+        return await real(sql, params)
+
+    monkeypatch.setattr(d, "execute", spy)
+    ql = qlmod.QueryLog(d, retention_days=1)
+    assert await ql.retention_sweep() == 30
+    assert len(statements) == 5, "the backlog was not deleted in chunks"
+    rows = await d.fetchall("SELECT qname FROM querylog")
+    assert [r[0] for r in rows] == ["new"]
+    assert not d.conn._conn.in_transaction
+    await d.close()

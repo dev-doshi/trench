@@ -161,6 +161,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   longer hold a query in an unbounded send.
 - The TCP fallback for a truncated UDP reply gave connect, length prefix and
   body a full timeout each; the exchange now has one.
+- Query-log retention deleted the whole backlog in one transaction, holding the
+  write lock while the log writer queued behind it and shed records. It now
+  deletes in chunks of 5,000 and reports the rows it actually removed.
 - The container healthcheck probed a hardcoded port 53 while both `Config`'s
   default and `trench.example.yaml` listen on 5354, so the general-purpose
   Compose deployment marked a container unhealthy while it was resolving

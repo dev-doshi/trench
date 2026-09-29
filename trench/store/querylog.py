@@ -25,6 +25,12 @@ ANON_CLIENT_DOMAIN = 2
 NO_LOG = 3
 
 
+#: Rows per retention transaction; see `QueryLog.retention_sweep`.
+_PRUNE_CHUNK = 5000
+_PRUNE = ("DELETE FROM querylog WHERE rowid IN "
+          "(SELECT rowid FROM querylog WHERE ts < ? LIMIT ?)")
+
+
 @dataclass
 class QueryRecord:
     ts: int
@@ -239,10 +245,25 @@ class QueryLog:
             log.exception("querylog flush failed (%d rows)", len(rows))
 
     async def retention_sweep(self) -> int:
+        """Delete records older than `retention_days`, a chunk at a time.
+
+        One DELETE for the whole backlog — the first sweep after retention is
+        shortened, or after the process was down for a while — was one
+        transaction over millions of rows: the write lock held and the WAL
+        growing for its whole length, while the batched writer queued behind it
+        on the same connection and shed records once its queue filled. Chunks
+        commit separately and yield in between, so log writes interleave. The
+        count is what was actually deleted, not a separate COUNT beforehand
+        that rows arriving in between could make wrong.
+        """
         cutoff = int((time.time() - self.retention_days * 86400) * 1_000_000)
-        # One pass: the DELETE's own row count, rather than a COUNT(*) over the
-        # same range first — two full scans of the oldest end of the table.
-        n = await self.store.execute("DELETE FROM querylog WHERE ts < ?", (cutoff,)) or 0
+        n = 0
+        while True:
+            done = await self.store.execute(_PRUNE, (cutoff, _PRUNE_CHUNK))
+            n += max(done, 0)
+            if done < _PRUNE_CHUNK:
+                break
+            await asyncio.sleep(0)
         if n:
             log.info("retention: pruned %d query log rows", n)
         return n
