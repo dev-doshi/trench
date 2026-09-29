@@ -1,0 +1,336 @@
+# Trench code review
+
+**Scope:** the query hot path (`trench/engine/`, `trench/transport/`, `trench/cache/`, `trench/resolver/forwarder.py`, and the client half of `trench/transport/upstream.py`). I also looked at `clients/registry.py`, `engine/ratelimit.py`, `stats/counters.py`, `store/export.py` and the lifecycle parts of `app.py` to check for blocking I/O and unbounded growth. I did not review `resolver/recursive.py`, `resolver/dnssec/`, `api/`, `auth_zone/`, `dhcp/` or `ops/` in depth.
+
+**Branch reviewed:** `claude/beautiful-thompson-as41c7` @ `c5b3b5f`
+
+## Tooling results
+
+| Check | Result |
+|---|---|
+| `python3 scripts/mypy_gate.py` | Pass: no new type errors. 64 baselined findings no longer occur, so `--update` can shrink the baseline. |
+| `ruff check trench/ tests/ scripts/` | Pass: all checks passed. |
+| `pytest -q` (with `uv sync --extra dev`) | 2540 passed, 2 skipped, **7 failed**. All 7 failures come from the sandbox: the container has no IPv6 (`EAFNOSUPPORT` in `test_doq`, `test_doh3`, `test_upstream_doq`, `test_bind_do53_uses_inet6_for_a_v6_host`), and it runs as root, which defeats the three "unwritable directory" tests. None of the failures point at the code. |
+
+The pytest installed on the system has no project dependencies (collection fails on `import aiohttp`). Run the suite through `uv run pytest`.
+
+## Severity legend
+
+- **High**: wrong answers, a privacy leak, or a denial-of-service lever, reproduced against the code.
+- **Medium**: a correctness or robustness defect with a narrower trigger.
+- **Low**: maintainability or readability, a latent bug, or a test gap.
+
+Findings marked *Reproduced* were run with the script in the [appendix](#appendix-reproduction-script).
+
+---
+
+## `trench/engine/` and `trench/transport/base.py`
+
+### H1. The server replies to DNS *responses*, so two servers can be made to ping-pong (UDP reflection loop). *Reproduced*
+
+**Where:** `Pipeline._run` (`trench/engine/pipeline.py`, validate stage) and `transport/base.py::_formerr`.
+
+**What happens:**
+- A datagram with `QR=1` is parsed and answered with `REFUSED`.
+- A malformed datagram of 2 bytes or more is answered with a 12-byte `FORMERR`, which has `QR=1` set.
+
+Both replies are themselves responses. An attacker can spoof one packet from `victimA:53` to a Trench instance at `B:53`. B replies to A. If A is another Trench server (or any resolver that answers responses), A replies to B, and the loop keeps going with no further input from the attacker. The rate limiter does not stop the loop, because a rate-limited query also gets a `REFUSED` reply.
+
+The fast path already declines `QR=1` (`fastpath.query_key`), but it then hands the packet to the normal path, which does answer it.
+
+**Fix:**
+- In `_UDPProtocol.datagram_received` / `process_query`, drop any UDP datagram with the QR bit set before parsing it.
+- Send a FORMERR only when at least a full 12-byte header is present and `QR=0`.
+
+RFC 1035 behaviour is to ignore a response that arrives where a query was expected. Over TCP a reply is harmless, but dropping there too keeps the two transports consistent.
+
+**Test gap:** nothing asserts that a `QR=1` datagram gets no reply.
+
+### H2. Request coalescing copies one client's DNS cookie into another client's answer. *Reproduced*
+
+**Where:** `Pipeline._fetch_coalesced` together with `Pipeline._finalize`.
+
+**Why it happens:**
+1. `fut.set_result(answer)` wakes the followers through `call_soon`.
+2. The leader's own `resolve_ctx` is queued ahead of them. It runs `_finalize` on `answer.resp` first, and `_finalize` calls `set_option(COOKIE, …)` with the leader's client cookie and server cookie.
+3. Each follower then runs `detach(answer.resp)` on that already-finalized message.
+4. A follower whose query has EDNS but no cookie never overwrites the option.
+
+The result is that client B receives client A's client cookie and a server cookie bound to A's IP address.
+
+The cache module's docstring names this exact leak ("one client's cookie reach the next one"), and this path gets around the protection. The same mechanism also leaks the leader's EDE option into followers when the leader was blocked, and strips upstream OPT options from followers when the leader's query had no EDNS (`_finalize` sets `resp.edns = None` on the shared object).
+
+**Reproduction output:**
+```
+C leader cookie: b'AAAAAAAA\xaa\xda\xa5\xc9\x7f\xcf\xad<'
+C follower (sent no cookie) cookie: b'AAAAAAAA\xaa\xda\xa5\xc9\x7f\xcf\xad<'
+```
+
+**Fix:** have the leader take its own copy before it returns: `return _Answer(detach(answer.resp), None)` for the leader too, or store a detached copy in `fut`. That way nothing a client finalizes is shared. The more robust fix is for `_finalize` to strip `COOKIE` and `EXTENDED_ERROR` from any response before it adds its own.
+
+**Test gap:** `test_a_follower_gets_its_own_copy_of_the_answer` checks `a is not b`. It does not check that the *contents* the follower started from were untouched by the leader's finalize.
+
+### H3. Cache hits return the first asker's letter case in the question section. *Reproduced*
+
+**Where:** `Pipeline._finalize` only fills `resp.questions` when it is empty. `Cache._with_ttl` copies the stored question list, which keeps the casing of whoever populated the cache.
+
+```
+B cached question name: Example.COM. (asked eXaMpLe.cOm)
+```
+
+Downstream resolvers that use 0x20 (Unbound `use-caps-for-id`, and Trench's own `zerox20.verify`) treat a mismatched echo as a spoof and discard the answer. So pointing a 0x20-validating resolver at Trench fails on every cache hit and every coalesced follower.
+
+The fast path already handles this correctly: it patches `out[12:qend] = data[12:qend]`. That makes the two paths disagree, and `test_fastpath_equivalence.py` does not catch it because it never varies case between the recording query and the replayed one.
+
+**Fix:** in `_finalize`, always set `resp.questions = list(ctx.query.questions)` when the response's question matches the query's by key. It is one list copy.
+
+### M1. The safe-search chain bypasses `_fetch`, the per-group upstream, and the cache.
+
+**Where:** `Pipeline._safe_search_chain` calls `self.forwarder.resolve(sub)` directly.
+
+- **Invariant break:** `_fetch`'s docstring says it is "the only path by which an upstream answer enters this resolver". This call skips 0x20 verification, `sanitize`, the rebinding scrub and cloak inspection. The records it copies are rewritten to the target's owner name without any check.
+- **Wrong upstream:** it ignores `_forwarder_for(ctx)`. A client in a named upstream group has its safe-search lookups sent to the default resolver, which the group setting exists to prevent.
+- **No caching or coalescing:** every safe-search `A`/`AAAA` query for a search engine costs a full upstream round trip.
+- **Silent failure:** `except Exception: pass` hides every failure, including internal bugs.
+
+**Fix:** resolve the target with a synthetic `QueryContext` through `_fetch_coalesced` (with a cache key), in the same way `warm()` does.
+
+### M2. The stream frontend drops answers on half-close, and its idle timer cuts off slow in-flight queries. *Reproduced (half-close)*
+
+**Where:** `transport/stream.py::serve_stream`.
+
+When the peer half-closes after sending its queries (`shutdown(SHUT_WR)`, `nc -N`, and some stub resolvers do this), `_read` returns `None` and the loop breaks. The `finally` block then **cancels every in-flight task**, so the client gets no answers:
+
+```
+D bytes received after half-close: 0
+```
+
+The same `finally` runs when the idle read times out. A client that sends one query and then waits for an answer longer than `idle_timeout` loses it. For example, a recursive resolution or a slow upstream with `idle_timeout=10`. RFC 7766 §6.2.3 measures idleness from the last *activity*, and an outstanding query counts as activity.
+
+**Fix:**
+- On EOF or idle timeout, stop reading but `await asyncio.wait(inflight, timeout=...)` before closing. Cancel only on a hard error or at shutdown.
+- Only start the idle timer while `inflight` is empty.
+
+### L1. Cloak inspection swallows exceptions.
+
+`_fetch` wraps `inspect_cloak` in `except Exception: d = None`. A bug there silently disables CNAME-cloak blocking. The module's own comments argue that our own failures should be logged as errors (see `_resolve_upstream`). At minimum, add `log.exception`.
+
+### L2. The ECS fallback lookup double-counts misses.
+
+`_run` calls `cache.get(key)` and then `cache.get(key._replace(ecs=""))`. When the second call hits, the first has already incremented `stats["misses"]`, so the reported hit rate reads low. A `count_miss=False` flag on the first lookup would fix this.
+
+### L3. Prefetch has no concurrency bound and does not go through the coalescing table.
+
+`_maybe_prefetch` calls `_fetch` directly. A burst of popular names entering `PREFETCH_WINDOW` together, which is typical after a restart with a restored cache, launches one upstream query per key with no cap. A client query that arrives when the entry expires does not coalesce with a prefetch that is still in flight. A small semaphore, plus routing through `_fetch_coalesced`, fixes both.
+
+### L4. The fast path clears its whole table when full.
+
+`FastPath.store` calls `self.table.clear()` at `max_entries`. This is documented as a deliberate choice. The downside is that a busy server repeatedly drops to 0% replay all at once. An `OrderedDict` trimmed with `popitem(last=False)`, which `Cache` already does, costs about the same.
+
+---
+
+## `trench/cache/`
+
+### M3. `Cache.load` ignores `max_entries`, the TTL clamps and the shape of each row.
+
+- Restored entries are inserted without the trim loop that `put` and `_shared_get` run. A cache dumped with a larger `max_entries` (or edited by hand) restores above the configured bound, and stays there until the next `put`.
+- `ttl` is taken from the file as written: it is not clamped to the current `min_ttl`/`max_ttl` and not checked for being a positive int. After an operator lowers `max_ttl`, restored entries keep the old, longer lifetime.
+- `CacheKey(bytes.fromhex(...), *key_list[1:])` does not check field types. A malformed row can create a key that never matches anything but still takes a slot.
+
+**Fix:** run `self._clamp(int(ttl))`, skip rows where `ttl <= 0`, and trim after loading.
+
+### M4. `Cache.dump` is non-atomic and runs synchronously on the event loop at shutdown.
+
+`App.stop` calls `cache.dump()` before the frontends are stopped. That serializes up to `max_entries` messages to JSON on the loop thread while listeners are still accepting queries. `Path.write_text` also truncates the file before writing, so a crash or `SIGKILL` part-way through leaves a truncated file. `load` then discards the entire file.
+
+**Fix:** stop the frontends first (or run the dump in `asyncio.to_thread`), and write to a temporary file followed by `os.replace`.
+
+### L5. The memory bound counts entries, not bytes.
+
+`max_entries=100_000` is a count. Responses fetched over TCP can reach 64 KiB each, so the worst case is several GiB. By comparison, L2 caps each payload at 1232 bytes. Add a per-entry size cap for L1, such as skipping `put` for responses over a threshold, or add byte accounting.
+
+### L6. Targeted flush matching on wire suffixes is technically imprecise.
+
+`k.qname.endswith(d)` on wire-format keys works for ordinary names. A label containing a byte equal to a length octet (legal in wire format) can produce a false-positive suffix match. The consequence is only an extra eviction. Comparing label boundaries (for example, `wire_key` split into labels) would make the match exact.
+
+### L7. `get()` does not refresh LRU position on a stale hit.
+
+The stale-serve path does not call `move_to_end`. An entry that is actively being served stale during an upstream outage can be evicted before entries nobody reads. Small change, worth making given the RFC 8767 intent.
+
+---
+
+## `trench/transport/upstream.py` and `trench/resolver/forwarder.py`
+
+### M5. The DoQ upstream sends the client's message ID and opens a new QUIC connection for every query.
+
+- RFC 9250 §4.2.1: "the DNS Message ID **MUST** be set to 0." `_doq` sends `msg.to_wire()` with the client's ID. Strict servers may close the connection with `DOQ_PROTOCOL_ERROR`.
+- Each query runs `aioquic.connect(...)`, a full handshake. `self.timeout` does not bound that handshake, because `wait_for` covers only the response future. An unreachable DoQ upstream can therefore hold a query for aioquic's idle timeout rather than for `upstream.timeout`.
+- The protocol class is defined inside the method on every call.
+
+**Fix:** zero the ID (restore it on the response, as the TCP path does), put the whole `async with connect(...)` inside `wait_for`, and pool connections the way `_StreamConn` does for DoT.
+
+RFC 8484 §4.1 makes an ID of 0 a SHOULD for DoH as well. The comment `# RFC 8484: id is 0` next to `_check_response` is inaccurate: nothing sets it.
+
+### M6. `_StreamConn.query` has no timeout on `drain()`, and does not close the replaced writer.
+
+- `await self.writer.drain()` sits outside the `wait_for`. An upstream that stops reading (zero TCP window) blocks the query indefinitely. `Pipeline._resolve_upstream` has no overall deadline unless a stale entry exists. On UDP each blocked query also holds an `inflight` slot, so a stalled DoT upstream can eventually fill `udp_max_inflight`, and after that every UDP query is dropped.
+- When the read loop ends on EOF, `_abort` marks the connection closed but never closes `self.writer`. `_open` then overwrites it. The previous transport stays open until garbage collection, and DoT providers close idle connections often. The one-shot `_tcp` fallback has the same missing timeout on `drain`.
+
+**Fix:** wrap the whole write, drain and wait sequence in a single `wait_for(…, self.up.timeout)`, and close any previous writer inside `_open`.
+
+### L8. `fastest` demotes an upstream permanently after one failure.
+
+`failures` resets only on success, and an upstream sorted last is only asked when the head fails. So after a single transient error, a faster upstream can go unused indefinitely. Add decay or occasional probing, for example resetting `failures` after N seconds.
+
+### L9. `_tcp`'s `server_hostname` expression is hard to read (readability).
+
+`server_hostname=self.spec.sni or None if ssl_ctx else None` is correct, because it parses as `(sni or None) if ssl_ctx else None`. It still reads like a precedence bug, and it is spelled differently from the equivalent at line 296 (`(spec.sni or spec.host) if ssl_ctx else None`). Parenthesise it and use one form in both places.
+
+### L10. A spoofed response with a matching ID fails the query instead of being ignored.
+
+`_UdpSocket.datagram_received` resolves the waiter for any datagram with a matching ID. `_check_response` then raises on a question mismatch, which fails the whole query when it could have kept waiting for the genuine reply. This is low severity, since the spoofer still has to guess the ID and the outcome is a SERVFAIL rather than poisoning. The more robust approach is to validate before resolving the future.
+
+---
+
+## `trench/transport/doh.py`, `trench/transport/doq.py`
+
+### L11. DoH rejects a valid `Content-Type` with parameters.
+
+`request.headers.get("Content-Type") != "application/dns-message"` is an exact string comparison, so `application/dns-message; charset=…` gets a 415 response. Compare `request.content_type` (the parsed media type) instead.
+
+### L12. The DoQ server reads the peer address from private aioquic state.
+
+`self._quic._network_paths[0].addr[0]` is private API. It breaks silently (`"?"` for every client, which merges every client into one policy and one rate-limit bucket) if aioquic changes it. Capture the address in `connection_made` or from the transport's `peername`.
+
+### L13. The DoQ server can answer a stream twice.
+
+If a stream's buffer is `_complete` before `end_stream` arrives, the answer task starts and the buffer is removed. A later `StreamDataReceived` on the same stream then starts a new buffer and, if `end_stream` is set, a second `_answer`. Track the IDs of streams already answered.
+
+---
+
+## Async and blocking-I/O audit
+
+| Location | Verdict |
+|---|---|
+| `clients/registry._arp_lookup` | OK: reads an in-memory table; the refresh runs in a worker thread. |
+| `store/export.QueryExport.write` | OK: called through `asyncio.to_thread`. |
+| `gravity/manager` local list read | OK: `asyncio.to_thread`. |
+| `Cache.dump` / `Cache.load`, `learn.dump` / `learn.load` in `App.start` / `App.stop` | **Blocking on the loop**; see M4. Tolerable at start-up, but not at shutdown while listeners are still serving. |
+| `SharedCache.get/put/clear` | Takes a cross-process `multiprocessing.Lock` on the loop thread. Critical sections are short, but a worker killed while holding a stripe lock wedges every reader of that stripe for good (the docstring acknowledges this). Consider a lock-free seqlock or timed acquires. |
+| `app.py:354` zone file `read_text` | Start-up only; acceptable. |
+
+## Unbounded-growth audit
+
+The rate limiter (`max_keys`), the stats counters (`TopCounter` caps), the client policy LRU, the fast-path table and `Cache` (by entry count) are all bounded. The exceptions are L5 (a count bound, not a byte bound) and M3 (the bound is not applied on `load`). `Pipeline._client_pause` grows only through operator action.
+
+## Suggested regression tests
+
+1. A UDP datagram with `QR=1`, and a 12-byte FORMERR-shaped packet, get **no** reply (H1).
+2. Coalesced follower with EDNS and no cookie → response carries no `COOKIE` option (H2).
+3. A cached answer asked with different letter case echoes the asker's case, on both the normal path and the fast path (H3), and the fast-path equivalence corpus includes mixed-case replays.
+4. A TCP client that half-closes after sending N pipelined queries receives N answers (M2).
+5. `Cache.load` of a dump larger than `max_entries` ends at `size == max_entries`, and restored TTLs respect `max_ttl` (M3).
+6. The DoQ upstream sends message ID 0 (M5).
+
+## Appendix: reproduction script
+
+Run it with `uv run python repro.py` from the repository root. Output on `c5b3b5f`:
+
+```
+A server answered a QR=1 packet: qr=True rcode=5
+A server answered 8-byte garbage with QR set: 123480010000000000000000
+B cached question name: Example.COM. (asked eXaMpLe.cOm)
+C leader cookie: b'AAAAAAAA\xaa\xda\xa5\xc9\x7f\xcf\xad<'
+C follower (sent no cookie) cookie: b'AAAAAAAA\xaa\xda\xa5\xc9\x7f\xcf\xad<'
+D bytes received after half-close: 0
+```
+
+```python
+import asyncio, socket, sys
+from trench.cache import Cache
+from trench.config import Config
+from trench.engine import Pipeline
+from trench.filter import FilterEngine, compile_rules
+from trench.stats import Counters
+from trench.wire import RR, Class, Message, Question, Type
+from trench.wire import rdata as R
+from trench.wire.edns import Edns
+from trench.wire.name import Name
+from trench.wire.rrtypes import Flags, EDNSOption
+from trench.transport.do53 import Do53Server
+
+class Up:
+    def __init__(self, delay=0.0): self.delay=delay; self.calls=0
+    async def resolve(self, q, note=None):
+        self.calls += 1
+        await asyncio.sleep(self.delay)
+        r = q.reply(0)
+        r.answers.append(RR(q.question.name, Type.A, Class.IN, 300, R.A("1.2.3.4")))
+        return r
+
+def pipe(up, sec=None):
+    raw = {"security": sec} if sec else {}
+    return Pipeline(filter_engine=FilterEngine.compile(compile_rules("", "t")),
+                    cache=Cache(), forwarder=up, counters=Counters(),
+                    config=Config.model_validate(raw))
+
+def q(name, txid=1, edns=False, cookie=None):
+    m = Message(id=txid); m.set_flag(Flags.RD, True)
+    m.questions.append(Question(Name.from_text(name), Type.A, Class.IN))
+    if edns or cookie:
+        m.edns = Edns(udp_size=1232)
+        if cookie: m.edns.set_option(EDNSOption.COOKIE, cookie)
+    return m
+
+async def case_b():
+    p = pipe(Up())
+    await p.resolve(q("Example.COM"), "10.0.0.1")
+    r = await p.resolve(q("eXaMpLe.cOm", 2), "10.0.0.2")
+    print("B cached question name:", r.question.name.to_text(), "(asked eXaMpLe.cOm)")
+
+async def case_c():
+    p = pipe(Up(0.05), {"dns_cookies": True})
+    a, b = await asyncio.gather(
+        p.resolve(q("example.com", 1, cookie=b"AAAAAAAA"), "10.0.0.1"),
+        p.resolve(q("example.com", 2, edns=True), "10.0.0.2"))
+    print("C leader cookie:", a.edns.get_option(EDNSOption.COOKIE))
+    print("C follower (sent no cookie) cookie:", b.edns and b.edns.get_option(EDNSOption.COOKIE))
+
+async def case_a():
+    p = pipe(Up())
+    srv = Do53Server(p, "127.0.0.1", 0, tcp=False); await srv.start()
+    port = srv._udp_transport.get_extra_info("sockname")[1]
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.setblocking(False)
+    s.bind(("127.0.0.1", 0))
+    resp = q("example.com"); resp.flags |= Flags.QR   # a *response* packet
+    loop = asyncio.get_running_loop()
+    await loop.sock_sendto(s, resp.to_wire(), ("127.0.0.1", port))
+    try:
+        data = await asyncio.wait_for(loop.sock_recv(s, 4096), 1)
+        m = Message.parse(data)
+        print("A server answered a QR=1 packet: qr=%s rcode=%s" % (m.qr, m.rcode))
+    except asyncio.TimeoutError:
+        print("A no reply to QR=1 packet")
+    await loop.sock_sendto(s, b"\x12\x34\x80\x00" + b"\x00"*4, ("127.0.0.1", port))
+    try:
+        data = await asyncio.wait_for(loop.sock_recv(s, 4096), 1)
+        print("A server answered 8-byte garbage with QR set:", data.hex())
+    except asyncio.TimeoutError:
+        print("A no reply to garbage")
+    await srv.stop()
+
+async def case_d():
+    p = pipe(Up(0.05))
+    srv = Do53Server(p, "127.0.0.1", 0, udp=False); await srv.start()
+    port = srv._tcp_server.sockets[0].getsockname()[1]
+    r, w = await asyncio.open_connection("127.0.0.1", port)
+    wire = q("example.com").to_wire()
+    w.write(len(wire).to_bytes(2,"big") + wire); await w.drain()
+    w.write_eof()     # half-close: "no more queries", still reading
+    data = await r.read()
+    print("D bytes received after half-close:", len(data))
+    await srv.stop()
+
+for c in (case_a, case_b, case_c, case_d):
+    asyncio.run(c())
+```
