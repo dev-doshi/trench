@@ -71,10 +71,32 @@ Then `reboot`. Afterwards `docker inspect trench --format '{{.HostConfig.Memory}
 should report `734003200` instead of `0`. Until then, memory safety rests on the
 sizing above rather than on enforcement.
 
+## Running as `trench`
+
+`raspi.yaml` sets `server.user: trench`: the process binds :53 as root and then
+becomes uid/gid 1000. The container has every capability dropped, so even
+before the drop its root cannot open a file it does not own or reach through
+its mode. Files in the data volume must therefore be owned by root, group 1000,
+and group-writable; the directory is already `root:trench 2775`, so anything
+created later inherits the group. After restoring a backup into the volume:
+
+```bash
+V=/var/lib/docker/volumes/deploy_trench-data/_data
+chown 0:1000 $V/* && chmod 660 $V/*
+chown 0:1000 /opt/trench/deploy/raspi.yaml && chmod 664 /opt/trench/deploy/raspi.yaml
+```
+
+The database is re-tightened to 0600 on start, which is fine with one worker:
+it is opened before the drop and kept open. Sibling workers open it read-only
+after the drop and cannot, which is one more reason this board runs one.
+
 ## Bootstrap gotcha
 
 The Pi resolves DNS *through this container*, so while it is stopped Docker
-cannot reach the registry to pull or build. Before a rebuild:
+cannot reach the registry to pull or build. (Builds used to fail while it was
+running too: containers on the Docker bridge were answered from the bridge
+address and discarded the reply. Fixed in the Do53 transport.) Before a
+rebuild with the container stopped:
 
 ```bash
 cp /etc/resolv.conf /root/resolv.conf.bak
