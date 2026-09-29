@@ -33,6 +33,8 @@
  *     is to read it back to them.
  */
 
+import { BLOCKED_ACTIONS, kindOf, type Kind as OutcomeKind } from "./outcome.ts";
+
 // ---------------------------------------------------------------- row shape
 /** One persisted query-log row, as the API returns it. */
 export interface Row {
@@ -92,6 +94,16 @@ function lex(src: string): Tok[] {
       out.push({ k: "word", v, quoted: true });
       i = j + 1;
       continue;
+    }
+    // `|` and `&` are the symbolic or/and, but only standing alone: inside a
+    // bareword they are data, and adblock rule text (`||example.com^`) is full
+    // of them. `||` and `&&` are accepted for the same reason people type them.
+    if (c === "|" || c === "&") {
+      let j = i + 1;
+      if (src[j] === c) j++;
+      const before = i === 0 || " \t\n()".includes(src[i - 1]);
+      const after = j >= src.length || " \t\n()".includes(src[j]);
+      if (before && after) { out.push({ k: "op", v: c }); i = j; continue; }
     }
     const op = OPS.find((o) => src.startsWith(o, i));
     if (op) { out.push({ k: "op", v: op }); i += op.length; continue; }
@@ -169,12 +181,26 @@ export const FIELDS: Record<string, FieldDef> = {
   },
 };
 
-/** Barewords that are outcome shorthands rather than substring searches. */
-const ACTION_WORDS: Record<string, string> = {
-  blocked: "blocked", refused: "blocked", cached: "cached", forwarded: "forwarded",
-  failed: "failed", local: "authoritative", authoritative: "authoritative",
-  rewrite: "rewrite", safesearch: "safesearch", ratelimited: "ratelimited",
+/** Barewords that mean an outcome *as the console draws it*.
+ *
+ * `blocked` used to mean `action:blocked`, while every row the resolver
+ * refused, rate-limited or safe-searched was painted red as well — so the
+ * search for the red rows found fewer of them than the colour showed. These
+ * words now go through the same classifier as the colours (`kindOf`). */
+const KIND_WORDS: Record<string, OutcomeKind> = {
+  blocked: "blocked", refused: "blocked", cached: "cache", forwarded: "upstream",
+  failed: "failed", local: "local",
 };
+
+/** Barewords that name one specific recorded action. */
+const ACTION_WORDS: Record<string, string> = {
+  authoritative: "authoritative", rewrite: "rewrite", safesearch: "safesearch",
+  ratelimited: "ratelimited",
+};
+
+/** Values the log records in `action`, for completion after `action:`. */
+const ACTIONS = ["blocked", "refused", "ratelimited", "safesearch", "cached", "forwarded",
+                 "failed", "authoritative", "rewrite"];
 
 /** Barewords that are computed predicates with no field of their own. */
 const FLAGS: Record<string, { test: (r: Row, c: Ctx) => boolean; help: string }> = {
@@ -199,6 +225,7 @@ export type Node =
   | { t: "or"; a: Node; b: Node }
   | { t: "cmp"; field: string; op: string; value: string }
   | { t: "flag"; name: string }
+  | { t: "kind"; kind: OutcomeKind }
   | { t: "free"; value: string };
 
 function parse(toks: Tok[]): Node {
@@ -227,6 +254,7 @@ function parse(toks: Tok[]): Node {
       if (isWord("and")) { p++; }
       else if (peek().k === "op" && (peek() as any).v === "&") { p++; }
       else if (peek().k === "eof" || peek().k === "rparen" || isWord("or")) return left;
+      else if (peek().k === "op" && (peek() as any).v === "|") return left;
       left = { t: "and", a: left, b: unary() };
     }
   }
@@ -248,34 +276,96 @@ function parse(toks: Tok[]): Node {
     if (t.k === "lparen") {
       p++;
       const inner = expr();
-      if (peek().k !== "rparen") throw new QueryError("missing )", p);
+      if (peek().k !== "rparen") throw new QueryError("a ( is never closed — add the missing )", p);
       p++;
       return inner;
     }
-    if (t.k !== "word") throw new QueryError("expected a term", p);
+    if (t.k === "eof") {
+      throw new QueryError(p === 0 ? "expected a term"
+        : "the query stops short — something is missing after the last word", p);
+    }
+    if (t.k === "rparen") throw new QueryError("a ) has nothing to close, or nothing before it", p);
+    if (t.k !== "word") {
+      throw new QueryError(t.k === "op" && (t.v === "|" || t.v === "&")
+        ? `"${t.v}" needs a term on both sides`
+        : `"${(t as any).v}" needs a field before it, as in ms>40 or client=10.0.4.71`, p);
+    }
     p++;
     const next = peek();
     if (next.k === "op" && next.v !== "|" && next.v !== "&") {
       const op = next.v;
       p++;
       const vtok = peek();
-      if (vtok.k !== "word") throw new QueryError(`expected a value after ${op}`, p);
+      if (vtok.k !== "word") throw new QueryError(`expected a value after ${t.v}${op}`, p);
       p++;
       const field = t.v.toLowerCase();
-      if (!FIELDS[field]) throw new QueryError(`unknown field "${field}"`, p);
+      if (!FIELDS[field]) throw new QueryError(unknownField(field), p);
+      if (FIELDS[field].kind === "num" && (vtok.v.trim() === "" || Number.isNaN(Number(vtok.v)))) {
+        // Silently matching nothing is the worst answer a filter can give:
+        // `ms>fast` read back as a sentence and returned zero rows.
+        throw new QueryError(`${field} takes a number, as in ${field}${op === ":" ? ">" : op}40`, p);
+      }
+      if (FIELDS[field].kind === "text" && op !== ":" && op !== "=" && op !== "!=") {
+        throw new QueryError(`${field} is text; compare it with : = or !=, not ${op}`, p);
+      }
       return { t: "cmp", field, op, value: vtok.v.toLowerCase() };
     }
     const w = t.v.toLowerCase();
-    if (!t.quoted && ACTION_WORDS[w]) return { t: "cmp", field: "action", op: ":", value: ACTION_WORDS[w] };
+    if (!t.quoted && KIND_WORDS[w]) return { t: "kind", kind: KIND_WORDS[w] };
+    if (!t.quoted && ACTION_WORDS[w]) return { t: "cmp", field: "action", op: "=", value: ACTION_WORDS[w] };
     if (!t.quoted && FLAGS[w]) return { t: "flag", name: w };
     return { t: "free", value: w };
   }
 
   if (peek().k === "eof") return { t: "all" };
   const root = expr();
-  if (peek().k !== "eof") throw new QueryError("unexpected trailing input", p);
+  if (peek().k !== "eof") {
+    throw new QueryError(peek().k === "rparen"
+      ? "a ) has no matching (" : "unexpected trailing input", p);
+  }
   return root;
 }
+
+/** Edit distance, for "did you mean" on a mistyped field name. */
+function distance(a: string, b: string): number {
+  const d = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = d[0];
+    d[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cur = d[j];
+      d[j] = Math.min(d[j] + 1, d[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = cur;
+    }
+  }
+  return d[b.length];
+}
+
+function unknownField(field: string): string {
+  const names = Object.keys(FIELDS);
+  const near = names
+    .map((n) => ({ n, d: n.startsWith(field) || field.startsWith(n) ? 1 : distance(field, n) }))
+    .filter((x) => x.d <= 2)
+    .sort((a, b) => a.d - b.d)[0];
+  return near
+    ? `unknown field "${field}" — did you mean ${near.n}?`
+    : `unknown field "${field}" — fields are ${names.join(", ")}`;
+}
+
+/** A value written so the lexer reads it back as one word.
+ *
+ * Anything built into a query from data must go through this: an IPv6 client
+ * (`fe80::1`), a regex rule (`/(ads|track)\./`) or a name with a quote in it
+ * would otherwise be split into operators, and a pivot from a row would
+ * fail to parse or — worse — parse into a different question. */
+export function quote(v: string): string {
+  if (v && !/[\s()"'\\:=<>!&|]/.test(v) && v[0] !== "-") return v;
+  return '"' + v.replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
+}
+
+/** `field=value`, safely. */
+export const term = (field: string, value: string, op: "=" | ":" = "="): string =>
+  `${field}${op}${quote(value)}`;
 
 /** Parse a query. An empty string matches everything. Throws QueryError. */
 export function compile(src: string): Node {
@@ -310,6 +400,7 @@ export function evaluate(n: Node, r: Row, ctx: Ctx): boolean {
     case "and": return evaluate(n.a, r, ctx) && evaluate(n.b, r, ctx);
     case "or": return evaluate(n.a, r, ctx) || evaluate(n.b, r, ctx);
     case "flag": return FLAGS[n.name].test(r, ctx);
+    case "kind": return kindOf(r) === n.kind;
     case "free": {
       const hay = lower(r.qname) + " " + lower(r.client_ip) + " " + lower(r.client_id) +
         " " + lower(r.rule) + " " + lower(r.reason);
@@ -333,6 +424,11 @@ export function matcher(src: string, ctx: Ctx): (r: Row) => boolean {
   return (r: Row) => evaluate(ast, r, ctx);
 }
 
+const KIND_LABEL: Record<OutcomeKind, string> = {
+  blocked: "blocked", failed: "failed", cache: "cached", upstream: "forwarded",
+  local: "local", unknown: "unrecorded",
+};
+
 // --------------------------------------------------------------- pushdown
 /**
  * The part of an expression the server can answer, as query parameters.
@@ -347,6 +443,14 @@ export function pushdown(n: Node): Record<string, string> {
   const out: Record<string, string> = {};
   const walk = (x: Node) => {
     if (x.t === "and") { walk(x.a); walk(x.b); return; }
+    if (x.t === "kind") {
+      // Only kinds with a closed set of actions narrow the fetch. `failed` also
+      // covers a SERVFAIL under any action and `forwarded` is "everything
+      // else", so neither can be expressed as a list of actions.
+      const actions = x.kind === "blocked" ? BLOCKED_ACTIONS : x.kind === "cache" ? ["cached"] : null;
+      if (actions && out.action === undefined) out.action = actions.join(",");
+      return;
+    }
     if (x.t !== "cmp") return;
     const def = FIELDS[x.field];
     if (!def?.param) return;
@@ -379,6 +483,7 @@ export function explain(n: Node): string {
       case "and": return phrase(x.a) + " and " + phrase(x.b);
       case "or": return phrase(x.a) + " or " + phrase(x.b);
       case "flag": return FLAGS[x.name].help;
+      case "kind": return `the outcome is ${KIND_LABEL[x.kind]}`;
       case "free": return `anything mentioning "${x.value}"`;
       case "cmp": {
         const def = FIELDS[x.field];
@@ -410,11 +515,12 @@ export function complete(src: string, caret: number): { from: number; items: str
   if (colon >= 0) {
     const field = frag.slice(0, colon);
     const want = frag.slice(colon + 1);
-    const vals = field === "action" ? Object.values(ACTION_WORDS) : [];
-    return { from: i + colon + 1, items: [...new Set(vals)].filter((v) => v.startsWith(want)) };
+    const vals = field === "action" ? ACTIONS : [];
+    return { from: i + colon + 1, items: vals.filter((v) => v.startsWith(want)) };
   }
   const items = [
     ...Object.keys(FIELDS).map((f) => f + ":"),
+    ...Object.keys(KIND_WORDS),
     ...Object.keys(ACTION_WORDS),
     ...Object.keys(FLAGS),
   ].filter((s) => s.startsWith(frag));
@@ -425,6 +531,8 @@ export function complete(src: string, caret: number): { from: number; items: str
 export function reference(): { name: string; kind: string; help: string }[] {
   return [
     ...Object.entries(FIELDS).map(([name, d]) => ({ name: name + ":", kind: d.kind, help: d.help })),
+    { name: Object.keys(KIND_WORDS).join(" "), kind: "outcome",
+      help: "the outcome as the console colours it; refused is blocked" },
     ...Object.entries(FLAGS).map(([name, d]) => ({ name, kind: "flag", help: d.help })),
   ];
 }

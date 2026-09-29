@@ -23,7 +23,7 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { align } from "../lib/dnsname";
 import { KINDS, kindOf, meta } from "../lib/outcome";
-import type { Row } from "../lib/qlang";
+import { term, type Row } from "../lib/qlang";
 import { store, type QueryEvent } from "../lib/store";
 import Ico from "../ui/Ico.vue";
 
@@ -41,7 +41,15 @@ const asRow = (e: QueryEvent): Row => ({
 });
 
 const feed = computed(() => s.live.map(asRow));
-const tape = computed(() => feed.value.slice(0, 120));
+/* The tape promises to hold still while it is being read (pointer over it, or
+ * keyboard focus inside it). It used to only *say* so — the rows kept moving
+ * under the pointer. Now it keeps a snapshot until reading stops. */
+const held = ref<Row[] | null>(null);
+function freeze(on: boolean) {
+  frozen.value = on;
+  held.value = on ? feed.value.slice(0, 120) : null;
+}
+const tape = computed(() => held.value ?? feed.value.slice(0, 120));
 const ribbon = computed(() => feed.value.slice(0, 240).reverse());
 
 /* Rate from the timestamps in hand: count what arrived inside a trailing window
@@ -85,7 +93,7 @@ const ms = (us?: number) => (!us ? "" : us >= 1000 ? `${(us / 1000).toFixed(0)}m
 
 /** Any row is a way into the browser, scoped to that name. */
 function open(r: Row) {
-  router.push({ path: "/", query: { q: `name=${r.qname.replace(/\.$/, "").toLowerCase()}` } });
+  router.push({ path: "/", query: { q: term("name", r.qname.replace(/\.$/, "").toLowerCase()) } });
 }
 </script>
 
@@ -117,6 +125,13 @@ function open(r: Row) {
           <div class="ev-big" style="color:var(--b-ink-3)">
             <b style="font-size:var(--b-ui-s);color:var(--b-ink-2)">{{ nf.format(s.liveTotal) }}</b>
             <span>seen since this page opened</span>
+          </div>
+          <!-- the server skips events for a tab that cannot keep up rather
+               than buffer without bound; say so instead of under-counting -->
+          <div class="ev-big" v-if="s.dropped"
+               title="This tab fell behind the live stream; the server skipped these events. The query log has every one.">
+            <b style="font-size:var(--b-ui-s)">{{ nf.format(s.dropped) }}</b>
+            <span>skipped, tab fell behind</span>
           </div>
           <div class="ev-big" style="color:var(--b-ink-3)" v-if="s.stats">
             <b style="font-size:var(--b-ui-s);color:var(--b-ink-2)">{{ s.stats.latency_p95_ms }}</b>
@@ -156,9 +171,19 @@ function open(r: Row) {
             {{ s.paused ? "held" : "frozen while you read" }}
           </span>
         </div>
-        <div class="tape" @mouseenter="frozen = true" @mouseleave="frozen = false">
+        <p class="b-warn" v-if="s.dropped" style="margin:0 0 8px">
+          The server skipped {{ nf.format(s.dropped) }} event{{ s.dropped === 1 ? "" : "s" }}
+          because this browser could not keep up. Rates here undercount;
+          Log and Browse read the stored log and are complete.
+        </p>
+        <div class="tape" role="list" aria-label="Latest answers"
+             @mouseenter="freeze(true)" @mouseleave="freeze(false)"
+             @focusin="!frozen && freeze(true)"
+             @focusout="(e) => !(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node) && freeze(false)">
           <div class="tape-r" v-for="(r, i) in tape" :key="r.ts + '-' + i"
-               :class="'k-' + kindOf(r)" @click="open(r)">
+               :class="'k-' + kindOf(r)" @click="open(r)"
+               role="listitem" tabindex="0" :title="`Browse ${r.qname}`"
+               @keydown.enter.prevent="open(r)">
             <span class="tape-t">{{ hhmmss(r.ts) }}</span>
             <span class="tape-o">{{ meta(kindOf(r)).label }}</span>
             <span class="tape-n">

@@ -13,11 +13,12 @@ path:
     checks and tells you. Nothing on the check path writes to the filesystem,
     and `mode: notify` never installs anything no matter how old the running
     version is.
-  * **The artifact is verified before it is trusted.** The index states a
-    sha256 for the wheel; the download is hashed and compared before anything
-    is unpacked. A mismatch is a hard failure, never a warning. The release
-    path publishes to PyPI through trusted publishing (OIDC, no long-lived
-    token), so the digest chains back to the CI run that built the artifact.
+  * **The artifact is verified before it is trusted.** Releases come from
+    this project's GitHub Releases, and GitHub states a sha256 for every asset
+    it holds; the download is hashed and compared before anything is unpacked.
+    A mismatch is a hard failure, never a warning. The assets are uploaded by
+    the tag-driven release workflow, so the digest chains back to the CI run
+    that built the artifact.
   * **It is installed twice.** First into a throwaway staging environment,
     where it must import and answer `--version`; only then into the live one.
     A wheel that cannot start is discovered while the running install is still
@@ -65,18 +66,19 @@ from ..version import USER_AGENT, __version__
 
 log = get("updates")
 
-#: The release index. PyPI's JSON API carries the sha256 of every artifact in
-#: the same response that names the version, so one request yields both the
-#: answer and the means to verify it.
-DEFAULT_INDEX = "https://pypi.org/pypi/trench-dns/json"
+#: The release index: this repository's GitHub Releases. The API carries the
+#: sha256 of every asset in the same response that names the version, so one
+#: request yields both the answer and the means to verify it.
+DEFAULT_INDEX = "https://api.github.com/repos/dev-doshi/trench/releases?per_page=100"
 
-#: The distribution this project publishes under. `trench` was already taken on
-#: PyPI — by a deep-learning library — so the name is not merely cosmetic here:
-#: an index URL that points one character wrong describes somebody else's
-#: project entirely, and every check below would still pass. The digest would
-#: verify, because it came from that same index; the staging venv would install
-#: their wheel and import it happily. So the index is required to say which
-#: project it is describing, and is refused when the answer is not this one.
+#: The distribution this project builds its wheels under, and so the name at
+#: the front of every wheel filename it publishes. The name is not merely
+#: cosmetic here: an index URL that points one character wrong — another
+#: repository, a fork of some other project — describes somebody else's code
+#: entirely, and every check below would still pass. The digest would verify,
+#: because it came from that same index; the staging venv would install their
+#: wheel and import it happily. So only wheels that carry this name are ever
+#: candidates, and an index that offers wheels but none of ours is refused.
 #: A misconfigured `updates.index` must be a refusal, never an installation.
 DIST_NAME = "trench-dns"
 
@@ -217,49 +219,69 @@ class Release:
     url: str
     sha256: str
     size: int = 0
-    requires_python: str = ""
-    yanked: bool = False
 
 
-def pick_release(index: dict, *, current: str, allow_prerelease: bool = False,
+def _wheel_dist(name: str) -> str:
+    """The normalised distribution name at the front of a wheel filename, or ""."""
+    if not name.endswith(".whl"):
+        return ""
+    return _normalize(name.split("-", 1)[0])
+
+
+def _release_version(release: dict) -> str:
+    """A GitHub release's version: its tag, less the conventional `v`."""
+    tag = str(release.get("tag_name") or "").strip()
+    return tag[1:] if tag[:1] in ("v", "V") else tag
+
+
+def _our_wheel(release: dict) -> Release | None:
+    """This release's Trench wheel, when it has one GitHub states a digest for."""
+    version = _release_version(release)
+    for asset in release.get("assets") or []:
+        name = str(asset.get("name") or "")
+        if _wheel_dist(name) != _normalize(DIST_NAME):
+            continue
+        algo, _, digest = str(asset.get("digest") or "").partition(":")
+        url = asset.get("browser_download_url") or ""
+        if algo.lower() != "sha256" or not digest or not url:
+            continue
+        return Release(version=version, url=url, sha256=digest.lower(),
+                       size=int(asset.get("size") or 0))
+    return None
+
+
+def pick_release(index: list, *, current: str, allow_prerelease: bool = False,
                  want: str | None = None) -> Release | None:
     """The release to move to, or None when there is nothing to do.
 
-    `want` pins an exact version (that is what a rollback is). Otherwise the
-    newest version that is newer than what is running wins. Yanked releases are
-    skipped: a yank is the publisher saying "not this one", and honouring it is
-    the entire point of the flag.
+    `index` is the GitHub Releases API's list. `want` pins an exact version
+    (that is what a rollback is). Otherwise the newest version that is newer
+    than what is running wins. Drafts are skipped — they are not published —
+    and so is a release GitHub marks as a pre-release, whatever its tag says,
+    unless pre-releases were asked for.
     """
-    releases = index.get("releases") or {}
-    candidates: list[tuple[tuple, str]] = []
-    for version, files in releases.items():
+    candidates: list[tuple[tuple, Release]] = []
+    for entry in index:
+        if not isinstance(entry, dict) or entry.get("draft"):
+            continue
+        version = _release_version(entry)
         key = parse_version(version)
-        if key is None or not files:
+        if key is None:
             continue
         if want is not None:
             if version != want:
                 continue
         else:
-            if not allow_prerelease and is_prerelease(version):
+            if not allow_prerelease and (entry.get("prerelease") or is_prerelease(version)):
                 continue
             if not is_newer(version, current):
                 continue
-        candidates.append((key, version))
+        wheel = _our_wheel(entry)
+        if wheel is not None:
+            candidates.append((key, wheel))
     if not candidates:
         return None
-    _, version = max(candidates)
-    for artifact in releases[version]:
-        if artifact.get("packagetype") != "bdist_wheel" or artifact.get("yanked"):
-            continue
-        digest = (artifact.get("digests") or {}).get("sha256", "")
-        url = artifact.get("url", "")
-        if not digest or not url:
-            continue
-        return Release(version=version, url=url, sha256=digest.lower(),
-                       size=int(artifact.get("size") or 0),
-                       requires_python=artifact.get("requires_python") or "",
-                       yanked=bool(artifact.get("yanked")))
-    return None
+    return max(candidates, key=lambda c: c[0])[1]
 
 
 # ───────────────────────────────────────────────────── maintenance window ──
@@ -341,20 +363,29 @@ class UpdateState:
 _WHEEL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+!-]*\.whl$")
 
 
-def _check_index(index: dict) -> dict:
+def _check_index(index: Any) -> list:
     """The index, once it has proved which project it describes.
 
-    PyPI's JSON response names the distribution it is about. Requiring that to
-    be ours turns a mistyped `updates.index` from "installs an unrelated
-    project's code over the resolver" into a refusal with the name it actually
-    found.
+    Every wheel a release carries names its distribution at the front of its
+    filename. An index that offers wheels, none of which are ours, is somebody
+    else's releases, and saying so turns a mistyped `updates.index` from
+    "installs an unrelated project's code over the resolver" into a refusal
+    with the name it actually found. (Candidates are filtered to our wheels
+    regardless; this is what makes the mistake loud rather than silent.)
+
+    A single release object — `/releases/latest` — is accepted as a list of one.
     """
-    if not isinstance(index, dict):
-        raise UpdateError("the release index is not a JSON object")
-    name = (index.get("info") or {}).get("name", "")
-    if _normalize(name) != _normalize(DIST_NAME):
+    if isinstance(index, dict) and "tag_name" in index:
+        index = [index]
+    if not isinstance(index, list):
+        raise UpdateError("the release index is not a list of GitHub releases")
+    found = {_wheel_dist(str(asset.get("name") or ""))
+             for entry in index if isinstance(entry, dict)
+             for asset in entry.get("assets") or [] if isinstance(asset, dict)}
+    found.discard("")
+    if found and _normalize(DIST_NAME) not in found:
         raise UpdateError(
-            f"the release index describes {name or 'an unnamed project'!r}, "
+            f"the release index offers wheels for {', '.join(sorted(found))}, "
             f"not {DIST_NAME!r}; refusing to treat it as a Trench release")
     return index
 
@@ -475,13 +506,14 @@ class Updater:
         self.state.save(self.state_path)
         return release
 
-    async def _get_index(self) -> dict:
+    async def _get_index(self) -> list:
         if self._fetch_json is not None:
             got = self._fetch_json(self.cfg.index)
             return _check_index(await got if asyncio.iscoroutine(got) else got)
         import aiohttp
         timeout = aiohttp.ClientTimeout(total=self.cfg.timeout)
-        headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+        headers = {"User-Agent": USER_AGENT, "Accept": "application/vnd.github+json",
+                   "X-GitHub-Api-Version": "2022-11-28"}
         async with (
             aiohttp.ClientSession(timeout=timeout, headers=headers) as session,
             session.get(self.cfg.index) as resp,
@@ -493,7 +525,7 @@ class Updater:
             return _check_index(json.loads(body))
 
     # ------------------------------------------------------------ scheduled
-    async def _identify(self, index: dict) -> dict:
+    async def _identify(self, index: Any) -> list:
         """Kept so an injected `fetch_json` is held to the same check."""
         return _check_index(index)
 

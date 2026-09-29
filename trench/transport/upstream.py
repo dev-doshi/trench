@@ -465,6 +465,10 @@ def _check_response(resp: Message, sent: Message, *, check_id: bool) -> None:
         raise UpstreamError(f"upstream id mismatch (got {resp.id}, sent {sent.id})")
     if not resp.qr:
         raise UpstreamError("upstream reply is not a response")
+    if resp.opcode != sent.opcode:
+        # RFC 1035 §4.1.1: the opcode is copied into the response. One that
+        # differs is an answer to some other message.
+        raise UpstreamError(f"upstream reply has opcode {resp.opcode}")
     want, got = sent.question, resp.question
     if want is None:
         return

@@ -4,16 +4,31 @@ Trench is pure Python and needs 3.11 or newer. Nothing else is required —
 the admin console ships prebuilt inside the package, so there is no Node
 toolchain and no build step.
 
-!!! warning "Nothing is published yet"
+Trench is installed from GitHub. It is not published to any package index,
+so a bare `pip install trench` does not install this project — whatever it
+finds under that name is somebody else's.
 
-    There is no tagged release, so **`pip install trench-dns` and
-    `docker pull ghcr.io/dev-doshi/trench` both fail today** — the wheel and
-    the image do not exist on a registry. The two routes below are the ones
-    that work right now, and both start from a checkout.
+!!! warning "Nothing is tagged yet"
 
-    `pip install trench` is worse than failing: the name `trench` on PyPI
-    belongs to an unrelated deep-learning library, and that is what you get.
-    This project publishes as **`trench-dns`**.
+    There is no tagged release, so the release wheel and
+    `docker pull ghcr.io/dev-doshi/trench` do not exist yet. Install from the
+    `main` branch or from a checkout until the first `v*` tag is pushed.
+
+## From GitHub
+
+Into a virtual environment of its own — that is also the one shape of install
+Trench can update itself in (see [Updating Trench itself](cli.md#updating-trench-itself)):
+
+```bash
+python3 -m venv /opt/trench
+/opt/trench/bin/pip install "git+https://github.com/dev-doshi/trench"
+```
+
+Pin a tag once releases exist:
+
+```bash
+/opt/trench/bin/pip install "git+https://github.com/dev-doshi/trench@v2.0.0"
+```
 
 ## From source
 
@@ -47,16 +62,24 @@ there is nothing to pull:
 ```bash
 git clone https://github.com/dev-doshi/trench
 cd trench
+cp trench.example.yaml trench.yaml   # gitignored, so a clone has none
 docker compose up -d
 ```
 
 Run from anywhere else it fails with `no configuration file provided: not
 found`, which only means Compose could not see the file.
 
+Skip the `cp` and Docker creates an empty *directory* named `trench.yaml` in
+its place, and the container fails to start.
+
 It uses host networking, which is what lets the container serve DNS to the
-rest of the LAN, and mounts the repository's `trench.yaml` — which binds DNS
-on `:53` and the console on `:8089`, both on `0.0.0.0`. DoT (`:853`), DoH
-(`:8443`) and DoQ are disabled in that file until you give them a certificate.
+rest of the LAN, and mounts that `trench.yaml`. As copied, the example is a
+safe starter, not a LAN server: DNS answers on `127.0.0.1:5354` and the
+console on `127.0.0.1:8089`, and DoT, DoH and DoQ are off until you give them
+a certificate. To serve the network, set `server.do53.host` to `0.0.0.0` and
+`port` to `53`, and turn on `security.rate_limit` — the comments in the file
+walk through each. The database and blocklists live in the `trench-data`
+volume and survive rebuilds.
 
 On macOS and Windows, Docker Desktop does not give a container the host's
 network the way Linux does; treat Compose there as a way to build and
@@ -72,8 +95,11 @@ Neither of these works until a `v*` tag has been pushed and the release
 workflow has published the artifacts. They are here so the commands are
 written down, not because they will work today.
 
+Each [GitHub release](https://github.com/dev-doshi/trench/releases) carries
+the wheel as an asset, and GitHub shows its sha256 next to it:
+
 ```bash
-pip install trench-dns
+pip install https://github.com/dev-doshi/trench/releases/download/v2.0.0/trench_dns-2.0.0-py3-none-any.whl
 ```
 
 ```bash

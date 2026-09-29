@@ -83,6 +83,17 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **The CLI says what went wrong, in sentences.** API commands read
+  `TRENCH_URL`/`TRENCH_TOKEN`, answer in prose at a terminal (JSON when piped
+  or with `--json`), and tell apart nothing listening, an unresolvable host, a
+  missing, rejected or under-scoped token, a non-Trench server and the daemon's
+  own refusal. Usage mistakes exit 2 with the accepted values; `query` reports
+  its time and server.
+- **Console accessibility.** Raised the contrast of the faint ink tokens,
+  and added a skip link and focus management for the sheet, palette and
+  inspector. Rows are keyboard-operable, and menus, toggles, lists and the
+  search input carry ARIA roles and state. See `docs/reviews/ui-ux-review.md`.
+
 - **Rebinding protection costs about a seventh of what it did.** The verdict for
   an answer address is a pure function of the string, and it was recomputed from
   scratch for every record of every answer: profiled, `scrub` was roughly half
@@ -122,6 +133,59 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Encrypted-DNS discovery follows RFC 9462 §4 and RFC 9463 §5.1: the
+  `_dns.resolver.arpa` answer now carries `ipv4hint`/`ipv6hint` and the
+  designated name's A/AAAA records, so clients can upgrade without resolving
+  it in plaintext first; and with no IPv4 address configured the DHCP DNR
+  option is sent in ADN-only form instead of as a malformed instance with a
+  zero address length followed by SvcParams.
+
+- **Authoritative wildcards follow RFC 4592.** Only `*.<closest encloser>`
+  synthesizes, so `*.example.com` no longer answers `x.foo.example.com` when
+  `foo.example.com` exists, and nothing below an empty non-terminal. A
+  synthesized answer is owned by the query name rather than by `*`, which stub
+  resolvers had been discarding.
+- **Signed zones prove their denials.** NXDOMAIN, NODATA, empty non-terminal
+  and wildcard answers now carry the NSEC or NSEC3 records that cover the name
+  asked for (RFC 4035 §3.1.3, RFC 5155 §7.2). Before, every negative answer got
+  the apex NSEC, which proves nothing for almost any name, so validating
+  resolvers SERVFAILed them. NSEC3 chains now include empty non-terminals.
+  Glue and delegation NS sets are no longer signed or chained (RFC 4035 §2.2).
+- **Negative TTLs** in authoritative answers and on NSEC/NSEC3 records are
+  min(SOA TTL, MINIMUM) (RFC 2308 §3, RFC 9077).
+- **Query header validation.**
+  - A message with QR set is never answered. Doing so let a spoofed response
+    set two servers replying to each other.
+  - A non-QUERY opcode gets NOTIMP instead of REFUSED (RFC 8906).
+  - An EDNS version other than 0 gets BADVERS (RFC 6891 §6.1.3).
+  - QDCOUNT other than 1 gets FORMERR (RFC 9619), except for a cookie-only probe
+    (RFC 7873 §5.4).
+  - A second OPT record, or one not owned by the root, is a FORMERR.
+- **EDNS sizes.** UDP replies are capped at the smaller of the client's and our
+  configured `edns_udp_size` (RFC 6891 §6.2.5), and responses advertise our size
+  rather than echoing the client's.
+- **Stale answers** are served with a 30-second TTL (RFC 8767 §4) and always
+  carry EDE 3, Stale Answer (RFC 8914).
+- **DoH** matches `Content-Type` as a media type, ignoring case and parameters.
+  DoH over HTTP/3 now sends `Cache-Control: max-age` as HTTP/2 does (RFC 8484
+  §5.1).
+- **Upstream replies** whose opcode differs from the query's are rejected.
+- **Console: no navigation below 900 px.** The places strip was hidden and its
+  replacement button never shown; it now takes over at 980 px, and the header
+  no longer clips at laptop widths.
+- **Console: search.** A half-typed query no longer empties the page (the last
+  valid one keeps filtering), changing the server-side part of a query
+  reloads, an outcome list is pushed down as `IN`, and Browse's time window
+  follows the clock instead of dropping live rows.
+- **Console: live feed.** One WebSocket with jittered backoff instead of
+  stacked reconnects; an expired session returns to sign-in; the Live tape
+  really freezes while hovered or focused; rows beyond the cap are announced.
+- **Console: pivots quote their values**, so a domain or client with a quote
+  or space no longer breaks or widens the query; CSV export neutralises
+  formula-leading cells.
+- **`trench why`** said "1 recent queries", crashed on a finding with missing
+  fields, and hid why `--resolve` failed.
+
 - **DNSSEC: algorithm 7 validated as BOGUS.** RSASHA1-NSEC3-SHA1 (RFC 5155 §2)
   was missing from the verifier's hash table, so every zone signed with it
   failed validation.
@@ -144,6 +208,21 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A DoQ upstream that never completed its handshake held each query for
   aioquic's 60 s idle timeout; the whole exchange is now bounded by
   `upstream.timeout`.
+- A `quic://` upstream failed outright on a host with IPv6 disabled
+  (`ipv6.disable=1`, some container runtimes), even for an IPv4 server: the
+  client socket was always AF_INET6. It is now opened in the family of the
+  address the upstream resolved to.
+- The Docker image lost its data on every recreate when run on the example
+  config. The image's working directory was `/app`, so `data_dir: ./data`
+  resolved to `/app/data` in the container layer rather than the `/data`
+  volume, and the database, the compiled blocklist and the initial admin
+  password went with the container. The working directory is now `/data`, and
+  `/data/data` ships group-writable so the account `server.user` drops to can
+  write to it.
+- Shutdown closes the database even when the admin API, a secondary zone or
+  the query log fails to stop. Any of those raising used to skip the close,
+  and aiosqlite's worker thread is not a daemon, so the process answered
+  SIGTERM by never exiting.
 - Schema migrations are applied in one transaction with their bookkeeping row,
   so a failure or a kill mid-upgrade no longer leaves half a migration applied
   and unrecorded. A failed write is rolled back rather than left pending, to be

@@ -177,10 +177,10 @@ are open.
   consistency, a rebuild-and-diff of the committed console (`trench/web/dist`),
   a same-runner benchmark against the PR base, a multi-arch Docker build, and
   a wheel install smoke test.
-- **`release.yml`** is tag-driven, uses PyPI trusted publishing (no API
-  token), pins the publish action by digest, publishes multi-arch images to
-  GHCR with build-provenance attestations, and builds release notes from the
-  changelog. Manual runs default to dry run.
+- **`release.yml`** is tag-driven, publishes the wheel and sdist as GitHub
+  Release assets (which is also what the updater reads), publishes multi-arch
+  images to GHCR with build-provenance attestations, and builds release notes
+  from the changelog. Manual runs default to dry run.
 - **`security.yml`** runs CodeQL (`security-extended`), `pip-audit --strict`
   on the resolved tree, and a seeded, time-budgeted wire fuzzer on every PR
   and weekly.
@@ -194,7 +194,7 @@ are open.
    Every job in `release.yml` uses `actions/checkout@v4` with no `ref:`. On
    `workflow_dispatch`, `GITHUB_REF` is the branch the run was started from,
    so `verify` compares `inputs.tag` against the branch's `version.py`, and
-   `pypi`, `ghcr` and `github_release` build whatever is at the branch head.
+   `ghcr` and `github_release` build whatever is at the branch head.
    Also on dispatch:
    - `docker/metadata-action`'s `type=semver` rules produce no tags, because
      the ref is not a tag, so the image is pushed as `latest` only;
@@ -206,14 +206,13 @@ are open.
    Give the metadata action
    `type=semver,pattern=...,value=v${{ needs.verify.outputs.version }}` so the
    tags come from the verified version instead of the ref.
-2. **[High] GitHub Release assets are not the files uploaded to PyPI.**
-   `github_release` runs `python3 -m build` again instead of reusing the
-   `pypi` job's output. Without `SOURCE_DATE_EPOCH` the sdist/wheel differ
-   byte-for-byte (timestamps), so a user checking a release asset's hash
-   against PyPI's will not get a match. Build once in a dedicated job, upload
-   with `actions/upload-artifact`, and have `pypi` and `github_release` both
-   download that artifact. `actions/attest-build-provenance` can then attest
-   the Python artifacts too, not only the image.
+2. **[High] The Python artifacts are not attested.** `github_release` builds
+   the wheel and sdist inline, and only the image gets build provenance.
+   Build once in a dedicated job, upload with `actions/upload-artifact`, and
+   attest the Python artifacts with `actions/attest-build-provenance` before
+   `github_release` attaches them. Setting `SOURCE_DATE_EPOCH` makes the
+   build reproducible, so anyone can rebuild the tag and match the digest
+   GitHub records for the asset.
 3. **[Medium] `latest` moves on every tag.** `type=raw,value=latest` is
    unconditional, so a pre-release (`v2.1.0-rc1`) or a backport (`v2.0.3`
    after `v2.1.0`) would repoint `latest`. Use
@@ -221,8 +220,8 @@ are open.
    (or the metadata action's `flavor: latest=auto`, which skips
    pre-releases), and keep backports on their own line.
 4. **[Medium] Action pinning is inconsistent with the project's own policy.**
-   `release.yml` explains that the PyPI action is pinned by digest because it
-   runs with `id-token: write`. The `ghcr` job has the same permission plus
+   The project pins actions by digest when they run with `id-token: write`.
+   The `ghcr` job has that permission plus
    `packages: write`, yet `docker/login-action`, `setup-buildx-action`,
    `metadata-action`, `build-push-action` and `attest-build-provenance` are
    pinned only by major tag. The same goes for `softprops/action-gh-release`
@@ -266,7 +265,7 @@ are open.
 - README, CONTRIBUTING, SECURITY, SUPPORT and the issue forms route each kind
   of report to one place, and they agree with each other on that routing.
 - The README's "Status" box and `docs/installation.md` say plainly that
-  `pip install trench-dns` and `docker pull` do not work yet. That candour
+  the release wheel and `docker pull` do not exist yet. That candour
   prevents a whole class of bug reports.
 - `trench.example.yaml` is safe by default (loopback DNS on `:5354`,
   loopback console, encrypted transports off until a certificate is supplied,
@@ -279,9 +278,10 @@ are open.
 ### Findings
 
 1. **[High] `docs/upgrading.md` tells users to
-   `pip install --upgrade trench`.** On PyPI `trench` belongs to an unrelated
-   project, which `docs/installation.md` warns "is worse than failing". It
-   must be `pip install --upgrade trench-dns`. In the same file,
+   `pip install --upgrade trench`.** Trench is installed from GitHub, and
+   `trench` on a package index is an unrelated project. It must upgrade from
+   GitHub (`trench upgrade apply`, or `pip install --upgrade
+   "git+https://github.com/dev-doshi/trench@<tag>"`). In the same file,
    `docker compose pull` does nothing for the repository's
    `docker-compose.yml`, which builds `trench:latest` locally. Until an image
    is published, the step is `git pull && docker compose up -d --build`.
@@ -336,16 +336,26 @@ are open.
 
 ## Suggested order of work
 
-| # | Item | Effort |
-|---|------|--------|
-| 1 | Fix `docs/upgrading.md` distribution name and Compose step | minutes |
-| 2 | Release workflow: checkout `ref`, `tag_name`, semver `value`, gated `latest` | small |
-| 3 | Build once, reuse artifacts for PyPI and the GitHub Release | small |
-| 4 | Resolve `[Unreleased]` vs `2.0.0` before the first tag | small |
-| 5 | Pin ruff/mypy; decide adopt-or-delete for `uv.lock` | small–medium |
-| 6 | SHA-pin actions in privileged jobs; smoke-run the CI image | small |
-| 7 | Python 3.13/3.14 in the matrix; macOS row or drop the classifier | small |
-| 8 | Enforce the mypy ratchet in `--update`; correct the backlog description | small |
-| 9 | README tree, test count, `scripts/README.md`, Dockerfile uninstall name | small |
-| 10 | Split `app.py` builders and `api/server.py` routes; decouple `engine` from `store` | medium |
-| 11 | Mirror `trench/` layout in `tests/` | medium, mechanical |
+| # | Item | Effort | Status |
+|---|------|--------|--------|
+| 1 | Fix `docs/upgrading.md` distribution name and Compose step | minutes | Done |
+| 2 | Release workflow: checkout `ref`, `tag_name`, semver `value`, gated `latest` | small | Done |
+| 3 | Build once, attest the Python artifacts for the GitHub Release | small | Done |
+| 4 | Resolve `[Unreleased]` vs `2.0.0` before the first tag | small | Guarded: `verify` fails while `[Unreleased]` has entries; the renumbering decision is still open |
+| 5 | Pin ruff/mypy; decide adopt-or-delete for `uv.lock` | small–medium | Done: lock adopted by CI, the image and Dependabot (`uv` ecosystem) |
+| 6 | SHA-pin actions in privileged jobs; smoke-run the CI image | small | Done for every workflow |
+| 7 | Python 3.13/3.14 in the matrix; macOS row or drop the classifier | small | Matrix and classifiers done; macOS classifier kept (the code handles it) without a CI row |
+| 8 | Enforce the mypy ratchet in `--update`; correct the backlog description | small | Done (`--allow-growth`) |
+| 9 | README tree, test count, `scripts/README.md`, Dockerfile uninstall name | small | Done (the stub-package layer is gone) |
+| 10 | Split `app.py` builders and `api/server.py` routes; decouple `engine` from `store` | medium | Open |
+| 11 | Mirror `trench/` layout in `tests/` | medium, mechanical | Open |
+
+Also fixed while working through these: a `quic://` upstream failed on any
+host without IPv6 (aioquic's client always opens an AF_INET6 socket), and
+tests that assume a non-root user or IPv6 loopback now skip instead of failing
+in containers. The Docker image wrote its database into the container layer rather
+than the `/data` volume when run on the example config (its working directory
+was `/app`); a component failing during shutdown left the database open, which
+kept the process from ever exiting; and a test that leaked a connection made
+the suite hang after its last test — now caught per test by a conftest guard,
+with a job timeout in CI as the backstop.

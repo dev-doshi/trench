@@ -77,7 +77,10 @@ const showKeys = ref(false);
 const showHud = ref(false);
 const hud = ref({ ms: 0, rows: 0 });
 
-const t1 = computed(() => Date.now() * 1000);
+/* The window's right edge. A ref stamped on every load and live flush — a
+ * computed over Date.now() has no reactive dependency, so Vue caches it for
+ * good and the window silently stops at the moment the page opened. */
+const t1 = ref(Date.now() * 1000);
 const t0 = computed(() => t1.value - WINDOWS[winIdx.value].us);
 
 /* ── query language ──────────────────────────────────────────────────────── */
@@ -112,9 +115,11 @@ watch(queryText, (v) => {
 }, { immediate: true });
 
 const said = computed(() => (qErr.value ? "" : explain(ast.value)));
+// `ast` only changes when the text parses, so a half-typed query keeps showing
+// the last one that did rather than flashing the unfiltered window.
 const kept = computed(() => {
   const t = performance.now();
-  const out = qErr.value ? rows.value : rows.value.filter((r) => evaluate(ast.value, r, qctx));
+  const out = rows.value.filter((r) => evaluate(ast.value, r, qctx));
   hud.value = { ms: Number((performance.now() - t).toFixed(1)), rows: rows.value.length };
   return out;
 });
@@ -193,25 +198,44 @@ function syncUrl() {
  * though it were the whole picture. */
 const PAGE = 1000, BUDGET = 12;
 
+let seq = 0;
 async function load() {
+  const mine = ++seq;
+  clearTimeout(reloadTimer);
   loading.value = true;
   err.value = "";
+  t1.value = Date.now() * 1000;
   const base = { ...pushdown(ast.value), since: t0.value, until: t1.value, limit: PAGE };
   const got: Row[] = [];
   try {
     for (let page = 0; page < BUDGET; page++) {
       const r = await api.get("/querylog" + api.qs({ ...base, offset: page * PAGE }));
+      if (mine !== seq) return;            // superseded by a newer load
       total.value = r.total ?? 0;
       got.push(...(r.rows || []));
       if (!r.rows || r.rows.length < PAGE) break;
     }
     rows.value = got;
+    pending = [];
   } catch (e: any) {
-    err.value = e?.message || "the query log could not be read";
+    if (mine === seq) err.value = e?.message || "the query log could not be read";
   } finally {
-    loading.value = false;
+    if (mine === seq) loading.value = false;
   }
 }
+
+/* The server is asked only for what the query lets it answer, so the loaded
+ * rows are already a subset. Change that part of the query and they are the
+ * wrong subset — `device=a` then editing to `device=b` would show nothing. So a
+ * change in the pushed-down part reloads, debounced against typing; Enter
+ * reloads at once. A change the server is not told about (ms>40, reg:…) is a
+ * pure client-side filter and costs no request. */
+let reloadTimer: ReturnType<typeof setTimeout> | undefined;
+watch(() => JSON.stringify(pushdown(ast.value)), (now, before) => {
+  if (now === before) return;
+  clearTimeout(reloadTimer);
+  reloadTimer = setTimeout(load, 350);
+});
 const shortfall = computed(() => Math.max(0, total.value - rows.value.length));
 
 /* Live rows join the window on a timer, not on arrival.
@@ -240,18 +264,34 @@ watch(() => store.state.liveTotal, () => {
   if (flushTimer === undefined) {
     flushTimer = window.setTimeout(() => {
       flushTimer = undefined;
-      if (pending.length) { rows.value = [...rows.value, ...pending]; pending = []; }
+      if (pending.length) {
+        rows.value = [...rows.value, ...pending]; pending = [];
+        t1.value = Date.now() * 1000;       // the window's edge moves with the rows
+      }
     }, FLUSH_MS);
   }
 });
-onUnmounted(() => { if (flushTimer !== undefined) window.clearTimeout(flushTimer); });
+onUnmounted(() => {
+  if (flushTimer !== undefined) window.clearTimeout(flushTimer);
+  clearTimeout(reloadTimer);
+});
 
 /* ── keyboard: the columns are a Finder-style browser ───────────────────── */
 function onKey(e: KeyboardEvent) {
-  const tag = (e.target as HTMLElement)?.tagName;
-  if (tag === "INPUT" || tag === "TEXTAREA") {
-    if (e.key === "Escape") (e.target as HTMLElement).blur();
+  // Browser and OS shortcuts (Ctrl-1 switches tabs, ⌘C copies) are never ours,
+  // and while an overlay is up the keys belong to it.
+  if (e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented) return;
+  if (store.state.inspecting || document.querySelector(".pal-bg, .bsheet")) return;
+  const el = e.target as HTMLElement | null;
+  const tag = el?.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el?.isContentEditable) {
+    if (e.key === "Escape") el?.blur();
     return;
+  }
+  // a focused button handles its own Enter and Space
+  if ((e.key === "Enter" || e.key === " ") && tag === "BUTTON") return;
+  if (e.key === "Escape" && (menu.value || showKeys.value)) {
+    menu.value = ""; showKeys.value = false; return;
   }
   const [c, r] = cursor.value;
   const col = columns.value[c];
@@ -284,6 +324,12 @@ function onKey(e: KeyboardEvent) {
   if (e.key >= "1" && e.key <= "5") { winIdx.value = Number(e.key) - 1; load(); syncUrl(); }
 }
 
+// keep the keyboard cursor on screen in a long column
+watch(cursor, ([c]) => nextTick(() => {
+  document.querySelectorAll(".bw-col")[c]?.querySelector(".bw-row.cursor")
+    ?.scrollIntoView({ block: "nearest" });
+}));
+
 function copySelection() {
   const q = asQuery(plan.value, picked.value);
   const lines = [
@@ -293,17 +339,24 @@ function copySelection() {
     ...columns.value[columns.value.length - 1].nodes.slice(0, 200).map((n) =>
       `${String(n.total).padStart(7)}  ${String(n.by.blocked).padStart(6)}↓  ${n.value}`),
   ];
-  copyText(lines.join("\n"));
-  store.toast("Copied", "the current column as text");
+  copyText(lines.join("\n"), "Copied", "the current column as text");
 }
 
 onMounted(() => {
   window.addEventListener("keydown", onKey);
   // restore a shared view
+  // A shared link is input from outside: an unknown facet would crash the
+  // columns, so anything that is not a real facet discards the plan.
   const p = route.query.p as string | undefined;
-  if (p) plan.value = p.split(",") as FacetKey[];
+  const keys = p ? p.split(",") : [];
+  if (keys.length && keys.length <= 5 && keys.every((k) => k in FACETS)) {
+    plan.value = keys as FacetKey[];
+    picked.value = plan.value.map(() => null);
+  }
   const s = route.query.s as string | undefined;
-  if (s) picked.value = s.split("|").map((v) => v || null);
+  if (s && typeof s === "string") {
+    picked.value = plan.value.map((_, i) => s.split("|")[i] || null);
+  }
   const w = route.query.w as string | undefined;
   if (w && Number(w) >= 0 && Number(w) < WINDOWS.length) winIdx.value = Number(w);
 
@@ -342,7 +395,8 @@ const planName = computed(() =>
     <!-- ── controls ─────────────────────────────────────────────────────── -->
     <div class="bw-ctl" @click.stop>
       <div style="position:relative">
-        <button class="bw-pick" @click="menu = menu === 'plan' ? '' : 'plan'">
+        <button class="bw-pick" @click="menu = menu === 'plan' ? '' : 'plan'"
+                aria-haspopup="true" :aria-expanded="menu === 'plan'" title="Grouping order (f)">
           <Ico name="levels" />
           <b>{{ planName }}</b>
           <Ico name="down" :size="13" />
@@ -356,7 +410,8 @@ const planName = computed(() =>
       </div>
 
       <div style="position:relative">
-        <button class="bw-pick" @click="menu = menu === 'sort' ? '' : 'sort'">
+        <button class="bw-pick" @click="menu = menu === 'sort' ? '' : 'sort'"
+                aria-haspopup="true" :aria-expanded="menu === 'sort'" title="Sort (s)">
           <Ico name="sort" />
           <b>{{ SORTS.find(s => s.key === sortBy)!.label }}</b>
           <Ico name="down" :size="13" />
@@ -371,24 +426,26 @@ const planName = computed(() =>
 
       <!-- five options, so they are all on screen. A menu that hides five
            short words costs a click and shows less. -->
-      <span class="seg">
+      <span class="seg" role="group" aria-label="Time window">
         <button v-for="(w, i) in WINDOWS" :key="w.label" :class="{ on: i === winIdx }"
-                :title="`press ${i + 1}`"
+                :title="`press ${i + 1}`" :aria-pressed="i === winIdx"
                 @click="winIdx = i; load(); syncUrl()">{{ w.label }}</button>
       </span>
 
       <input ref="qBox" class="bw-q" :class="{ bad: qErr }" v-model="queryText"
-             spellcheck="false" @keydown.enter="load()"
+             spellcheck="false" autocomplete="off" @keydown.enter="load()"
+             aria-label="Filter the traffic" :aria-invalid="!!qErr" aria-describedby="bw-said"
              placeholder="blocked and device=10.0.4.71 · type / to focus, ? for keys" />
 
-      <button class="bw-pick" @click="copySelection" title="copy this column as text">
+      <button class="bw-pick" @click="copySelection" title="Copy this column as text (y)"
+              aria-label="Copy this column as text">
         <Ico name="copy" />
       </button>
     </div>
 
     <!-- ── the query, read back ─────────────────────────────────────────── -->
-    <div class="bw-said" v-if="queryText">
-      <span class="err" v-if="qErr">{{ qErr }}</span>
+    <div class="bw-said" id="bw-said" v-if="queryText" aria-live="polite">
+      <span class="err" v-if="qErr">{{ qErr }} — still showing the last query that made sense</span>
       <p v-else>{{ said }}</p>
       <span class="tail b-cap">{{ nf.format(kept.length) }} of {{ nf.format(rows.length) }} loaded</span>
     </div>
@@ -405,9 +462,9 @@ const planName = computed(() =>
           <h5 class="b-cap">{{ FACETS[col.key].label }}</h5>
           <span class="bw-col-n b-num">{{ nf.format(col.nodes.length) }}</span>
         </header>
-        <div class="bw-rows">
+        <div class="bw-rows" role="listbox" :aria-label="FACETS[col.key].label">
           <div v-for="(n, ri) in col.nodes.slice(0, 400)" :key="n.value"
-               class="bw-row"
+               class="bw-row" role="option" :aria-selected="picked[ci] === n.value"
                :class="{ on: picked[ci] === n.value, cursor: cursor[0] === ci && cursor[1] === ri }"
                @click="pick(ci, n.value)">
             <span class="bw-row-mk" v-if="n.authored" :title="`${n.authored} decided by your own rules`" />
@@ -433,7 +490,7 @@ const planName = computed(() =>
 
       <Evidence :rows="kept" :summary="summary" :row="one" :path="path" :window-from="t0"
                 :occurrence="occIdx" :occurrences="occurrences.length" @step="stepOcc"
-                @query="(q) => { queryText = q; picked = plan.map(() => null); load(); }" />
+                @query="(q) => { queryText = q; picked = plan.map(() => null); nextTick(load); }" />
     </div>
 
     <!-- ── when: the selection over time ────────────────────────────────── -->
@@ -480,8 +537,10 @@ const planName = computed(() =>
           </template>
         </dl>
         <p class="b-read">
-          Terms combine with <b>and</b>, <b>or</b>, <b>not</b> and parentheses;
-          writing two terms next to each other means and. Values accept
+          Terms combine with <b>and</b> (or <b>&amp;</b>), <b>or</b> (or <b>|</b>),
+          <b>not</b> (or a leading <b>-</b>) and parentheses; writing two terms
+          next to each other means and. A bare <b>blocked</b>, <b>allowed</b>,
+          <b>cached</b> or <b>failed</b> means that outcome. Values accept
           <b>*</b> and <b>?</b>, <b>=</b> for exact and <b>!=</b> for negation.
           Whatever the server can answer is pushed down to it and the rest is
           applied here, so the result is the same either way — only the amount

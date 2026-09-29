@@ -48,7 +48,7 @@ log = get("discovery")
 DDR_QNAME = "_dns.resolver.arpa"
 
 #: SvcParamKeys used below (RFC 9460 §14.3).
-KEY_ALPN, KEY_PORT, KEY_DOHPATH = 1, 3, 7
+KEY_ALPN, KEY_PORT, KEY_IPV4HINT, KEY_IPV6HINT, KEY_DOHPATH = 1, 3, 4, 6, 7
 
 _U16 = struct.Struct("!H")
 
@@ -89,7 +89,10 @@ class Endpoint:
         self.priority = priority
         self.path = path
 
-    def params(self) -> bytes:
+    def params(self, addresses: list[str] | None = None) -> bytes:
+        """SvcParams for this endpoint. `addresses` become ipv4hint/ipv6hint,
+        which only DDR may carry: DNR forbids them (its own address field
+        supersedes them), so `dhcp_option` never passes any."""
         pairs = [(KEY_ALPN, _alpn(*self.ALPN[self.kind]))]
         # The port is only sent when it is not the default for the transport;
         # a client reading a redundant port is fine, but a wrong one is fatal
@@ -98,6 +101,14 @@ class Endpoint:
             pairs.append((KEY_PORT, _U16.pack(self.port)))
         if self.kind in ("doh", "doh3") and self.path:
             pairs.append((KEY_DOHPATH, self.path.encode()))
+        v4 = b"".join(ipaddress.ip_address(a).packed for a in addresses or ()
+                      if _version(a) == 4)
+        v6 = b"".join(ipaddress.ip_address(a).packed for a in addresses or ()
+                      if _version(a) == 6)
+        if v4:
+            pairs.append((KEY_IPV4HINT, v4))
+        if v6:
+            pairs.append((KEY_IPV6HINT, v6))
         return build_params(pairs)
 
 
@@ -153,7 +164,19 @@ class Discovery:
         target = Name.from_text(self.hostname + ".")
         for ep in self.endpoints:
             resp.answers.append(RR(q.name, Type.SVCB, Class.IN, self.ttl,
-                                   R.SVCB(ep.priority, target, ep.params())))
+                                   R.SVCB(ep.priority, target, ep.params(self.addresses))))
+        # RFC 9462 §4: the target's addresses belong in the additional section
+        # (and as hints above). Without them the client has to resolve the
+        # designated name before it can upgrade — through the very plaintext
+        # path it is trying to leave, and for a name that may only exist in
+        # this resolver's view anyway.
+        for addr in self.addresses:
+            ver = _version(addr)
+            if ver == 4:
+                resp.additional.append(RR(target, Type.A, Class.IN, self.ttl, R.A(addr)))
+            elif ver == 6:
+                resp.additional.append(RR(target, Type.AAAA, Class.IN, self.ttl,
+                                          R.AAAA(addr)))
         return resp
 
     # -------------------------------------------------------------------- DNR
@@ -180,8 +203,16 @@ class Discovery:
         # exactly what the option wants; DHCP has no message to compress into.
         adn = Name.from_text(self.hostname + ".").key
         addrs = b"".join(ipaddress.IPv4Address(a).packed for a in self.addresses
-                         if _is_v4(a))
+                         if _version(a) == 4)
         out = bytearray()
+        if not addrs:
+            # RFC 9463 §5.1: with no address the instance is ADN-only, and the
+            # Addr Length and SvcParams fields are then absent altogether. A
+            # zero Addr Length followed by SvcParams is a malformed instance,
+            # which a conforming client discards — and with it the option.
+            only = (_U16.pack(min(ep.priority for ep in self.endpoints))
+                    + bytes([len(adn)]) + adn)
+            return _U16.pack(len(only)) + only
         for ep in self.endpoints:
             body = bytearray()
             body += _U16.pack(ep.priority)
@@ -195,11 +226,12 @@ class Discovery:
         return bytes(out)
 
 
-def _is_v4(addr: str) -> bool:
+def _version(addr: str) -> int:
+    """4 or 6 for an address, 0 for anything that is not one."""
     try:
-        return ipaddress.ip_address(addr).version == 4
+        return ipaddress.ip_address(addr).version
     except ValueError:
-        return False
+        return 0
 
 
 def from_config(config) -> Discovery | None:

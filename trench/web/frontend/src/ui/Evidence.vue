@@ -16,7 +16,7 @@ import { computed } from "vue";
 import { align, answerList, classifyAddr, isSinkhole, shape } from "../lib/dnsname";
 import { KINDS, isAuthored, isStale, meta, outcomeOf } from "../lib/outcome";
 import type { Summary } from "../lib/facets";
-import type { Row } from "../lib/qlang";
+import { term, type Row } from "../lib/qlang";
 import { store } from "../lib/store";
 import { copyText } from "../lib/util";
 import Ico from "./Ico.vue";
@@ -103,8 +103,7 @@ function copyChain() {
     L("PATH", oc.value.travelled ? `${r.upstream || "upstream"}  ${ms(r.elapsed_us)}` : "nothing left this machine"),
     L("RESULT", `${r.rcode}${answers.value.length ? "  " + answers.value.join(" ") : ""}`
       + (retried.value ? `  retried ${retried.value}x` : "")),
-  ].join("\n"));
-  store.toast("Copied", "the chain as plain text");
+  ].join("\n"), "Copied", "the chain as plain text");
 }
 </script>
 
@@ -132,7 +131,7 @@ function copyChain() {
       <dl class="dep">
         <dt>Who</dt>
         <dd>
-          <a class="lnk" @click="store.inspect('client', row.client_ip)">{{ row.client_ip }}</a>
+          <button type="button" class="lnk" @click="store.inspect('client', row.client_ip)">{{ row.client_ip }}</button>
           <span v-if="row.client_id" class="note">{{ row.client_id }}</span>
           <span v-else class="none">unnamed — known only by address</span>
         </dd>
@@ -157,7 +156,7 @@ function copyChain() {
         <dt>Source</dt>
         <dd v-if="row.source">
           {{ row.source === "custom" ? "your own list" : row.source }}
-          <button class="btn-q" @click="emit('query', `source=${row.source}`)">
+          <button class="btn-q" @click="emit('query', term('source', row.source))">
             everything from this list
           </button>
         </dd>
@@ -208,7 +207,7 @@ function copyChain() {
             <Ico name="copy" :size="13" style="display:inline-block;vertical-align:-2px" />
             copy chain
           </button>
-          <button class="btn-q" @click="emit('query', `name=${name}`)">every query for this name</button>
+          <button class="btn-q" @click="emit('query', term('name', name))">every query for this name</button>
         </div>
       </div>
 

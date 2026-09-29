@@ -2,10 +2,11 @@ import { createApp } from "vue";
 import { createRouter, createWebHistory } from "vue-router";
 import App from "./App.vue";
 import "./styles/bailiwick.css";
+import { local } from "./lib/local";
 
 // Applied before the app mounts: doing it in a component lets the default skin
 // paint first and then swap, which is a visible flash on every load.
-document.documentElement.dataset.skin = localStorage.getItem("bw_skin") || "auto";
+document.documentElement.dataset.skin = local.get("bw_skin") || "auto";
 
 /* One surface plus nine places. Each route is a question an operator has, not a
  * subsystem of the resolver — which is why there is no "dashboard" and no

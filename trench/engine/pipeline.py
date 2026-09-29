@@ -355,8 +355,16 @@ class Pipeline:
     async def _run(self, ctx: QueryContext) -> None:
         q = ctx.query.question
         # 1. validate
-        if ctx.query.qr or q is None or ctx.query.opcode != Opcode.QUERY:
-            ctx.response = ctx.query.reply(Rcode.REFUSED)
+        bad = _header_error(ctx.query)
+        if bad is not None:
+            ctx.response = ctx.query.reply(bad)
+            ctx.action = "refused"
+            return
+        if q is None:
+            # RFC 7873 §5.4: a query with no question and a client cookie is how
+            # a client fetches a server cookie. Answered NOERROR; `_finalize`
+            # attaches the cookie.
+            ctx.response = ctx.query.reply(Rcode.NOERROR)
             ctx.action = "refused"
             return
 
@@ -950,6 +958,13 @@ class Pipeline:
         if ctx.query.edns is not None and resp.edns is None:
             resp.edns = Edns(udp_size=self.config.server.edns_udp_size)
             resp.edns.do = ctx.query.edns.do
+        elif ctx.query.edns is not None and resp.edns is not None:
+            # The OPT's size field is *our* receive limit (RFC 6891 §6.2.3). A
+            # reply built by `Message.reply` echoed the client's figure and one
+            # relayed from upstream carried the upstream's; either way the
+            # client was told something about a buffer that is not ours.
+            resp.edns.udp_size = self.config.server.edns_udp_size
+            resp.edns.version = 0
         elif ctx.query.edns is None and resp.edns is not None:
             # RFC 6891 §6.1.1: no OPT in a response to a query that had none. The
             # OPT here came from the upstream, possibly by way of the cache, so
@@ -970,6 +985,13 @@ class Pipeline:
             txt = (ctx.rule or ctx.reason or "blocked")[:200].encode("utf-8", "replace")
             resp.edns.set_option(EDNSOption.EXTENDED_ERROR,
                                  struct.pack(">H", 15) + txt)   # 15 = Blocked
+        # RFC 8914 §4.4 / RFC 8767 §4: say so when the answer is stale, so a
+        # client (or the operator reading `dig`) can tell "this is the record"
+        # from "this is the last record we saw before the upstream went away".
+        if (ctx.action == "cached" and ctx.reason.startswith("stale")
+                and resp.edns is not None
+                and resp.edns.get_option(EDNSOption.EXTENDED_ERROR) is None):
+            resp.edns.set_option(EDNSOption.EXTENDED_ERROR, struct.pack(">H", 3))
         qname = ctx.qname or "."
         qtype = type_to_text(ctx.qtype)
         rcode = _rcode_text(resp.rcode)
@@ -997,6 +1019,34 @@ class Pipeline:
             answers = ([rr.rdata.to_text() for rr in resp.answers if rr.rtype != Type.OPT]
                        if getattr(ql, "records_answers", True) else [])
             ql.enqueue(record_from_ctx(qname, qtype, ctx, rcode, answers))
+
+
+def _header_error(query: Message) -> int | None:
+    """The rcode a malformed or unsupported query header earns, or None.
+
+    - QR set: a response is not a question. The transports drop these before
+      they get here; REFUSED is the fallback for any caller that does not.
+    - Opcode other than QUERY: NOTIMP (RFC 1035 §4.1.1, RFC 8906 §3.1.4).
+      REFUSED said "not for you", which a client reads as policy, not as "this
+      server does not do that".
+    - EDNS version other than 0: BADVERS with a version-0 OPT (RFC 6891
+      §6.1.3), so the client knows which version to fall back to. Answering it
+      as if it were version 0 guessed at semantics we do not implement.
+    - QDCOUNT other than 1, bar the cookie probe: FORMERR (RFC 9619). Only the
+      first question was ever answered, and the rest silently dropped.
+    """
+    if query.qr:
+        return Rcode.REFUSED
+    if query.opcode != Opcode.QUERY:
+        return Rcode.NOTIMP
+    if query.edns is not None and query.edns.version != 0:
+        return Rcode.BADVERS
+    n = len(query.questions)
+    if n > 1:
+        return Rcode.FORMERR
+    if n == 0 and (query.edns is None or query.edns.get_option(COOKIE) is None):
+        return Rcode.FORMERR
+    return None
 
 
 #: Numeric rcode -> mnemonic. Same reasoning as `rrtypes._TYPE_TEXT`: this runs

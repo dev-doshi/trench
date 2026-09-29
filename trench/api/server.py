@@ -10,6 +10,7 @@ import asyncio
 import json
 import re
 import time
+from typing import Any
 
 from aiohttp import web
 
@@ -85,6 +86,9 @@ def _security_headers(resp) -> None:
 
 
 API = "/api/v1"
+#: The authenticated principal `_auth_mw` attaches to a request, absent when anonymous.
+# Anonymous requests store None here, so the key's value type says so.
+_USER: web.RequestKey[dict | None] = web.RequestKey("user", dict)
 
 #: Ceiling on one inbound WebSocket message. The console's own frames are a
 #: handful of bytes; this is generous for them and finite for everyone else.
@@ -271,7 +275,7 @@ class APIServer:
             user = self.auth.session_user(token)
         if user is None and bearer.startswith("Bearer "):
             user = await self.auth.token_user(bearer[7:])
-        request["user"] = user
+        request[_USER] = user
         return await handler(request)
 
     @web.middleware
@@ -290,17 +294,24 @@ class APIServer:
         try:
             resp = await handler(request)
         except web.HTTPException as e:
+            # aiohttp's own refusals — an unknown route, a wrong method, an
+            # oversized body — are plain text. Under the API prefix a client
+            # has been promised `{"error": ...}`, so give it that.
+            if (e.status >= 400 and request.path.startswith(API + "/")
+                    and e.content_type != "application/json"):
+                e.text = json.dumps({"error": e.text or e.reason})
+                e.content_type = "application/json"
             _security_headers(e)
             raise
         _security_headers(resp)
         return resp
 
     def _require(self, request: web.Request, role: str) -> dict:
-        user = request.get("user")
+        user = request.get(_USER)
         if user is None:
-            raise web.HTTPUnauthorized(text="login required")
+            raise _http_error(web.HTTPUnauthorized, "login required")
         if not AuthManager.has_role(user, role):
-            raise web.HTTPForbidden(text=f"requires {role}")
+            raise _http_error(web.HTTPForbidden, f"requires {role}")
         return user
 
     # ---- auth routes ----
@@ -328,7 +339,7 @@ class APIServer:
         return resp
 
     async def me(self, request: web.Request) -> web.Response:
-        user = request.get("user")
+        user = request.get(_USER)
         totp_on = False
         if user is not None:
             totp_on = bool(await self.auth.totp_secret(user["name"]))
@@ -635,7 +646,7 @@ class APIServer:
                      detail: str = "") -> None:
         if self.app.db is None:
             return
-        user = request.get("user") or {}
+        user = request.get(_USER) or {}
         try:
             await self.app.db.execute(
                 "INSERT INTO audit(ts, actor, action, target, detail, ip) VALUES(?,?,?,?,?,?)",
@@ -741,7 +752,10 @@ class APIServer:
             seconds = float(body.get("seconds", 300))
         except (TypeError, ValueError):
             return web.json_response({"error": "seconds must be a number"}, status=400)
-        if seconds < 0 or seconds > 86_400:
+        # `not 0 <= x <= cap` rather than two `>`/`<` tests: NaN fails every
+        # comparison, so it slipped between them, and "pausing" for NaN seconds
+        # answered 200 and wrote an audit entry for a pause never in force.
+        if not 0 <= seconds <= 86_400:
             return web.json_response({"error": "seconds must be 0..86400"}, status=400)
         client = _str(body, "client")
         pipe = self.app.pipeline
@@ -776,19 +790,19 @@ class APIServer:
         body = await _json(request)
         changes = body.get("changes") or {}
         if not isinstance(changes, dict) or not changes:
-            raise web.HTTPBadRequest(text="no changes")
+            raise _bad_request("no changes")
         # A write-only field comes back from the form empty when the operator
         # did not touch it. Writing that through would clear the credential.
         changes = {k: v for k, v in changes.items()
                    if not (getattr(st._BY_PATH.get(k), "secret", False)
                            and (v is None or v == ""))}
         if not changes:
-            raise web.HTTPBadRequest(text="no changes")
+            raise _bad_request("no changes")
 
         path = self.app._config_path
         ok, why = _config_writable(path)
         if not ok:
-            raise web.HTTPBadRequest(text=why)
+            raise _bad_request(why)
 
         from pathlib import Path
 
@@ -799,7 +813,7 @@ class APIServer:
         try:
             tree = yaml.safe_load(src.read_text()) or {} if src.exists() else {}
         except Exception as e:
-            raise web.HTTPBadRequest(text=f"the config file could not be read: {e}") from e
+            raise _bad_request(f"the config file could not be read: {e}") from e
 
         try:
             for key, raw in changes.items():
@@ -811,23 +825,22 @@ class APIServer:
                 else:
                     st.merge(tree, key, st.coerce(key, raw))
         except KeyError as e:
-            raise web.HTTPBadRequest(text=f"unknown setting {e}") from e
+            raise _bad_request(f"unknown setting {e}") from e
         except (ValueError, TypeError) as e:
-            raise web.HTTPBadRequest(text=str(e)) from e
+            raise _bad_request(str(e)) from e
 
         # Validate before writing: a config file that fails to parse would take
         # the resolver down on its next start, from a form submission.
         try:
             Config.model_validate(tree)
         except Exception as e:
-            raise web.HTTPBadRequest(text=f"rejected: {e}") from e
+            raise _bad_request(f"rejected: {e}") from e
 
         text = yaml.safe_dump(tree, sort_keys=False, allow_unicode=True)
         try:
             _write_config(src, text)
         except OSError as e:
-            raise web.HTTPBadRequest(
-                text=f"the config file could not be written: {e}") from e
+            raise _bad_request(f"the config file could not be written: {e}") from e
         await self._audit(request, "settings.write", ",".join(sorted(changes)))
         try:
             # Apply, do not "reload": a full reload re-downloads and recompiles
@@ -1253,6 +1266,11 @@ class APIServer:
         return ws
 
     async def _spa_index(self, request: web.Request) -> web.Response:
+        # The catch-all that lets the console deep-link would otherwise answer
+        # a mistyped or retired API path with 200 and the console's HTML, which
+        # a client reads as success and then fails to parse.
+        if request.path == API or request.path.startswith(API + "/"):
+            raise _http_error(web.HTTPNotFound, "no such endpoint")
         from pathlib import Path
         index = Path(__file__).resolve().parent.parent / "web" / "dist" / "index.html"
         return web.FileResponse(index)
@@ -1280,9 +1298,15 @@ async def _json(request: web.Request) -> dict:
     return body if isinstance(body, dict) else {}
 
 
+def _http_error(cls, error: str):
+    """An aiohttp HTTP exception carrying the API's one error shape,
+    `{"error": "..."}` — the shape the OpenAPI document promises and the
+    console reads. Some of these used to go out as bare text."""
+    return cls(text=json.dumps({"error": error}), content_type="application/json")
+
+
 def _bad_request(error: str) -> web.HTTPBadRequest:
-    return web.HTTPBadRequest(text=json.dumps({"error": error}),
-                              content_type="application/json")
+    return _http_error(web.HTTPBadRequest, error)
 
 
 def _str(body: dict, name: str, default: str = "") -> str:
@@ -1313,7 +1337,10 @@ def _client_ip(request: web.Request) -> str:
 
 _OPENAPI = {
     "openapi": "3.0.3",
-    "info": {"title": "Trench API", "version": __version__},
+    "info": {"title": "Trench API", "version": __version__,
+             "license": {"name": "MIT", "url": "https://opensource.org/licenses/MIT"}},
+    # Paths below are absolute, so the server is wherever this was fetched from.
+    "servers": [{"url": "/"}],
     # Every route the server registers, except the console SPA at `/`. Kept
     # complete by `tests/test_openapi.py` rather than by remembering: this
     # described 16 of 47 routes, and the omissions included `/auth/login`, so a
@@ -1416,9 +1443,115 @@ _OPENAPI = {
 }
 
 
+#: Operations anyone may call. Everything else needs a session cookie or a
+#: bearer token, and at least the role its summary names.
+_PUBLIC = {(f"{API}/auth/login", "post"), (f"{API}/auth/logout", "post"),
+           (f"{API}/openapi.json", "get"),
+           ("/metrics", "get"), ("/healthz", "get"), ("/readyz", "get")}
+#: Callable either way; the answer describes whoever is asking, or nobody.
+_OPTIONAL_AUTH = {(f"{API}/auth/me", "get")}
+
+
+def _q(name: str, kind: str = "string", desc: str = "", **schema) -> dict:
+    return {"name": name, "in": "query", "required": False,
+            "schema": {"type": kind, **schema}, "description": desc}
+
+
+_US = "Microseconds since the Unix epoch"
+_QLOG_FILTERS = [_q("qname", desc="Name contains"), _q("client", desc="Client address"),
+                 _q("action", desc="blocked, cached, forwarded, failed, …"),
+                 _q("since", "integer", _US, minimum=0), _q("until", "integer", _US, minimum=0)]
+
+#: Query parameters, as the handlers read them (see `_num` for the numeric
+#: ones: a malformed or out-of-range value falls back or is clamped, never 500s).
+_QUERY = {
+    (f"{API}/querylog", "get"): [
+        *_QLOG_FILTERS, _q("rcode"), _q("upstream"),
+        _q("limit", "integer", "Rows per page", minimum=0, maximum=1000, default=100),
+        _q("offset", "integer", minimum=0, default=0)],
+    (f"{API}/analytics", "get"): [
+        *_QLOG_FILTERS,
+        _q("bucket", enum=["none", "minute", "hour", "day", "dow_hour"], default="none"),
+        _q("group", enum=["none", "client_ip", "action", "qtype", "rcode", "upstream", "qname"],
+           default="none"),
+        _q("metric", enum=["count", "avg_latency", "max_latency"], default="count"),
+        _q("top", "integer", "Most groups returned", minimum=0, maximum=12, default=8)],
+    (f"{API}/timeseries", "get"): [
+        _q("minutes", "integer", minimum=0, maximum=180, default=60)],
+    (f"{API}/explain", "get"): [
+        {**_q("name", desc="The name to explain"), "required": True},
+        _q("type", desc="Query type", default="A"), _q("client", desc="As this client"),
+        _q("resolve", desc="1 to also resolve it live", enum=["0", "1", "true", "yes"])],
+    (f"{API}/history", "get"): [
+        {**_q("name"), "required": True},
+        _q("days", "integer", "Look-back, capped at the log's retention", minimum=0)],
+    (f"{API}/silence", "get"): [_q("status", desc="Only devices in this state")],
+    (f"{API}/collateral", "get"): [
+        _q("hours", "number", minimum=0, maximum=720, default=24),
+        _q("limit", "integer", minimum=0, maximum=200, default=25)],
+    (f"{API}/lists", "get"): [_q("hours", "number", minimum=0, maximum=720, default=24)],
+    (f"{API}/list-reviews", "get"): [
+        _q("limit", "integer", minimum=0, maximum=200, default=20)],
+}
+
+
+def _body(props: dict, required: tuple = ()) -> dict:
+    schema: dict = {"type": "object", "properties": props}
+    if required:
+        schema["required"] = list(required)
+    return {"required": True, "content": {"application/json": {"schema": schema}}}
+
+
+_S = {"type": "string"}
+_STRS = {"type": "array", "items": _S}
+_POLICY = {"type": "object", "description": "Per-client policy; see docs/api.md"}
+
+#: Request bodies. Each field's type is enforced: a wrong one is a 400.
+_BODIES = {
+    (f"{API}/auth/login", "post"): _body(
+        {"name": _S, "password": _S, "code": {**_S, "description": "TOTP, once enrolled"}},
+        ("name", "password")),
+    (f"{API}/auth/tokens", "post"): _body(
+        {"name": _S, "scope": {"type": "string", "enum": ["viewer", "editor", "admin"],
+                               "default": "viewer"},
+         "expires_days": {"type": "integer", "minimum": 0, "maximum": 3650, "default": 0,
+                          "description": "0 never expires"}}, ("name",)),
+    (f"{API}/auth/totp/confirm", "post"): _body({"code": _S}, ("code",)),
+    (f"{API}/rules", "post"): _body(
+        {"domain": _S, "action": {"type": "string", "enum": ["deny", "allow", "remove"]}},
+        ("domain", "action")),
+    (f"{API}/pause", "post"): _body(
+        {"seconds": {"type": "number", "minimum": 0, "maximum": 86400, "default": 300,
+                     "description": "0 resumes"},
+         "client": {**_S, "description": "Only this client; everyone if absent"}}),
+    (f"{API}/whatif", "post"): _body(
+        {"deny": _STRS, "allow": _STRS,
+         "list_text": {**_S, "description": "Rules in full filter syntax"},
+         "hours": {"type": "number", "minimum": 0, "maximum": 720, "default": 24},
+         "limit": {"type": "integer", "minimum": 0, "maximum": 50000, "default": 5000}}),
+    (f"{API}/settings", "put"): _body(
+        {"changes": {"type": "object", "description": "Dotted setting path to new value"}},
+        ("changes",)),
+    (f"{API}/update/apply", "post"): _body(
+        {"version": {**_S, "description": "Latest release if absent"}}),
+    (f"{API}/clients/manage", "post"): _body(
+        {"ident": _S, "ident_type": {"type": "string", "enum": sorted(APIServer._IDENT_TYPES)},
+         "name": _S, "comment": _S, "policy": _POLICY}, ("ident",)),
+    (f"{API}/clients/manage/{{cid}}", "put"): _body(
+        {"ident": _S, "ident_type": {"type": "string", "enum": sorted(APIServer._IDENT_TYPES)},
+         "name": _S, "comment": _S, "policy": _POLICY}),
+}
+
+_ERROR: dict[str, Any] = {"description": "Refused; the reason is in `error`",
+          "content": {"application/json": {"schema": {
+              "type": "object", "properties": {"error": _S}, "required": ["error"]}}}}
+
+
 def _complete_operations(doc: dict) -> dict:
     """Fill in what OpenAPI 3.0 requires of every operation and the summaries
-    above leave out, so the served document validates.
+    above leave out, so the served document validates — and what a generated
+    client needs to be usable: how to authenticate, stable operation names,
+    parameters and request bodies.
 
     Without this, 51 operations lacked the mandatory `responses` and the three
     templated paths never declared `{tid}`/`{cid}` — the spec validator reported
@@ -1426,14 +1559,55 @@ def _complete_operations(doc: dict) -> dict:
     refuse the file outright however complete its route list is. Done here
     rather than by hand so a route added later cannot reintroduce either.
     """
+    doc.setdefault("components", {})["securitySchemes"] = {
+        "session": {"type": "apiKey", "in": "cookie", "name": "dgsession",
+                    "description": "Set by POST /auth/login"},
+        "bearer": {"type": "http", "scheme": "bearer",
+                   "description": "An API token from POST /auth/tokens"},
+    }
+    doc["components"]["schemas"] = {"Error": _ERROR["content"]["application/json"]["schema"]}
+    doc["security"] = [{"session": []}, {"bearer": []}]
+    error = {"$ref": "#/components/responses/Error"}
+    doc["components"]["responses"] = {"Error": {
+        "description": _ERROR["description"],
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}}
     for path, item in doc["paths"].items():
         params = [{"name": name, "in": "path", "required": True,
                    "schema": {"type": "integer"}}
                   for name in re.findall(r"{(\w+)}", path)]
-        for op in item.values():
-            op.setdefault("responses", {"default": {"description": "See summary"}})
+        rel = path[len(API):] if path.startswith(API) else path
+        tag = rel.strip("/").split("/")[0].split(".")[0] if path.startswith(API) else "ops"
+        for method, op in item.items():
+            key = (path, method)
+            op.setdefault("operationId", method + "_" + (
+                re.sub(r"[^0-9a-zA-Z]+", "_", rel.replace("{", "by_")).strip("_") or "root"))
+            op.setdefault("tags", [tag])
+            responses = op.setdefault("responses", {})
+            if path == f"{API}/ws":
+                responses.setdefault("101", {"description": "Switching to WebSocket"})
+            else:
+                responses.setdefault("200", {"description": "OK"})
+            responses.setdefault("default", error)
+            if key in _BODIES or key in _QUERY or params:
+                responses.setdefault("400", error)
             if params:
-                op.setdefault("parameters", params)
+                responses.setdefault("404", error)
+            if key == (f"{API}/auth/login", "post"):
+                responses.setdefault("401", error)
+            if key == ("/readyz", "get"):
+                responses.setdefault("503", {"description": "Not ready yet"})
+            if key in _PUBLIC:
+                op["security"] = []
+            elif key in _OPTIONAL_AUTH:
+                op["security"] = [{}, {"session": []}, {"bearer": []}]
+            else:
+                responses.setdefault("401", error)
+                responses.setdefault("403", error)
+            query = _QUERY.get(key, [])
+            if params or query:
+                op.setdefault("parameters", params + query)
+            if key in _BODIES:
+                op.setdefault("requestBody", _BODIES[key])
     return doc
 
 

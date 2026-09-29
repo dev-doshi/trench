@@ -8,6 +8,7 @@
  */
 import { computed, onMounted, ref } from "vue";
 import { api, setToken } from "../lib/api";
+import { local } from "../lib/local";
 import { store } from "../lib/store";
 import Collection from "../ui/Collection.vue";
 
@@ -36,8 +37,8 @@ const loading = ref(true);
 const busy = ref(false);
 const group = ref("Resolution");
 
-const token = ref(localStorage.getItem("dg_token") || "");
-const skin = ref(localStorage.getItem("bw_skin") || "auto");
+const token = ref(local.get("dg_token") || "");
+const skin = ref(local.get("bw_skin") || "auto");
 
 /* Access: API tokens and the second factor. Both live here rather than in the
  * generated form above, because neither is a config value — they are records in
@@ -198,7 +199,7 @@ function revert() {
 function setSkin(v: string) {
   skin.value = v;
   document.documentElement.dataset.skin = v;
-  localStorage.setItem("bw_skin", v);
+  local.set("bw_skin", v);
 }
 
 function saveTokenValue() {

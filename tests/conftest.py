@@ -32,3 +32,28 @@ def _keep_the_trench_logger_capturable():
     root.handlers = handlers
     root.setLevel(level)
     root.propagate = propagate
+
+
+@pytest.fixture(autouse=True)
+def _no_leaked_database_threads():
+    """Fail the test that leaves an aiosqlite connection open.
+
+    aiosqlite runs each connection on a worker thread that is not a daemon, so
+    one unclosed connection anywhere in the suite keeps the interpreter from
+    exiting after the last test: every test passes and the run hangs until the
+    CI job times out, with nothing naming the culprit. Checked per test, the
+    failure lands on the test that leaked.
+    """
+    import threading
+
+    before = set(threading.enumerate())
+    yield
+    leaked = [t for t in threading.enumerate()
+              if t not in before and "_connection_worker_thread" in t.name]
+    for t in leaked:
+        t.join(timeout=2)
+    leaked = [t for t in leaked if t.is_alive()]
+    if leaked:
+        pytest.fail(f"{len(leaked)} aiosqlite connection(s) left open; close them "
+                    "(or restore the attribute holding one) before the test ends",
+                    pytrace=False)

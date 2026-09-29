@@ -9,9 +9,32 @@ engine that actually serves queries, from the rule text an operator would write.
 """
 from __future__ import annotations
 
+import os
 import socket
 
+import pytest
+
 from trench.filter import FilterEngine, iter_rules
+
+
+def _ipv6_loopback() -> bool:
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_DGRAM) as s:
+            s.bind(("::1", 0))
+    except OSError:
+        return False
+    return True
+
+
+# Permission tests chmod a path and expect a write to fail; root ignores mode
+# bits, so under root (a CI container, `docker run` without `--user`) they
+# would test nothing and fail.
+needs_unprivileged = pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root bypasses file permission bits")
+
+needs_ipv6 = pytest.mark.skipif(
+    not _ipv6_loopback(), reason="no IPv6 loopback on this host")
 
 
 def blocked_engine(*domains: str, allow: tuple[str, ...] = ()) -> FilterEngine:

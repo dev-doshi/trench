@@ -21,12 +21,12 @@
  *     the same way, which is why the backend marks protective lists separately
  */
 import { computed, onMounted, ref } from "vue";
-import { useRouter } from "vue-router";
+import { RouterLink } from "vue-router";
 import { api } from "../lib/api";
+import { term } from "../lib/qlang";
 import { align } from "../lib/dnsname";
 import { store } from "../lib/store";
 
-const router = useRouter();
 const nf = new Intl.NumberFormat();
 
 const findings = ref<any[]>([]);
@@ -113,10 +113,11 @@ const listRows = computed(() => (lists.value?.lists || []) as any[]);
             <span class="vd" :class="f.severity === 'high' ? 'warn' : 'calm'">
               {{ f.severity }}
             </span>
-            <a class="mono" style="font-size:var(--b-read-s);color:var(--b-ink);cursor:pointer"
-               @click="router.push({ path: '/', query: { q: `name=${f.domain}` } })">
+            <RouterLink class="mono" style="font-size:var(--b-read-s);color:var(--b-ink)"
+                        :to="{ path: '/', query: { q: term('name', f.domain) } }"
+                        :title="`Browse the traffic for ${f.domain}`">
               <span style="color:var(--b-ink-4)">{{ align(f.domain).sub }}{{ align(f.domain).sub ? "." : "" }}</span>{{ align(f.domain).reg }}
-            </a>
+            </RouterLink>
             <span class="b-cap" style="margin-left:auto" v-if="allowed.has(f.domain)">allowed</span>
             <button class="btn-q" v-else @click="allowIt(f)">allow this name</button>
           </div>

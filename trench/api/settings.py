@@ -448,7 +448,7 @@ FIELDS: list[Field_] = [
                 "--allow-dhcp when the daemon starts. The config file cannot "
                 "turn it on, and this page will not pretend otherwise."),
     Field_("log.json_logs", "Log as JSON", "bool", "Deployment", adopter="log"),
-    Field_("updates.index", "Package index", "text", "Updates", adopter="updates"),
+    Field_("updates.index", "Release index", "text", "Updates", adopter="updates"),
     Field_("updates.timeout", "Update timeout", "float", "Updates", unit="s",
            min=1, adopter="updates"),
     Field_("updates.unit", "systemd unit", "text", "Updates", adopter="updates",

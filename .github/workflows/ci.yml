@@ -4,36 +4,126 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The release workflow runs this whole file against the tag before it
+  # publishes anything, so a release is gated on exactly what gates a merge.
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit, branch or tag to test (defaults to the caller's ref)
+        type: string
+        default: ""
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # workflow_call runs share the caller's ref; keep them out of the PR group.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Actions are pinned by commit SHA (a tag can be moved; a SHA cannot).
+# Dependabot's github-actions ecosystem keeps both the SHA and the comment
+# current.
+
+env:
+  # Same uv as the Dockerfile's `FROM ghcr.io/astral-sh/uv:` line.
+  UV_VERSION: "0.8.17"
+  # The interpreter comes from setup-python, never from uv's own downloads: a
+  # pinned uv only knows the Pythons that existed when it was released (0.8.17
+  # offers 3.14.0rc2, whose typing internals pydantic cannot use), so the
+  # newest matrix cell would test a release candidate instead of the release.
+  UV_PYTHON_PREFERENCE: only-system
 
 jobs:
-  test:
+  # Lint and type checking run once, against the lockfile: the results do not
+  # depend on the interpreter, and one red lint job is easier to read than four.
+  lint:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python: ["3.11", "3.12"]
+    env:
+      UV_PYTHON: "3.12"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          python-version: ${{ matrix.python }}
-          cache: pip
-          cache-dependency-path: pyproject.toml
-      - name: Install
-        run: pip install -e ".[dev]"
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      # --locked fails if uv.lock no longer satisfies pyproject.toml, so a
+      # dependency change cannot merge without the lockfile that goes with it.
+      - name: Install (locked)
+        run: uv sync --locked --extra dev
       - name: Lint (ruff)
-        run: ruff check trench/ tests/ scripts/ deploy/
+        run: uv run ruff check trench/ tests/ scripts/ deploy/
       # Ratcheted: the existing backlog is recorded in mypy-baseline.txt and
       # only *new* findings fail. See scripts/mypy_gate.py.
       - name: Type check (mypy)
-        run: python3 scripts/mypy_gate.py
+        run: uv run python scripts/mypy_gate.py
+
+  # The supported range is every CPython that `requires-python` admits and the
+  # classifiers claim. Dependencies come from uv.lock so a red cell means the
+  # code changed, not that a dependency did.
+  test:
+    runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: ${{ matrix.python }}
+    # The suite takes about two minutes. Without a ceiling, a process that
+    # cannot exit (an unclosed aiosqlite connection's non-daemon thread) holds
+    # the runner for GitHub's six-hour default.
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - name: Install (locked)
+        run: uv sync --locked --extra dev
+      - name: Tests
+        if: matrix.python != '3.12'
+        run: uv run pytest -q
+      # Coverage is measured on one cell: the numbers are the same on every
+      # interpreter, and tracing slows the suite noticeably.
+      - name: Tests with coverage
+        if: matrix.python == '3.12'
+        run: |
+          uv run pytest -q --cov --cov-report=term --cov-report=xml
+          uv run coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload coverage report
+        if: matrix.python == '3.12'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: coverage
+          path: coverage.xml
+
+  # The lockfile pins what CI tests; installing Trench from GitHub or a release
+  # wheel gets whatever is newest within the declared ranges. This cell
+  # installs the way a user does, so a new aiohttp or pydantic release that
+  # breaks Trench shows up here before it shows up in an issue.
+  test-latest-deps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.14"
+      - name: Install (newest allowed versions)
+        run: pip install --upgrade -e ".[dev]"
       - name: Tests
         run: pytest -q
 
@@ -42,8 +132,10 @@ jobs:
   community:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       - run: pip install pyyaml
@@ -56,8 +148,10 @@ jobs:
   frontend:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
           cache: npm
@@ -86,45 +180,78 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          ref: ${{ inputs.ref }}
           fetch-depth: 0          # need the base commit to compare against
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       - name: Install
         run: pip install -e ".[dev]"
       - name: Benchmark the base commit
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          git checkout --detach ${{ github.event.pull_request.base.sha }}
+          git checkout --detach "$BASE_SHA"
           if [ -f scripts/bench.py ]; then
             python3 scripts/bench.py --quick --json /tmp/base.json
           else
             echo "no benchmark on the base commit; nothing to compare against"
           fi
       - name: Benchmark this branch on the same runner
+        env:
+          HEAD_SHA: ${{ github.sha }}
         run: |
-          git checkout --detach ${{ github.sha }}
+          git checkout --detach "$HEAD_SHA"
           if [ -f /tmp/base.json ]; then
             python3 scripts/bench.py --quick --compare /tmp/base.json --threshold 0.30
           else
             python3 scripts/bench.py --quick
           fi
 
+  # An image that builds is not an image that runs. Build the native platform,
+  # load it, and prove the server inside comes up healthy on the example
+  # config. arm64 goes through QEMU, which is slow, so it is only built where
+  # it matters: on main, and in the release workflow that publishes it.
   docker:
     runs-on: ubuntu-latest
-    needs: test
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - name: Build image (amd64+arm64)
-        uses: docker/build-push-action@v6
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - name: Build image (amd64)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
-          push: false
+          load: true
           tags: trench:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test the image
+        run: |
+          docker run --rm trench:ci trench --version
+          docker run -d --name smoke \
+            -v "$PWD/trench.example.yaml:/data/trench.yaml:ro" trench:ci
+          for _ in $(seq 30); do
+            if docker exec smoke python3 /usr/local/bin/trench-healthcheck; then
+              echo "healthy"; exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::container never became healthy"
+          docker logs smoke
+          exit 1
+      - if: github.event_name == 'push'
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      - name: Build image (arm64)
+        if: github.event_name == 'push'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          platforms: linux/arm64
+          push: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -132,8 +259,10 @@ jobs:
   package:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       - name: Build sdist and wheel
@@ -141,22 +270,24 @@ jobs:
           pip install build twine
           python3 -m build
       - name: Check metadata
-        run: twine check dist/*
+        run: twine check --strict dist/*
       - name: Install the wheel and use it
         run: |
           python3 -m venv /tmp/v
           /tmp/v/bin/pip install dist/*.whl
           /tmp/v/bin/trench --version
-          # The seed blocklist and the admin console must survive packaging.
-          /tmp/v/bin/python3 -c "
+          /tmp/v/bin/trenchd --help > /dev/null
+          # The seed blocklist, the admin console and the lazily imported
+          # modules must all survive packaging.
+          cd /tmp && /tmp/v/bin/python3 -c "
           from pathlib import Path
-          import trench
+          import trench, trench.web.blockpage, trench.app
           root = Path(trench.__file__).parent
           assert (root / 'data' / 'default_blocklist.txt').is_file(), 'seed blocklist missing from the wheel'
           assert (root / 'web' / 'dist' / 'index.html').is_file(), 'admin console missing from the wheel'
           print('packaged data present')
           "
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: dist
           path: dist/

@@ -16,25 +16,55 @@ files keep working and the database migrates itself forward on first start.
 Anything that changes defaults or on-the-wire behaviour is called out in
 [the changelog](https://github.com/dev-doshi/trench/blob/main/CHANGELOG.md).
 
-## pip
+## From GitHub
+
+Let Trench do it — it checks
+[GitHub Releases](https://github.com/dev-doshi/trench/releases), verifies the
+wheel's sha256 and smoke-tests it before installing:
 
 ```bash
-pip install --upgrade trench
+trench upgrade apply
 systemctl restart trench
 journalctl -u trench -n 50
 ```
 
+`trench upgrade status` shows the installed and the newest available version
+without changing anything.
+
+Or by hand, into the same virtual environment it was installed into:
+
+```bash
+/opt/trench/bin/pip install --upgrade "git+https://github.com/dev-doshi/trench@v2.1.0"
+systemctl restart trench
+```
+
+## From a checkout
+
+```bash
+git pull
+pip install -e .
+systemctl restart trench
+```
+
+With Compose, which builds the image from the checkout:
+
+```bash
+git pull
+docker compose up -d --build
+```
+
 ## Docker
+
+Once images are published, point Compose at the registry instead of `build:`
+and pin a version rather than tracking `latest` on anything you depend on:
+
+```yaml
+image: ghcr.io/dev-doshi/trench:2.0.0
+```
 
 ```bash
 docker compose pull
 docker compose up -d
-```
-
-Pin a version rather than tracking `latest` on anything you depend on:
-
-```yaml
-image: ghcr.io/dev-doshi/trench:2.0.0
 ```
 
 ## Database migrations

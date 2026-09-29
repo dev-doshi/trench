@@ -1237,25 +1237,31 @@ class App:
                 self.learn.dump(self._learn_file())
             except Exception:
                 log.exception("popularity dump failed")
+        # Every component is stopped best-effort: one failing to close must not
+        # skip the query log (up to 50k buffered rows) or the database (an
+        # un-checkpointed WAL), and must not turn SIGTERM into a traceback. An
+        # unclosed database is worse than a lost write: aiosqlite's worker
+        # thread is not a daemon, so the interpreter would never exit.
+        stoppers: list = []
         if self.api is not None:
-            await self.api.stop()
+            stoppers.append(self.api)
         if self.auth is not None:
-            for sec in self.auth.secondaries.values():
-                await sec.stop()
-        for fe in self.frontends:
-            # One frontend failing to close must not skip the query log (up to
-            # 50k buffered rows) or the database (an unchecked-pointed WAL), and
-            # must not turn SIGTERM into a traceback.
-            try:
-                await fe.stop()
-            except Exception:
-                log.exception("stopping %s failed", type(fe).__name__)
+            stoppers.extend(self.auth.secondaries.values())
+        stoppers.extend(self.frontends)
         if self.querylog is not None:
-            await self.querylog.stop()
-        if self.db is not None:
-            await self.db.close()
-        if self.db_ro is not None:
-            await self.db_ro.close()
+            stoppers.append(self.querylog)
+        for part in stoppers:
+            try:
+                await part.stop()
+            except Exception:
+                log.exception("stopping %s failed", type(part).__name__)
+        for db in (self.db, self.db_ro):
+            if db is None:
+                continue
+            try:
+                await db.close()
+            except Exception:
+                log.exception("closing the database failed")
         self._stop.set()
 
     def _cache_file(self):

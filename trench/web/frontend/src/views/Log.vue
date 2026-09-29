@@ -19,13 +19,13 @@
  *   · export is NDJSON as well as CSV, because these rows are events and a
  *     stream of objects survives a name containing a comma
  */
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { api } from "../lib/api";
 import { align, answerList } from "../lib/dnsname";
 import { isAuthored, isStale, kindOf, meta, outcomeOf } from "../lib/outcome";
 import {
-  compile, evaluate, explain, pushdown, QueryError, type Ctx, type Node, type Row,
+  compile, evaluate, explain, pushdown, QueryError, term, type Ctx, type Node, type Row,
 } from "../lib/qlang";
 import { registrable } from "../lib/dnsname";
 import { store } from "../lib/store";
@@ -45,7 +45,11 @@ const rows = ref<Row[]>([]);
 const total = ref(0);
 const loading = ref(true);
 const err = ref("");
-const open = ref<number | null>(null);
+/** The expanded row, by identity: an index would slide to a different row the
+ *  moment follow mode puts new ones above it. */
+const open = ref<string | null>(null);
+const keyOf = (r: Row) => `${r.ts}|${r.client_ip}|${r.qname}|${r.qtype}`;
+function toggle(r: Row) { const k = keyOf(r); open.value = open.value === k ? null : k; }
 const follow = ref(false);
 
 const queryText = ref((route.query.q as string) || "");
@@ -58,15 +62,19 @@ watch(queryText, (v) => {
   catch (e) { qErr.value = e instanceof QueryError ? e.message : String(e); }
 }, { immediate: true });
 
-const kept = computed(() =>
-  qErr.value ? rows.value : rows.value.filter((r) => evaluate(ast.value, r, qctx)));
+// While the text does not parse, the table keeps the last query that did
+// (`ast` is only replaced on success) — a half-typed "(blocked" should not
+// flash every row in the window at you.
+const kept = computed(() => rows.value.filter((r) => evaluate(ast.value, r, qctx)));
 const said = computed(() => (qErr.value ? "" : explain(ast.value)));
 const pushed = computed(() => Object.keys(pushdown(ast.value)));
 
 const t1 = () => Date.now() * 1000;
 const PAGE = 1000, BUDGET = 6;
 
+let seq = 0;
 async function load() {
+  const mine = ++seq;
   loading.value = true; err.value = "";
   const until = t1(), since = until - WINDOWS[winIdx.value].us;
   const base = { ...pushdown(ast.value), since, until, limit: PAGE };
@@ -74,15 +82,30 @@ async function load() {
   try {
     for (let p = 0; p < BUDGET; p++) {
       const r = await api.get("/querylog" + api.qs({ ...base, offset: p * PAGE }));
+      if (mine !== seq) return;          // a newer load owns the table now
       total.value = r.total ?? 0;
       got.push(...(r.rows || []));
       if (!r.rows || r.rows.length < PAGE) break;
     }
     rows.value = got.sort((a, b) => b.ts - a.ts);
   } catch (e: any) {
-    err.value = e?.message || "the query log could not be read";
-  } finally { loading.value = false; }
+    if (mine === seq) err.value = e?.message || "the query log could not be read";
+  } finally { if (mine === seq) loading.value = false; }
 }
+
+/* What the server was asked for has to follow the query, or the table is a
+ * filter over the wrong rows: after `client=a` the loaded rows are all a's, and
+ * editing it to `client=b` would say "no rows" without a reload. So whenever
+ * the server's share of the query changes, fetch again — debounced, so typing
+ * a name does not send a request per keystroke. Enter still loads at once. */
+let pending: ReturnType<typeof setTimeout> | undefined;
+watch(() => JSON.stringify(pushdown(ast.value)), (now, before) => {
+  if (now === before) return;
+  clearTimeout(pending);
+  pending = setTimeout(load, 350);
+});
+function loadNow() { clearTimeout(pending); load(); }
+onBeforeUnmount(() => clearTimeout(pending));
 
 /* Follow mode joins live rows to the head. Off by default: a table that moves
  * while you read it is the problem the Live view exists to solve. */
@@ -146,20 +169,30 @@ function exportNdjson() {
 
     <div class="vw-body">
       <div class="sec">
-        <input class="inp" v-model="queryText" spellcheck="false" @keydown.enter="load"
+        <input class="inp" v-model="queryText" spellcheck="false" autocomplete="off"
+               @keydown.enter="loadNow" aria-label="Filter the log"
+               :aria-invalid="!!qErr" :aria-describedby="'log-said'"
                placeholder="failed or ms>500 · client=10.0.4.71 and blocked" />
-        <p class="sec-note" style="margin-top:8px" v-if="qErr" :style="{ color: 'var(--o-failed)' }">
-          {{ qErr }}
-        </p>
-        <p class="sec-note" style="margin-top:8px" v-else-if="queryText">
-          {{ said }}
-          <b v-if="pushed.length">
-            The server answered {{ pushed.join(", ") }}; the rest was applied here.
-          </b>
-        </p>
-        <p class="sec-note" v-else>
-          {{ nf.format(rows.length) }} rows loaded of {{ nf.format(total) }} in this
-          window.
+        <p class="sec-note" id="log-said" style="margin-top:8px" aria-live="polite">
+          <template v-if="qErr">
+            <span style="color:var(--o-failed)">{{ qErr }}</span> —
+            Still showing the last query that made sense.
+          </template>
+          <template v-else-if="queryText">
+            {{ said }}
+            <b>{{ nf.format(kept.length) }} of {{ nf.format(rows.length) }} loaded rows match.</b>
+            <template v-if="pushed.length">
+              The server narrowed by {{ pushed.join(", ") }}; the rest was applied here.
+            </template>
+          </template>
+          <template v-else>
+            {{ nf.format(rows.length) }} rows loaded of {{ nf.format(total) }} in this
+            window.
+          </template>
+          <template v-if="rows.length < total">
+            Only the newest {{ nf.format(rows.length) }} were read — narrow the window
+            to reach the rest.
+          </template>
         </p>
       </div>
 
@@ -176,9 +209,11 @@ function exportNdjson() {
             </tr>
           </thead>
           <tbody>
-            <template v-for="(r, i) in kept.slice(0, 500)" :key="r.ts + '-' + i">
-              <tr class="click" :class="{ on: open === i }" @click="open = open === i ? null : i">
-                <td :title="stamp(r.ts)" style="color:var(--b-ink-4)">{{ ago(r.ts) }}</td>
+            <template v-for="(r, i) in kept.slice(0, 500)" :key="keyOf(r) + '-' + i">
+              <tr class="click" :class="{ on: open === keyOf(r) }" tabindex="0"
+                  :aria-expanded="open === keyOf(r)" @click="toggle(r)"
+                  @keydown.enter.prevent="toggle(r)" @keydown.space.prevent="toggle(r)">
+                <td :title="stamp(r.ts)" style="color:var(--b-ink-3)">{{ ago(r.ts) }}</td>
                 <td class="id">{{ r.client_id || r.client_ip }}</td>
                 <td class="id">
                   <span class="dim">{{ align(r.qname).sub }}{{ align(r.qname).sub ? "." : "" }}</span>{{ align(r.qname).reg }}
@@ -194,7 +229,7 @@ function exportNdjson() {
               </tr>
               <!-- the chain, in place: a drawer would cover the rows you are
                    comparing this one against -->
-              <tr class="det" v-if="open === i">
+              <tr class="det" v-if="open === keyOf(r)">
                 <td colspan="6">
                   <dl class="kvs" style="padding:10px 0">
                     <dt>Asked</dt>
@@ -220,7 +255,7 @@ function exportNdjson() {
                     </template>
                   </dl>
                   <div class="row-acts" style="padding-bottom:10px">
-                    <button class="btn" @click.stop="router.push({ path: '/', query: { q: `name=${r.qname}` } })">
+                    <button class="btn" @click.stop="router.push({ path: '/', query: { q: term('name', r.qname) } })">
                       open in Browse
                     </button>
                     <button class="btn" @click.stop="store.inspect('client', r.client_ip)">

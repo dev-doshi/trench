@@ -67,17 +67,48 @@ class Zone:
         if cut is not None:
             return cut
         node = self.records.get(qname)
-        owner = qname
-        if node is None:
-            found = self._wildcard(qname)
-            if found is None:
-                # An empty non-terminal exists without holding records, so it is
-                # NODATA rather than NXDOMAIN: names below it do exist.
-                if self._is_empty_non_terminal(qname):
-                    return self._nodata(do, qname)
-                return self._nxdomain(do, qname)
-            owner, node = found
-        return self._answer_at(owner, node, qtype, do)
+        if node is not None and not _nsec3_only(node):
+            return self._answer_at(qname, node, qtype, do)
+        encloser = self._closest_encloser(qname)
+        if encloser == qname:
+            # An empty non-terminal exists without holding records, so it is
+            # NODATA rather than NXDOMAIN: names below it do exist.
+            return self._nodata(do, qname, encloser=encloser)
+        # RFC 4592 §3.3.1: only `*.<closest encloser>` may synthesize. A
+        # wildcard further up does not reach past a name that exists — with
+        # `*.example.com` and `foo.example.com` in the zone, `x.foo.example.com`
+        # is NXDOMAIN, not the wildcard's data.
+        wild_name = Name((b"*",) + encloser.labels)
+        wild = self.records.get(wild_name)
+        if wild is not None:
+            return self._answer_at(wild_name, wild, qtype, do,
+                                   synth=qname, encloser=encloser)
+        return self._nxdomain(do, qname, encloser)
+
+    def _closest_encloser(self, qname: Name) -> Name:
+        """The deepest ancestor-or-self of `qname` that exists in the zone.
+
+        A name exists when it owns records or has a descendant that does (an
+        empty non-terminal). The longest common suffix between `qname` and any
+        owner name is exactly that: it is an ancestor-or-self of an owner, so it
+        exists, and nothing deeper does. One pass, no per-ancestor rescans.
+        """
+        want = tuple(reversed(qname._lower))
+        base = len(self.origin)
+        best = base
+        for name, node in self.records.items():
+            if _nsec3_only(node):
+                continue                    # hashed owners are not in the namespace
+            low = name._lower
+            k = base
+            n = len(low)
+            while k < n and k < len(want) and low[n - 1 - k] == want[k]:
+                k += 1
+            if k > best:
+                best = k
+                if best == len(want):
+                    break
+        return Name(qname.labels[len(qname) - best:])
 
     def _delegation(self, qname: Name, qtype: int) -> Answer | None:
         """A referral, when `qname` lives inside a child zone we delegated.
@@ -119,12 +150,23 @@ class Zone:
             n = n.parent()
         return None
 
-    def _answer_at(self, owner: Name, node: dict, qtype: int, do: bool) -> Answer:
+    def _answer_at(self, owner: Name, node: dict, qtype: int, do: bool, *,
+                   synth: Name | None = None, encloser: Name | None = None) -> Answer:
+        """Answer from `node`, the records at `owner`.
+
+        `synth` is the query name when `owner` is a wildcard: RFC 4592 §3.3.1
+        says the answer is owned by the name asked for, not by `*`. Handing back
+        `*.example.com` records to a query for `x.example.com` is an answer a
+        stub discards (the owner does not match the question) and a validator
+        cannot check. The RRSIG is the wildcard's own; its label count tells a
+        validator that it was expanded.
+        """
+        shown = synth or owner
         # CNAME (unless explicitly asking for CNAME)
         if qtype != Type.CNAME and Type.CNAME in node:
             ans: list[RR] = []
             seen: set[Name] = set()
-            cur, cur_node = owner, node
+            cur, cur_node, cur_shown = owner, node, shown
             # Chased iteratively with a visited set. Recursing meant a zone
             # holding `a CNAME b` / `b CNAME a` — loadable from a zonefile, a
             # dynamic UPDATE, or an inbound AXFR — turned every query for that
@@ -135,9 +177,9 @@ class Zone:
                     break
                 seen.add(cur)
                 rd = cur_node[Type.CNAME][0]
-                ans.append(RR(cur, Type.CNAME, Class.IN,
+                ans.append(RR(cur_shown, Type.CNAME, Class.IN,
                               self.ttl_of(cur, Type.CNAME), rd))
-                self._attach_sig(ans[-1:], cur, Type.CNAME, do)
+                self._attach_sig(ans, cur, Type.CNAME, do, shown=cur_shown)
                 target = rd.name
                 if target in seen or not self._in_bailiwick(target):
                     break
@@ -150,79 +192,174 @@ class Zone:
                     self._attach_sig(tail, target, qtype, do)
                     ans.extend(tail)
                     break
-                cur, cur_node = target, nxt
-            return Answer(answers=ans)
-        if qtype in node:
+                cur, cur_node, cur_shown = target, nxt, target
+            out = Answer(answers=ans)
+        elif qtype in node:
             ttl = self.ttl_of(owner, qtype)
-            ans = [RR(owner, qtype, Class.IN, ttl, rd) for rd in node[qtype]]
-            self._attach_sig(ans, owner, qtype, do)
-            return Answer(answers=ans)
-        # NODATA
-        return self._nodata(do, owner)
-
-    def _is_empty_non_terminal(self, qname: Name) -> bool:
-        """True when `qname` holds no records but some name below it does."""
-        return any(n != qname and n.is_subdomain_of(qname) for n in self.records)
-
-    def _wildcard(self, qname: Name) -> tuple[Name, dict] | None:
-        """RFC 4592 closest-encloser synthesis: `*` at the deepest ancestor of
-        `qname` that exists, not merely at its immediate parent.
-
-        Trying only the parent meant `*.example.com` answered `x.example.com`
-        and returned NXDOMAIN for `deep.sub.example.com`, which the zone does
-        cover. The walk stops at a delegation, since names below a cut are the
-        child's to answer.
-        """
-        if len(qname) <= len(self.origin):
-            return None
-        n = qname.parent()
-        while len(n) >= len(self.origin):
-            node = self.records.get(n)
-            if node and Type.NS in node and Type.SOA not in node:
-                return None                   # a cut: not ours to synthesize past
-            wild = self.records.get(Name((b"*",) + n.labels))
-            if wild is not None:
-                return Name((b"*",) + n.labels), wild
-            if n == self.origin:
-                break
-            n = n.parent()
-        return None
+            ans = [RR(shown, qtype, Class.IN, ttl, rd) for rd in node[qtype]]
+            self._attach_sig(ans, owner, qtype, do, shown=shown)
+            out = Answer(answers=ans)
+        else:
+            return self._nodata(do, shown, wildcard=owner if synth else None,
+                                encloser=encloser)
+        if synth is not None and self._proving(do):
+            # RFC 4035 §3.1.3.3: a wildcard answer carries the proof that the
+            # name asked for does not exist, or a validator has to assume the
+            # expansion replaced a real record and fail it.
+            out.authority.extend(self._denial(synth, encloser or owner.parent(),
+                                              kind="wildcard"))
+        return out
 
     def _in_bailiwick(self, name: Name) -> bool:
         return name.is_subdomain_of(self.origin)
 
-    def _soa_rr(self) -> list[RR]:
+    def _negative_ttl(self) -> int:
+        """RFC 2308 §3 / RFC 9077: the SOA in a negative answer, and the denial
+        records beside it, live min(SOA TTL, SOA MINIMUM). Using the SOA's own
+        TTL let a zone with a one-hour SOA and a five-minute MINIMUM have its
+        NXDOMAINs cached twelve times longer than it asked."""
+        soa = self.soa
+        ttl = self.ttl_of(self.origin, Type.SOA)
+        return min(ttl, soa.minimum) if soa is not None else ttl
+
+    def _soa_rr(self, do: bool = False) -> list[RR]:
         soa = self.soa
         if soa is None:
             return []
-        rr = [RR(self.origin, Type.SOA, Class.IN, self.ttl_of(self.origin, Type.SOA), soa)]
+        ttl = self._negative_ttl()
+        rr = [RR(self.origin, Type.SOA, Class.IN, ttl, soa)]
+        self._attach_sig(rr, self.origin, Type.SOA, do, ttl=ttl)
         return rr
 
-    def _nodata(self, do: bool, owner: Name) -> Answer:
-        auth = self._soa_rr()
-        self._attach_sig(auth, self.origin, Type.SOA, do)
-        if do:
-            self._attach_nsec(auth, owner)
+    def _nodata(self, do: bool, qname: Name, *, wildcard: Name | None = None,
+                encloser: Name | None = None) -> Answer:
+        auth = self._soa_rr(do)
+        if self._proving(do):
+            if wildcard is not None:
+                auth.extend(self._denial(qname, encloser or wildcard.parent(),
+                                         kind="wildcard-nodata", wildcard=wildcard))
+            else:
+                auth.extend(self._denial(qname, encloser or qname, kind="nodata"))
         return Answer(rcode=Rcode.NOERROR, authority=auth)
 
-    def _nxdomain(self, do: bool, qname: Name) -> Answer:
-        auth = self._soa_rr()
-        self._attach_sig(auth, self.origin, Type.SOA, do)
-        if do:
-            self._attach_nsec(auth, qname)
+    def _nxdomain(self, do: bool, qname: Name, encloser: Name) -> Answer:
+        auth = self._soa_rr(do)
+        if self._proving(do):
+            auth.extend(self._denial(qname, encloser, kind="nxdomain"))
         return Answer(rcode=Rcode.NXDOMAIN, authority=auth)
 
-    def _attach_sig(self, rrs: list[RR], name: Name, rtype: int, do: bool) -> None:
+    def _attach_sig(self, rrs: list[RR], name: Name, rtype: int, do: bool, *,
+                    shown: Name | None = None, ttl: int | None = None) -> None:
         if not (do and self.signed):
             return
         sig = self.rrsigs.get((name, rtype))
         if sig is not None:
-            rrs.append(RR(name, Type.RRSIG, Class.IN, self.ttl_of(name, rtype), sig))
+            rrs.append(RR(shown or name, Type.RRSIG, Class.IN,
+                          self.ttl_of(name, rtype) if ttl is None else ttl, sig))
 
-    def _attach_nsec(self, rrs: list[RR], qname: Name) -> None:
-        # attach the NSEC covering the closest existing name (proof of non-existence)
-        node = self.records.get(self.origin, {})
-        if Type.NSEC in node:
-            rrs.append(RR(self.origin, Type.NSEC, Class.IN,
-                          self.ttl_of(self.origin, Type.NSEC), node[Type.NSEC][0]))
-            self._attach_sig(rrs, self.origin, Type.NSEC, True)
+    # --- authenticated denial (RFC 4035 §3.1.3, RFC 5155 §7.2) ---
+    def _proving(self, do: bool) -> bool:
+        return do and self.signed
+
+    def _denial(self, qname: Name, encloser: Name, *, kind: str,
+                wildcard: Name | None = None) -> list[RR]:
+        """The NSEC or NSEC3 records (with signatures) a validator needs.
+
+        This used to attach the apex NSEC to every negative answer, whatever
+        the name. The apex NSEC covers only the gap between the apex and the
+        first name after it, so for nearly every query it proved nothing, and a
+        validating resolver answered SERVFAIL for every NXDOMAIN and NODATA in
+        a signed zone.
+        """
+        if Type.NSEC3PARAM in self.records.get(self.origin, {}):
+            return self._nsec3_denial(qname, encloser, kind, wildcard)
+        want: list[Name] = []
+        if kind == "nodata" and Type.NSEC in self.records.get(qname, {}):
+            want.append(qname)                       # the NSEC at the name itself
+        elif kind == "nodata":
+            want.append(self._nsec_predecessor(qname))   # empty non-terminal
+        else:
+            want.append(self._nsec_predecessor(qname))   # qname does not exist
+            if kind == "nxdomain":
+                # ...and neither does the wildcard that could have answered it.
+                want.append(self._nsec_predecessor(Name((b"*",) + encloser.labels)))
+            elif kind == "wildcard-nodata" and wildcard is not None:
+                want.append(wildcard)                # the wildcard lacks the type
+        return self._denial_rrs(want, Type.NSEC)
+
+    def _nsec_predecessor(self, name: Name) -> Name:
+        """The NSEC owner whose gap holds `name`: the last one before it in
+        canonical order (RFC 4034 §6.1). The apex sorts first, so it is the
+        fallback."""
+        from ..resolver.dnssec.nsec import name_lt
+        best = self.origin
+        for owner, node in self.records.items():
+            if Type.NSEC in node and name_lt(owner, name) and name_lt(best, owner):
+                best = owner
+        return best
+
+    def _nsec3_denial(self, qname: Name, encloser: Name, kind: str,
+                      wildcard: Name | None) -> list[RR]:
+        chain = self._nsec3_chain()
+        if not chain:
+            return []
+        next_closer = Name(qname.labels[len(qname) - len(encloser) - 1:]) \
+            if len(qname) > len(encloser) else qname
+        want: list[Name | None] = []   # an unmatched name is simply skipped
+        if kind == "nodata":
+            want.append(self._nsec3_owner(chain, qname, match=True))
+        elif kind == "wildcard":
+            want.append(self._nsec3_owner(chain, next_closer, match=False))
+        else:
+            # RFC 5155 §7.2.1/§7.2.5: the closest encloser exists, the next
+            # closer name does not, and (for NXDOMAIN) neither does the wildcard.
+            want.append(self._nsec3_owner(chain, encloser, match=True))
+            want.append(self._nsec3_owner(chain, next_closer, match=False))
+            if kind == "nxdomain":
+                want.append(self._nsec3_owner(
+                    chain, Name((b"*",) + encloser.labels), match=False))
+            elif wildcard is not None:
+                want.append(self._nsec3_owner(chain, wildcard, match=True))
+        return self._denial_rrs([w for w in want if w is not None], Type.NSEC3)
+
+    def _nsec3_chain(self) -> list[tuple[str, Name]]:
+        return sorted((owner.labels[0].decode("ascii").lower(), owner)
+                      for owner, node in self.records.items()
+                      if Type.NSEC3 in node and owner.labels)
+
+    def _nsec3_owner(self, chain: list[tuple[str, Name]], name: Name, *,
+                     match: bool) -> Name | None:
+        from ..resolver.dnssec.nsec import nsec3_b32, nsec3_hash
+        p = self.sign_params
+        h = nsec3_b32(nsec3_hash(name, p.get("nsec3_salt", b""),
+                                 p.get("nsec3_iterations", 0))).lower()
+        prev = chain[-1][1]                  # wrap: the last hash covers the front
+        for owner_hash, owner in chain:
+            if owner_hash == h:
+                return owner
+            if owner_hash > h:
+                break
+            prev = owner
+        return None if match else prev
+
+    def _denial_rrs(self, owners: list[Name], rtype: int) -> list[RR]:
+        out: list[RR] = []
+        seen: set[Name] = set()
+        ttl = self._negative_ttl()
+        for owner in owners:
+            if owner in seen:
+                continue
+            seen.add(owner)
+            rds = self.records.get(owner, {}).get(rtype)
+            if not rds:
+                continue
+            out.append(RR(owner, rtype, Class.IN, ttl, rds[0]))
+            self._attach_sig(out, owner, rtype, True, ttl=ttl)
+        return out
+
+
+def _nsec3_only(node: dict) -> bool:
+    """A hashed NSEC3 owner: bookkeeping stored beside the zone's names, not a
+    name in it. Treating one as real made `<hash>.example.com` exist."""
+    return bool(node) and Type.NSEC3 in node and all(
+        t in (Type.NSEC3, Type.RRSIG) for t in node)

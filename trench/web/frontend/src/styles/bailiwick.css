@@ -59,8 +59,12 @@
   /* ── ink: four steps, every one of them readable ────────────────────── */
   --b-ink: #eef1f6;         /* 14.9:1  values, headings                      */
   --b-ink-2: #c3cad6;       /* 10.1:1  labels, secondary values              */
-  --b-ink-3: #8d95a3;       /*  5.2:1  captions, units                       */
-  --b-ink-4: #646c7a;       /*  3.1:1  axis rules only — never text alone    */
+  --b-ink-3: #a0a8b5;       /*  7.6:1  captions, units                       */
+  --b-ink-4: #848c9b;       /*  5.3:1  the dimmest text: subdomains, "none".
+                                AA (4.5:1) on the page and in wells. It was
+                                3.4:1 and "axis rules only", but in practice
+                                half the views set text in it, so the token
+                                was made to deserve the use, not the reverse. */
 
   /* ── outcome: the words and colours people already know ──────────────── */
   --o-blocked: #e2565f;     /* what the product is for. Findable first.      */
@@ -102,7 +106,8 @@
   --b-1: 4px; --b-2: 8px; --b-3: 12px; --b-4: 16px; --b-5: 24px; --b-6: 32px;
 }
 
-/* Light is authored separately: it is not the dark palette inverted, because
+/* Light is authored separately (ink-3 7.1:1, ink-4 5.2:1 on the page — the
+   same rule as dark: every ink step is readable text): it is not the dark palette inverted, because
    an ochre that works on near-black is a highlighter pen on paper. */
 :root[data-skin="auto"] { color-scheme: dark light; }
 
@@ -111,7 +116,7 @@
     --b-void: #fbfbfc; --b-sunk: #f1f2f5; --b-lift: #ffffff;
     --b-hover: #eef0f4; --b-pick: #e2e6ed;
     --b-edge: #ccd1da; --b-edge-soft: #e6e9ef;
-    --b-ink: #14171c; --b-ink-2: #3f4653; --b-ink-3: #666e7d; --b-ink-4: #949bab;
+    --b-ink: #14171c; --b-ink-2: #3f4653; --b-ink-3: #4f5663; --b-ink-4: #646b79;
     --o-blocked: #c3323d; --o-failed: #9a6b12; --o-cache: #1f7d62;
     --o-upstream: #2f5f9e; --o-local: #6f4a94; --b-authored: #14171c;
     --b-focus: #2f5f9e; --o-ok: #1f7d62;
@@ -122,7 +127,7 @@
   --b-void: #fbfbfc; --b-sunk: #f1f2f5; --b-lift: #ffffff;
   --b-hover: #eef0f4; --b-pick: #e2e6ed;
   --b-edge: #ccd1da; --b-edge-soft: #e6e9ef;
-  --b-ink: #14171c; --b-ink-2: #3f4653; --b-ink-3: #666e7d; --b-ink-4: #949bab;
+  --b-ink: #14171c; --b-ink-2: #3f4653; --b-ink-3: #4f5663; --b-ink-4: #646b79;
   --o-blocked: #c3323d; --o-failed: #9a6b12; --o-cache: #1f7d62;
   --o-upstream: #2f5f9e; --o-local: #6f4a94; --b-authored: #17171a;
   --b-focus: #2f5f9e; --o-ok: #1f7d62;
@@ -173,13 +178,16 @@ body {
    keyboard or screen-reader user walks the frame again on every page. */
 .b-skip {
   position: fixed; top: 0; left: 0; z-index: 70;
-  transform: translateY(-120%);
+  transform: translateY(calc(-100% - 2 * var(--b-2)));   /* clear of its margin */
   background: var(--b-lift); color: var(--b-ink);
   border: 1px solid var(--b-edge); border-radius: var(--b-r);
   padding: var(--b-2) var(--b-3); margin: var(--b-2);
   font: 500 var(--b-ui-s)/1 var(--b-ui); text-decoration: none;
 }
 .b-skip:focus { transform: none; }
+/* the skip link's target takes focus so the next Tab lands in the view, but it
+   is a landmark, not a control, and must not draw a ring around the page */
+#main:focus { outline: none; }
 
 .b-id { font-family: var(--b-id); font-size: var(--b-id-s); font-weight: 400; }
 .b-read { font: 400 var(--b-read-s)/1.5 var(--b-ui); color: var(--b-ink-2); }
@@ -204,7 +212,7 @@ body {
 .bframe-btn {
   display: flex; align-items: center; gap: 8px; padding: 0 14px;
   background: none; border: none; color: var(--b-ink-2);
-  font: 500 var(--b-ui-s)/1 var(--b-ui); cursor: pointer;
+  font: 500 var(--b-ui-s)/1 var(--b-ui); cursor: pointer; white-space: nowrap;
 }
 .bframe-btn:hover { background: var(--b-hover); color: var(--b-ink); }
 .bframe-btn.on { color: var(--b-ink); }
@@ -215,7 +223,7 @@ body {
 .bframe-grow { flex: 1; }
 .bframe-state {
   display: flex; align-items: center; gap: 7px; padding: 0 16px;
-  color: var(--b-ink-3); font: 500 var(--b-ui-s)/1 var(--b-ui);
+  color: var(--b-ink-3); font: 500 var(--b-ui-s)/1 var(--b-ui); white-space: nowrap;
 }
 .bframe-state .led {
   width: 7px; height: 7px; border-radius: 50%;
@@ -236,7 +244,7 @@ body {
 .bsheet h4 { margin: 14px 0 2px; padding: 0 18px; }
 .bsheet a {
   display: flex; gap: 12px; align-items: baseline; padding: 7px 18px;
-  cursor: pointer; border-left: 2px solid transparent;
+  cursor: pointer; border-left: 2px solid transparent; text-decoration: none;
 }
 .bsheet a:hover { background: var(--b-hover); }
 .bsheet a.on { border-left-color: var(--b-ink); background: var(--b-hover); }
@@ -472,6 +480,11 @@ body {
 .lnk { color: var(--b-ink-2); cursor: pointer; text-decoration: none;
   border-bottom: 1px solid var(--b-edge); }
 .lnk:hover { color: var(--b-ink); border-bottom-color: var(--b-ink-3); }
+/* a .lnk is a <button> when it acts rather than navigates; strip the chrome */
+button.lnk { background: none; border-width: 0 0 1px; padding: 0; font: inherit;
+  border-radius: 0; }
+.tape-r:focus-visible, .bw-row:focus-visible, tr[tabindex]:focus-visible {
+  outline: 2px solid var(--b-focus, var(--b-ink-2)); outline-offset: -2px; }
 
 .btn-q {
   background: none; border: 1px solid var(--b-edge); border-radius: var(--b-r);
@@ -812,9 +825,11 @@ body {
 /* ── toasts: bottom-left, so they never cover the evidence panel ─────── */
 .toasts {
   position: fixed; left: 16px; bottom: 16px; z-index: 60;
-  display: flex; flex-direction: column; gap: 8px; max-width: 380px;
+  display: flex; flex-direction: column; gap: 8px;
+  max-width: min(380px, calc(100vw - 32px));
 }
 .toast {
+  cursor: pointer; overflow-wrap: anywhere;
   background: var(--b-lift); border: 1px solid var(--b-edge);
   border-left: 2px solid var(--b-ink); border-radius: var(--b-r); padding: 10px 13px;
 }
@@ -1074,7 +1089,7 @@ html::-webkit-scrollbar, body::-webkit-scrollbar { width: 0; height: 0; }
 .bframe-nav a {
   display: flex; align-items: center; padding: 0 var(--b-3); cursor: pointer;
   color: var(--b-ink-3); font: 500 var(--b-ui-s)/1 var(--b-ui);
-  border-bottom: 2px solid transparent; white-space: nowrap;
+  border-bottom: 2px solid transparent; white-space: nowrap; text-decoration: none;
 }
 .bframe-nav a:hover { color: var(--b-ink); background: var(--b-hover); }
 .bframe-nav a.on { color: var(--b-ink); border-bottom-color: var(--b-ink); }
@@ -1145,6 +1160,22 @@ html::-webkit-scrollbar, body::-webkit-scrollbar { width: 0; height: 0; }
    metric and it does change, once, for fingers.
    ────────────────────────────────────────────────────────────────────────── */
 
+/* Eleven places, a search, the lamp and sign-out have to share one strip, and
+   the strip must never scroll silently (see the note at 900px). Measured, not
+   guessed: the least useful words go first — the product subtitle and the
+   shortcut hint (the palette says it), then the labels beside icons. */
+@media (max-width: 1360px) {
+  .bframe-mark i, .bframe-btn kbd { display: none; }
+}
+@media (max-width: 1180px) {
+  .bframe-btn .lbl, .bframe-state .lbl { display: none; }
+  .bframe-nav a { padding: 0 var(--b-2); }
+}
+@media (max-width: 980px) {
+  .bframe-nav { display: none; }
+  .bframe-places { display: flex; }
+}
+
 @media (max-width: 1180px) {
   /* the panel yields first; below 300px it stops being able to show a name */
   .ev { width: 340px; min-width: 300px; }
@@ -1156,9 +1187,7 @@ html::-webkit-scrollbar, body::-webkit-scrollbar { width: 0; height: 0; }
      Eleven tabs in a strip that fits four is not a scrolling nav, it is seven
      destinations nobody knows exist: the strip already scrolled, silently,
      with no scrollbar and no cue. The place sheet is the flat list the tabs
-     were trying to be and it fits, so below this width it is the only way. */
-  .bframe-nav { display: none; }
-  .bframe-places { display: flex; }
+     were trying to be and it fits; it takes over at 980px, above. */
   .bframe-mark { padding: 0 var(--b-2) 0 var(--b-3); gap: var(--b-2); }
   .bframe-mark i { display: none; }         /* "trench" under the wordmark */
   .bframe-btn { padding: 0 var(--b-3); }
@@ -1187,7 +1216,7 @@ html::-webkit-scrollbar, body::-webkit-scrollbar { width: 0; height: 0; }
   .bw-said { padding: var(--b-1) var(--b-3); }
   .bw-span { padding: var(--b-2) var(--b-3) var(--b-3); }
   /* four words and four swatches do not fit on one line at this width */
-  .bw-span-h { flex-wrap: wrap; row-gap: var(--b-1); }
+  .bw-span-h, .bw-span-h > .b-cap { flex-wrap: wrap; row-gap: var(--b-1); }
 
   /* ── the secondary views ─────────────────────────────────────────────── */
   /* the head keeps its height so the settings tab strip, which sticks to the

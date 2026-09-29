@@ -43,6 +43,7 @@ BAD = [
     ("POST", "/whatif", {"json": {"deny": "example.com"}}),
     ("POST", "/whatif", {"json": {"deny": [5]}}),
     ("POST", "/pause", {"json": {"seconds": 10, "client": ["10.0.0.9"]}}),
+    ("POST", "/pause", {"json": {"seconds": "nan"}}),
 ]
 
 
@@ -74,6 +75,29 @@ async def test_missing_ids_are_404(tmp_path):
             assert (await s.delete(f"{base}/auth/tokens/²")).status == 404
             assert (await s.delete(f"{base}/auth/tokens/{2**64}")).status == 404
             assert (await s.delete(f"{base}/clients/manage/999")).status == 404
+    finally:
+        await app.api.stop(); await app.db.close()
+
+
+@pytest.mark.asyncio
+async def test_every_api_error_is_json(tmp_path):
+    """Refusals under /api/v1 share one shape, `{"error": ...}` — including the
+    ones aiohttp raises itself and the SPA catch-all, which answered a mistyped
+    API path with 200 and the console's HTML."""
+    app, port = await _app_with_api(tmp_path)
+    base = f"http://127.0.0.1:{port}/api/v1"
+    try:
+        async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True)) as s:
+            cases = [("GET", "/stats", 401), ("GET", "/no-such-route", 404),
+                     ("PATCH", "/stats", 405)]
+            for method, path, status in cases:
+                r = await s.request(method, base + path)
+                assert r.status == status, (method, path, r.status)
+                assert r.content_type == "application/json", (method, path)
+                assert "error" in await r.json()
+            await s.post(f"{base}/auth/login", json={"name": "admin", "password": "pw"})
+            r = await s.put(f"{base}/settings", json={})
+            assert r.status == 400 and "error" in await r.json()
     finally:
         await app.api.stop(); await app.db.close()
 

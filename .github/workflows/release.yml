@@ -10,34 +10,61 @@ on:
       tag:
         description: "Tag to release (e.g. v2.0.0)"
         required: true
-      # Manual runs rehearse by default. Publishing is irreversible — a PyPI
-      # version number can be yanked but never reused — so the button that is
-      # easy to press by accident must not be the one that claims a version.
+      # Manual runs rehearse by default. Publishing is effectively
+      # irreversible — installs that already updated themselves from a GitHub
+      # release keep whatever it held — so the button that is easy to press
+      # by accident must not be the one that claims a version.
       # A tag push is unaffected: it publishes, which is what a tag means.
       dry_run:
-        description: "Rehearse only: run verify and the tests, publish nothing"
+        description: "Rehearse only: run verify, the tests and the build, publish nothing"
         type: boolean
         default: true
 
 permissions:
   contents: read
 
+# Two runs for the same tag would race each other to the registry and the release.
+concurrency:
+  group: release-${{ inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+# Actions are pinned by commit SHA; see ci.yml.
+
 jobs:
   # The tag and the version in the source have to agree, or the artifacts get
-  # named one thing and report another for the rest of their life.
+  # named one thing and report another for the rest of their life. Every later
+  # job checks out `needs.verify.outputs.tag` — never the default branch, which
+  # is what a manual run would otherwise build.
   verify:
     runs-on: ubuntu-latest
     outputs:
+      tag: ${{ steps.tag.outputs.tag }}
       version: ${{ steps.v.outputs.version }}
+      minor: ${{ steps.v.outputs.minor }}
+      major: ${{ steps.v.outputs.major }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - id: v
+      # Inputs travel through the environment, never through `${{ }}` inside a
+      # script, so a tag name can't inject shell.
+      - id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          [ -n "${{ inputs.tag }}" ] && TAG="${{ inputs.tag }}" && TAG="${TAG#v}"
+          TAG="${INPUT_TAG:-$GITHUB_REF_NAME}"
+          TAG="v${TAG#v}"
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?$ ]]; then
+            echo "::error::'$TAG' is not a release tag (vX.Y.Z, optionally aN/bN/rcN)"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+      - id: v
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          TAG="${TAG#v}"
           SRC=$(python3 -c "import re,pathlib;print(re.search(r'__version__ = \"([^\"]+)\"',pathlib.Path('trench/version.py').read_text()).group(1))")
           echo "tag=$TAG source=$SRC"
           if [ "$TAG" != "$SRC" ]; then
@@ -46,47 +73,70 @@ jobs:
           fi
           grep -q "^## \[$SRC\]" CHANGELOG.md || {
             echo "::error::CHANGELOG.md has no section for $SRC"; exit 1; }
+          # Anything still under [Unreleased] is a change that would ship in
+          # this release without being listed in its notes.
+          UNRELEASED=$(awk '/^## \[Unreleased\]/{f=1;next} /^## \[/{f=0} f' CHANGELOG.md \
+                         | grep -v '^[[:space:]]*$' || true)
+          if [ -n "$UNRELEASED" ]; then
+            echo "::error::CHANGELOG.md has entries under [Unreleased]; move them into the $SRC section"
+            echo "$UNRELEASED"
+            exit 1
+          fi
           for f in Dockerfile docker-compose.yml; do
             if ! grep -qF "$SRC" "$f"; then
               echo "::error::$f does not carry version $SRC (the image would be labelled with a stale one)"
               exit 1
             fi
           done
-          echo "version=$SRC" >> "$GITHUB_OUTPUT"
+          IFS=. read -r MAJOR MINOR _ <<< "$SRC"
+          PRE=false
+          [[ "$SRC" =~ (a|b|rc)[0-9]+$ ]] && PRE=true
+          {
+            echo "version=$SRC"
+            echo "minor=$MAJOR.$MINOR"
+            echo "major=$MAJOR"
+            echo "prerelease=$PRE"
+          } >> "$GITHUB_OUTPUT"
 
+  # The whole CI workflow, against the tag: every interpreter, the lint and
+  # type gates, the frontend dist check, the Docker smoke test and the wheel
+  # check. A release is gated on exactly what gates a merge, not a subset.
   test:
     needs: verify
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: pip install -e ".[dev]"
-      - run: ruff check trench/ tests/ scripts/ deploy/
-      - run: python3 scripts/mypy_gate.py
-      - run: pytest -q
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.verify.outputs.tag }}
 
-  pypi:
-    needs: [verify, test]
-    if: ${{ !inputs.dry_run }}
+  # Built once, before anything is published, and attested. These are the
+  # bytes the GitHub release carries.
+  build:
+    needs: verify
     runs-on: ubuntu-latest
-    environment: release
     permissions:
-      id-token: write        # trusted publishing — no long-lived API token
+      contents: read
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.verify.outputs.tag }}
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
-      - run: |
+      - name: Build sdist and wheel
+        run: |
           pip install build twine
           python3 -m build
-          twine check dist/*
-      # Pinned by digest, not by tag: this step runs in the `release`
-      # environment with id-token: write, so a moved tag would be a
-      # supply-chain change nobody reviewed. Dependabot bumps the pin.
-      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+          twine check --strict dist/*
+      - if: ${{ !inputs.dry_run }}
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: dist/*
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: python-dist
+          path: dist/
+          if-no-files-found: error
 
   ghcr:
     needs: [verify, test]
@@ -98,25 +148,34 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.verify.outputs.tag }}
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # The tag's commit, not github.sha — on a manual run that is the branch.
+      - id: rev
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      # Tags come from the verified version, not from the triggering ref (a
+      # manual run's ref is a branch). A prerelease gets its exact tag only:
+      # `2`, `2.1` and `latest` are promises about stable releases.
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
           images: ghcr.io/${{ github.repository }}
+          flavor: latest=false
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest
+            type=raw,value=${{ needs.verify.outputs.version }}
+            type=raw,value=${{ needs.verify.outputs.minor }},enable=${{ needs.verify.outputs.prerelease == 'false' }}
+            type=raw,value=${{ needs.verify.outputs.major }},enable=${{ needs.verify.outputs.prerelease == 'false' }}
+            type=raw,value=latest,enable=${{ needs.verify.outputs.prerelease == 'false' }}
       - id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -125,34 +184,40 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             VERSION=${{ needs.verify.outputs.version }}
-            REVISION=${{ github.sha }}
+            REVISION=${{ steps.rev.outputs.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
       # Lets anyone verify the image was built from this repo by this workflow.
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-name: ghcr.io/${{ github.repository }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
 
+  # The GitHub Release is the publication: installs from GitHub pull this
+  # wheel, and the updater (trench/ops/update.py) reads this release's assets
+  # and the sha256 GitHub records for each of them.
   github_release:
-    needs: [verify, pypi, ghcr]
+    needs: [verify, test, build, ghcr]
+    if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          python-version: "3.12"
-      - run: |
-          pip install build
-          python3 -m build
+          ref: ${{ needs.verify.outputs.tag }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: python-dist
+          path: dist/
       - name: Extract this version's changelog section
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
         run: |
           python3 - <<'PY' > NOTES.md
-          import pathlib, re
-          v = "${{ needs.verify.outputs.version }}"
+          import os, pathlib, re
+          v = os.environ["VERSION"]
           text = pathlib.Path("CHANGELOG.md").read_text()
           m = re.search(rf"^## \[{re.escape(v)}\].*?$(.*?)(?=^## \[|\Z)",
                         text, re.S | re.M)
@@ -163,8 +228,10 @@ jobs:
           body = re.sub(r"\n\[[^\]]+\]: \S+(?=\n|$)", "", body).strip()
           print(body)
           PY
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
+          tag_name: ${{ needs.verify.outputs.tag }}
+          prerelease: ${{ needs.verify.outputs.prerelease == 'true' }}
           body_path: NOTES.md
           files: dist/*
           fail_on_unmatched_files: true

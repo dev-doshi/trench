@@ -8,10 +8,30 @@ trench --version
 trench --help
 ```
 
-Subcommands that reach the API take `--url` and `--token`. Create a token in the
-console under **Settings → Access**; it is shown once, when you create it.
-Choose the narrowest scope that works — `viewer` is enough for `status`, and
-`editor` for `toggle`, `flush-cache` and `update`.
+Subcommands that reach the API take `--url` and `--token`, and fall back to
+`TRENCH_URL` and `TRENCH_TOKEN` from the environment — export the token once
+rather than putting it on every command line, where it lands in shell history
+and in `ps`. Create a token in the console under **Settings → Access**; it is
+shown once, when you create it. Choose the narrowest scope that works —
+`viewer` is enough for `status` and `why`, `editor` for `toggle`, `pause`,
+`flush-cache` and `update`, and `admin` for `upgrade apply`.
+
+```bash
+export TRENCH_URL=http://127.0.0.1:8089
+export TRENCH_TOKEN=...            # from Settings → Access
+trench status
+```
+
+At a terminal these commands answer in sentences; piped, or with `--json`,
+they print the daemon's JSON reply unchanged, so scripts are unaffected.
+
+When a command cannot do its job it says which of the likely causes it was and
+what to do about it — nothing listening at the address, a host that does not
+resolve, a missing token, a rejected or revoked token, a token without the
+scope the command needs (and which scope that is), a 404 from something that is
+not the Trench console, or the daemon's own refusal in its own words. Usage
+mistakes (an unknown record type, a duration like `soon`) exit with status 2;
+failures to reach or persuade the daemon exit with 1.
 
 ## Resolving
 
@@ -23,12 +43,12 @@ trench query example.com A https --server https://cloudflare-dns.com/dns-query
 ```
 
 `--insecure` skips TLS verification, for testing against a self-signed
-console or resolver.
+console or resolver. Each answer ends with the query time and the server asked.
 
 ## Operating a running server
 
 ```bash
-trench status --url http://127.0.0.1:8089 --token "$TOKEN"
+trench status         # version, uptime, upstreams
 trench toggle         # blocking on/off
 trench flush-cache
 trench update         # refresh blocklists now
@@ -55,7 +75,7 @@ name is resolved right now, including the RFC 8914 reason if one comes back.
 
 ```bash
 trench upgrade status        # what is installed, what is available
-trench upgrade check         # ask the release index now
+trench upgrade check         # ask GitHub Releases now
 trench upgrade apply         # install the newest release
 trench upgrade apply --version 2.1.0
 trench upgrade rollback      # go back to the previous version
@@ -68,8 +88,8 @@ cannot be sidestepped by running the command as someone else.
 `trench update` still means "refresh the blocklists", as it has since 1.x —
 hence `upgrade` for the software.
 
-What applying does and does not do: it downloads the artifact, checks its
-sha256 against the index, proves the new build imports and validates the live
+What applying does and does not do: it downloads the wheel from the GitHub
+release, checks its sha256 against the digest GitHub states for it, proves the new build imports and validates the live
 configuration inside a throwaway environment, and only then installs. The
 running process is not touched, so resolution and filtering continue across
 the whole of that, and an install is refused outright while a blocklist build

@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://github.com/dev-doshi/trench/actions/workflows/ci.yml"><img src="https://github.com/dev-doshi/trench/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/dev-doshi/trench/actions/workflows/docs.yml"><img src="https://github.com/dev-doshi/trench/actions/workflows/docs.yml/badge.svg" alt="Docs"></a>
-  <img src="https://img.shields.io/badge/python-3.11%20%7C%203.12-blue" alt="Python 3.11 and 3.12">
+  <img src="https://img.shields.io/badge/python-3.11%20%E2%80%93%203.14-blue" alt="Python 3.11 to 3.14">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT licensed"></a>
 </p>
 
@@ -33,10 +33,11 @@ It is pure Python, with no C extensions and no external resolver. That is a
 deliberate trade: you can read it, audit it, and patch it on the box it runs
 on, and you give up throughput against a C resolver to do so.
 
-> **Status.** The code is at 2.0.0 and CI is green, but nothing is tagged or
-> published yet, so install from a checkout or with Compose. When releases
-> start, the distribution will be `trench-dns` on PyPI (`trench` there belongs
-> to an unrelated project) and the image will be `ghcr.io/dev-doshi/trench`.
+> **Status.** The code is at 2.0.0 and CI is green, but nothing is tagged
+> yet, so install from GitHub or with Compose. Releases are published on
+> [GitHub Releases](https://github.com/dev-doshi/trench/releases) — that is
+> also where Trench looks for its own updates — and the image will be
+> `ghcr.io/dev-doshi/trench`.
 
 ## Quickstart
 
@@ -281,7 +282,7 @@ Key routes: `/stats`, `/querylog`, `/rules`, `/toggle`, `/pause`, `/explain`,
 ```
 trench/
   wire/        DNS message codec (RR zoo, EDNS, fuzz-safe)
-  transport/   Do53 / DoT / DoH / DoQ / DoH3 frontends and upstream clients
+  transport/   Do53 / DoT / DoH / DoQ / DoH3 listeners and upstream clients
   engine/      the pipeline: validate, ratelimit, client, zones, filter, cache,
                resolve, rebinding
   filter/      adblock parser, compiled index, matcher, RPZ, safe-search, services
@@ -291,17 +292,22 @@ trench/
   clients/     identification and effective policy
   auth_zone/   zones, zonefile parsing, online DNSSEC signing
   store/       SQLite (migrations, query log, retention)
-  api/         REST, WebSocket, auth/RBAC, and the console it serves
-  web/         the console sources (Vue) and its committed build
-  security/    TLS, scrypt hashing, TOTP
+  stats/       in-memory realtime counters
+  analyze/     behavioural analysis over recorded query history
+  learn/       query-pattern learning
+  api/         REST, WebSocket, auth/RBAC, and static serving of the console
+  web/         block page server; console sources (frontend/) and build (dist/)
+  cli/         the `trench` command
+  onboarding/  encrypted-DNS profiles (.mobileconfig) and DNS stamps
+  security/    TLS, ACME, password hashing, TOTP, privilege drop
   plugins/     plugin API and builtins (dns64, block_tld)
   dhcp/        DHCPv4 (off by default, triple-guarded)
-  ops/         Prometheus metrics, Pi-hole/AdGuard import
+  ops/         metrics, health, reload, backup/restore, Pi-hole/AdGuard import
 ```
 
 ```bash
 pytest -q                          # unit, fuzz, cross-transport, DNSSEC sign/validate
-ruff check trench/ tests/ scripts/
+ruff check trench/ tests/ scripts/ deploy/
 python3 scripts/mypy_gate.py       # ratcheted: only new findings fail
 ```
 

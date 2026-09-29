@@ -10,12 +10,12 @@
  * It shows what is in the live buffer and what the log remembers, then hands off:
  * every action here leads somewhere that can do more.
  */
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { api } from "../lib/api";
 import { align } from "../lib/dnsname";
 import { KINDS, kindOf, meta } from "../lib/outcome";
-import type { Row } from "../lib/qlang";
+import { term, type Row } from "../lib/qlang";
 import { store } from "../lib/store";
 import { copyText } from "../lib/util";
 import Ico from "./Ico.vue";
@@ -30,16 +30,45 @@ const loading = ref(false);
 const ent = computed(() => s.inspecting);
 const isDomain = computed(() => ent.value?.kind === "domain");
 
+// Only the latest request may write: switching entities quickly would otherwise
+// let a slow answer for the previous one land under the new heading.
+let seq = 0;
 watch(ent, async (e) => {
+  const mine = ++seq;
   hist.value = { rows: [], total: 0 };
-  if (!e) return;
+  if (!e) { loading.value = false; return; }
   loading.value = true;
   try {
     const qs = e.kind === "domain" ? { qname: e.value } : { client: e.value };
-    hist.value = await api.get("/querylog" + api.qs({ ...qs, limit: 40 }));
+    const got = await api.get("/querylog" + api.qs({ ...qs, limit: 40 }));
+    if (mine === seq) hist.value = got;
   } catch { /* the log may be off; the live section still renders */ }
-  finally { loading.value = false; }
+  finally { if (mine === seq) loading.value = false; }
 });
+
+// A panel that opens from anywhere has to close from anywhere: Esc works
+// wherever focus is, focus moves into the panel when it opens, and goes back to
+// what opened it when it closes.
+const panel = ref<HTMLElement | null>(null);
+let opener: HTMLElement | null = null;
+watch(() => !!ent.value, async (isOpen) => {
+  if (isOpen) {
+    opener = document.activeElement as HTMLElement | null;
+    await nextTick();
+    panel.value?.querySelector<HTMLElement>(".x button")?.focus();
+  } else {
+    if (opener && document.contains(opener)) opener.focus();
+    opener = null;
+  }
+});
+function onKey(e: KeyboardEvent) {
+  if (e.key === "Escape" && ent.value && !document.querySelector(".pal-bg")) {
+    e.preventDefault();
+    store.closeInspector();
+  }
+}
+window.addEventListener("keydown", onKey);
+onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 
 /** The live buffer, sliced to this entity. */
 const live = computed(() => {
@@ -99,7 +128,8 @@ async function rule(action: "deny" | "allow") {
 
 function go(where: "browse" | "log") {
   if (!ent.value) return;
-  const q = isDomain.value ? `name=${ent.value.value}` : `client=${ent.value.value}`;
+  const q = term(isDomain.value ? "name" : "client", ent.value.value);
+  opener = null;          // focus follows the navigation, not back to the old row
   router.push({ path: where === "browse" ? "/" : "/log", query: { q } });
   store.closeInspector();
 }
@@ -111,17 +141,20 @@ const ms = (us?: number) => (!us ? "—" : us >= 1000 ? `${(us / 1000).toFixed(1
 <template>
   <template v-if="ent">
     <div class="insp-bg" @mousedown="store.closeInspector()" />
-    <aside class="insp" @keydown.esc="store.closeInspector()">
+    <aside class="insp" ref="panel" role="dialog"
+           :aria-label="(isDomain ? 'Name ' : 'Device ') + ent.value">
       <div class="ihead">
         <div>
           <span class="b-cap">{{ isDomain ? "Name" : "Device" }}</span>
           <span class="t" style="display:block" v-if="isDomain">
-            <span style="color:var(--b-ink-4)">{{ align(ent.value).sub }}{{ align(ent.value).sub ? "." : "" }}</span>{{ align(ent.value).reg }}
+            <span style="color:var(--b-ink-3)">{{ align(ent.value).sub }}{{ align(ent.value).sub ? "." : "" }}</span>{{ align(ent.value).reg }}
           </span>
           <span class="t" style="display:block" v-else>{{ ent.value }}</span>
         </div>
         <span class="x">
-          <button class="btn" @click="store.closeInspector()"><Ico name="shut" :size="14" /></button>
+          <button class="btn" @click="store.closeInspector()" aria-label="Close" title="Close (Esc)">
+            <Ico name="shut" :size="14" />
+          </button>
         </span>
       </div>
 
@@ -160,7 +193,7 @@ const ms = (us?: number) => (!us ? "—" : us >= 1000 ? `${(us / 1000).toFixed(1
           <div class="row-acts">
             <button class="btn" @click="go('browse')"><Ico name="levels" /> in Browse</button>
             <button class="btn" @click="go('log')"><Ico name="list" /> in the Log</button>
-            <button class="btn" @click="copyText(ent.value); store.toast('Copied', ent.value)">
+            <button class="btn" @click="copyText(ent.value)">
               <Ico name="copy" /> copy
             </button>
           </div>
