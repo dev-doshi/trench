@@ -2,7 +2,7 @@
 
 **Scope:** the query hot path (`trench/engine/`, `trench/transport/`, `trench/cache/`, `trench/resolver/forwarder.py`, and the client half of `trench/transport/upstream.py`). I also looked at `clients/registry.py`, `engine/ratelimit.py`, `stats/counters.py`, `store/export.py` and the lifecycle parts of `app.py` to check for blocking I/O and unbounded growth. A second pass covered `resolver/recursive.py`, `resolver/dnssec/` and the TSIG, transfer and NOTIFY code in `auth_zone/`; see [Second pass](#second-pass-fixed-in-this-change). I did not review `api/`, `dhcp/`, `filter/`, `auth_zone/update.py` or `ops/` in depth.
 
-**Status:** H1–H4 and every finding in the second pass are fixed in this change, with regression tests in `tests/test_review_fixes.py`. The M and L findings are still open.
+**Status:** H1–H4 and every finding in the second pass are fixed in this change, with regression tests in `tests/test_review_fixes.py`. The M and L findings were open at `c5b3b5f`. Later commits on `main` (for example the TCP half-close, upstream demotion and DoQ upstream fixes) address some of them, so check each one against the current code before starting work on it. After merging with `main`, the suite gives 2635 passed and 5 failed: four from the sandbox, plus one `free_port` bind race in `test_doh_wire_and_json` that passes on rerun.
 
 **Branch reviewed:** `claude/beautiful-thompson-as41c7` @ `c5b3b5f`
 
