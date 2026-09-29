@@ -107,3 +107,25 @@ async def test_a_name_with_a_dot_inside_a_label_is_answerable():
 async def test_the_wire_api_still_rejects_bad_base64():
     status, _ = await _get({"dns": "!!!not-base64!!!"})
     assert status == 400
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rtype", ["65536", "99999999999"])
+async def test_a_type_past_sixteen_bits_is_a_client_error(rtype):
+    """It parsed as an integer and then could not be encoded: a 500."""
+    status, body = await _get({"name": "www.example.com", "type": rtype})
+    assert status == 400
+    assert body["error"] == "bad type"
+
+
+@pytest.mark.asyncio
+async def test_a_post_body_larger_than_any_dns_message_is_refused():
+    doh, url = await _server()
+    try:
+        async with (aiohttp.ClientSession() as session,
+                    session.post(url, data=b"\0" * 70000,
+                                 headers={"Content-Type": "application/dns-message"})
+                    as response):
+            assert response.status == 413
+    finally:
+        await doh.stop()

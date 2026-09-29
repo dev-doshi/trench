@@ -32,6 +32,9 @@ if TYPE_CHECKING:
 
 log = get("doh")
 
+#: The largest DNS message there is.
+MAX_BODY = 65535
+
 
 def _b64url_decode(s: str) -> bytes:
     pad = "=" * (-len(s) % 4)
@@ -86,7 +89,9 @@ class DoHServer(Frontend):
         self.trusted = TrustedProxies(getattr(sec, "trusted_proxies", ()))
 
     def _build_app(self) -> web.Application:
-        app = web.Application()
+        # A DNS message is at most 65535 octets (RFC 8484 §6); aiohttp's own
+        # default lets a POST body run to a megabyte before it says 413.
+        app = web.Application(client_max_size=MAX_BODY)
         from ..security.clientaddr import TRUSTED_KEY
         app[TRUSTED_KEY] = self.trusted
         app.router.add_get(self.path, self._handle)
@@ -131,6 +136,9 @@ class DoHServer(Frontend):
         try:
             rtype = int(qtype) if qtype.isdigit() else type_from_text(qtype)
         except Exception:
+            return web.json_response({"error": "bad type"}, status=400)
+        if not 0 <= rtype <= 0xFFFF:
+            # Past 16 bits the query cannot be encoded: a 500 per request.
             return web.json_response({"error": "bad type"}, status=400)
         try:
             # Guarded for the same reason `type` is, and it was not: this is an
