@@ -6,7 +6,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
+import socket
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -16,9 +19,32 @@ from ..wire import Class, Message, Question
 from ..wire.name import Name
 from ..wire.rrtypes import type_from_text, type_to_text
 
+DEFAULT_URL = "http://127.0.0.1:8089"
+
+
+def _api_args(p: argparse.ArgumentParser, as_json: bool = True) -> None:
+    """`--url`, `--token` and `--json`, the same on every command that talks to
+    the daemon.
+
+    Both connection flags fall back to the environment, so an operator exports
+    `TRENCH_TOKEN` once instead of pasting a secret into every command line —
+    where it also lands in shell history and in `ps` for every other user on
+    the box to read.
+    """
+    p.add_argument("--url", default=os.environ.get("TRENCH_URL") or DEFAULT_URL,
+                   help="daemon API address (env TRENCH_URL; default %(default)s)")
+    p.add_argument("--token", default=os.environ.get("TRENCH_TOKEN", ""),
+                   help="API token from Settings → Access (env TRENCH_TOKEN)")
+    if as_json:
+        p.add_argument("--json", action="store_true", dest="as_json",
+                       help="print the daemon's raw JSON reply")
+
 
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="trench", description="Trench CLI")
+    p = argparse.ArgumentParser(
+        prog="trench", description="Trench CLI",
+        epilog="Commands that talk to the daemon read TRENCH_URL and TRENCH_TOKEN "
+               "from the environment. `trench <command> -h` for details.")
     p.add_argument("--version", action="version", version=f"trench {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -33,8 +59,7 @@ def _build_parser() -> argparse.ArgumentParser:
     for name, help_ in [("status", "show server status"), ("toggle", "toggle blocking"),
                         ("flush-cache", "flush the DNS cache"), ("update", "refresh blocklists")]:
         s = sub.add_parser(name, help=help_)
-        s.add_argument("--url", default="http://127.0.0.1:8089")
-        s.add_argument("--token", default="")
+        _api_args(s)
 
     # `update` above refreshes blocklists and has meant that for two major
     # versions; upgrading Trench itself is a different verb on purpose.
@@ -43,9 +68,7 @@ def _build_parser() -> argparse.ArgumentParser:
                     choices=["status", "check", "apply", "rollback"])
     up.add_argument("--version", dest="pin", default="",
                     help="install this exact version instead of the newest")
-    up.add_argument("--json", action="store_true", dest="as_json")
-    up.add_argument("--url", default="http://127.0.0.1:8089")
-    up.add_argument("--token", default="")
+    _api_args(up)
 
     why = sub.add_parser("why", help="explain what this server did with a name")
     why.add_argument("name")
@@ -53,16 +76,13 @@ def _build_parser() -> argparse.ArgumentParser:
     why.add_argument("--client", default="", help="the device that complained")
     why.add_argument("--resolve", action="store_true",
                      help="also resolve it now and report what came back")
-    why.add_argument("--json", action="store_true", dest="as_json")
-    why.add_argument("--url", default="http://127.0.0.1:8089")
-    why.add_argument("--token", default="")
+    _api_args(why)
 
     pause = sub.add_parser("pause", help="suspend filtering for a while")
     pause.add_argument("duration", nargs="?", default="5m", type=_duration,
                        help="e.g. 30s, 5m, 1h; 0 resumes")
     pause.add_argument("--client", default="", help="one device only")
-    pause.add_argument("--url", default="http://127.0.0.1:8089")
-    pause.add_argument("--token", default="")
+    _api_args(pause)
 
     imp = sub.add_parser("import", help="import PiHole/AdGuard config")
     imp.add_argument("kind", choices=["pihole", "adguard"])
@@ -121,22 +141,45 @@ def _build_parser() -> argparse.ArgumentParser:
 async def _do_query(args) -> int:
     from ..transport.upstream import Upstream, parse_upstream
     scheme = args.transport.lstrip("@") or "udp"
-    spec = parse_upstream(f"{scheme}://{args.server}" if scheme != "udp" else args.server)
+    if scheme not in ("udp", "tcp", "tls", "https", "quic"):
+        print(f";; unknown transport {args.transport!r}: use @udp, @tcp, @tls, @https "
+              "or @quic", file=sys.stderr)
+        return 2
+    # A typo in the type or the name used to escape as a Python traceback.
+    try:
+        rtype = type_from_text(args.type)
+    except (ValueError, KeyError):
+        print(f";; unknown record type {args.type!r} (try A, AAAA, MX, TXT, HTTPS…)",
+              file=sys.stderr)
+        return 2
+    try:
+        qname = Name.from_text(args.name)
+    except (ValueError, UnicodeError) as e:
+        print(f";; {args.name!r} is not a valid name: {e}", file=sys.stderr)
+        return 2
+    try:
+        spec = parse_upstream(f"{scheme}://{args.server}" if scheme != "udp" else args.server)
+    except (ValueError, KeyError) as e:
+        print(f";; cannot use --server {args.server!r}: {e}", file=sys.stderr)
+        return 2
     up = Upstream(spec, verify=not args.insecure)
-    rtype = type_from_text(args.type)
     q = Message(id=0x1234)
     q.set_flag(0x0100, True)  # RD
-    q.questions.append(Question(Name.from_text(args.name), rtype, Class.IN))
+    q.questions.append(Question(qname, rtype, Class.IN))
+    started = time.perf_counter()
     try:
         resp = await up.query(q)
     except Exception as e:
-        print(f";; query failed: {e}", file=sys.stderr)
+        why = str(e) or type(e).__name__
+        print(f";; query failed: {why} (asking {args.server} over {scheme})", file=sys.stderr)
         return 1
     finally:
         await up.close()
+    took = (time.perf_counter() - started) * 1000
     from ..wire.rrtypes import Rcode
     rc = Rcode(resp.rcode).name if resp.rcode in iter(Rcode) else str(resp.rcode)
     print(f";; status: {rc}, answers: {len(resp.answers)} ({scheme})")
+    print(f";; query time: {took:.0f} ms, server: {args.server}")
     for rr in resp.answers:
         print(f"{rr.name.to_text():<32} {rr.ttl:<6} {type_to_text(rr.rtype):<7} {rr.rdata.to_text()}")
     return 0
@@ -155,22 +198,130 @@ def _api_call(url: str, path: str, token: str, method: str = "GET",
     if body is not None:
         data = json.dumps(body).encode()
         headers["Content-Type"] = "application/json"
-    req = urllib.request.Request(url + path, method=method, headers=headers, data=data)
+    req = urllib.request.Request(url.rstrip("/") + path, method=method, headers=headers,
+                                 data=data)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read())
+
+
+_HINT = "is the daemon running? do you need --token?"
+
+
+def _describe_failure(e: BaseException, url: str, token: str) -> str:
+    """One line that says what went wrong *and* what to do about it.
+
+    Every daemon-facing command used to print the exception verbatim with the
+    same two guesses after it, so a wrong token, a stopped daemon, a typo in
+    `--url` and a daemon refusing the request all read alike —
+    `<urlopen error [Errno 111] Connection refused>` is accurate and useless.
+    Each cause below has a different fix, so each says which.
+    """
+    if not url.startswith(("http://", "https://")):
+        return f"--url must start with http:// or https:// (got {url!r})"
+    if isinstance(e, urllib.error.HTTPError):
+        try:
+            detail = json.loads(e.read() or b"{}").get("error", "")
+        except Exception:
+            detail = ""
+        if e.code == 401 and not token:
+            return (f"the daemon at {url} wants a token (401); {_HINT} — pass "
+                    "--token or set TRENCH_TOKEN (create one under Settings → Access)")
+        # A refusal that explains itself ("managed by the package manager") is
+        # the whole message; the guesses below are only for a bare status.
+        if detail and e.code not in (401,):
+            return f"the daemon refused: {detail} ({e.code})"
+        if e.code in (401, 403):
+            if not token:
+                return (f"the daemon at {url} wants a token ({e.code}); {_HINT} — pass "
+                        "--token or set TRENCH_TOKEN (create one under Settings → Access)")
+            if e.code == 401:
+                return (f"the daemon at {url} did not accept that token (401) — it may "
+                        f"have been revoked or mistyped; {_HINT}")
+            return (f"that token is not allowed to do this ({detail or '403 Forbidden'}) — "
+                    "`status` and `why` need viewer; `toggle`, `pause`, `flush-cache` "
+                    "and `update` need editor; `upgrade apply` needs admin")
+        if e.code == 404:
+            return (f"{url} answered 404 — is --url pointing at the Trench console "
+                    f"port? ({detail or e.reason})")
+        return f"the daemon refused: {detail or e.reason} ({e.code})"
+    if isinstance(e, (TimeoutError, socket.timeout)):
+        return f"no reply from {url} in time; the daemon may be busy or wedged ({_HINT})"
+    if isinstance(e, urllib.error.URLError):
+        reason = e.reason
+        if isinstance(reason, (TimeoutError, socket.timeout)):
+            return f"no reply from {url} in time; the daemon may be busy or wedged ({_HINT})"
+        if isinstance(reason, ConnectionRefusedError):
+            return f"nothing is listening at {url} ({_HINT})"
+        if isinstance(reason, socket.gaierror):
+            return f"cannot resolve the host in --url {url} ({_HINT})"
+        return f"cannot reach {url}: {reason} ({_HINT})"
+    if isinstance(e, json.JSONDecodeError):
+        return f"{url} answered, but not with JSON — is --url the Trench console? ({_HINT})"
+    return f"{e} ({_HINT})"
+
+
+def _call(args, path: str, method: str = "GET", body: dict | None = None,
+          timeout: float = 5):
+    """`_api_call` with the failure reported; `None` means already reported."""
+    try:
+        return _api_call(args.url, path, args.token, method, body=body, timeout=timeout)
+    except Exception as e:
+        print(f"error: {_describe_failure(e, args.url, args.token)}", file=sys.stderr)
+        return None
+
+
+def _human(args) -> bool:
+    """Sentences for a person at a terminal; JSON for `--json` and for pipes.
+
+    A pipe keeps getting JSON so scripts written against the old output (which
+    was always JSON) keep working.
+    """
+    return not getattr(args, "as_json", False) and _isatty()
+
+
+def _isatty() -> bool:
+    return sys.stdout.isatty()
+
+
+def _ago(seconds: float) -> str:
+    seconds = int(seconds)
+    if seconds < 90:
+        return f"{seconds}s"
+    if seconds < 90 * 60:
+        return f"{seconds // 60}m"
+    if seconds < 48 * 3600:
+        return f"{seconds // 3600}h {seconds % 3600 // 60}m"
+    return f"{seconds // 86400}d {seconds % 86400 // 3600}h"
+
+
+def _say_control(cmd: str, out: dict) -> None:
+    if cmd == "status":
+        print(f"trench    {out.get('version', '?')}, up {_ago(out.get('uptime', 0))}")
+        ups = out.get("upstream") or []
+        print(f"upstream  {', '.join(map(str, ups)) or 'none'} ({out.get('mode', '?')})")
+    elif cmd == "toggle":
+        print("filtering is on" if out.get("enabled") else
+              "filtering is OFF — every name resolves until you run `trench toggle` again")
+    elif cmd == "flush-cache":
+        n = out.get("flushed", 0)
+        print(f"flushed {n} cached answer{'' if n == 1 else 's'}")
+    elif cmd == "update":
+        print("blocklist refresh started; it runs in the background "
+              "(Breakage shows what the new lists changed)")
 
 
 def _do_control(args) -> int:
     paths = {"status": ("/api/v1/system", "GET"), "toggle": ("/api/v1/toggle", "POST"),
              "flush-cache": ("/api/v1/cache/flush", "POST"), "update": ("/api/v1/gravity/refresh", "POST")}
     path, method = paths[args.cmd]
-    try:
-        out = _api_call(args.url, path, args.token, method)
-        print(json.dumps(out, indent=2))
-        return 0
-    except Exception as e:
-        print(f"error: {e} (is the daemon running? do you need --token?)", file=sys.stderr)
+    out = _call(args, path, method)
+    if out is None:
         return 1
+    if _human(args) and isinstance(out, dict):
+        _say_control(args.cmd, out)
+    else:
+        print(json.dumps(out, indent=2))
+    return 0
 
 
 def _do_upgrade(args) -> int:
@@ -190,20 +341,11 @@ def _do_upgrade(args) -> int:
         # Installing runs pip twice and can take minutes on an SD card.
         timeout = 900 if args.action in ("apply", "rollback") else 30
         out = _api_call(args.url, path, args.token, method, body=body, timeout=timeout)
-    except urllib.error.HTTPError as e:
-        try:
-            detail = json.loads(e.read()).get("error", "")
-        except Exception:
-            detail = ""
-        # An auth failure has no JSON body to explain itself, so without this
-        # the first command a new install runs answers "401: Unauthorized" and
-        # nothing else — while every other subcommand says what to do about it.
-        hint = "" if detail or e.code not in (401, 403) else \
-            " (is the daemon running? do you need --token?)"
-        print(f"error: {detail or e}{hint}", file=sys.stderr)
-        return 1
     except Exception as e:
-        print(f"error: {e} (is the daemon running? do you need --token?)", file=sys.stderr)
+        # The daemon's refusal ("managed by the package manager") arrives as a
+        # JSON body on an HTTP error, and is the whole message; an auth failure
+        # has no body and gets the token hint instead.
+        print(f"error: {_describe_failure(e, args.url, args.token)}", file=sys.stderr)
         return 1
     if args.as_json:
         print(json.dumps(out, indent=2))
@@ -227,7 +369,7 @@ def _do_upgrade(args) -> int:
 
 
 def _seconds(text: str) -> float:
-    """`30s`, `5m`, `1h`, or a bare number of seconds."""
+    """`30s`, `5m`, `1h`, or a bare number of seconds. Raises ValueError."""
     text = text.strip().lower()
     units = {"s": 1, "m": 60, "h": 3600}
     if text and text[-1] in units:
@@ -255,55 +397,57 @@ def _do_why(args) -> int:
     if args.resolve:
         params["resolve"] = "1"
     path = "/api/v1/explain?" + urllib.parse.urlencode(params)
-    try:
-        out = _api_call(args.url, path, args.token)
-    except urllib.error.HTTPError as e:
-        # A bad name or type is answered with a JSON error that says exactly
-        # what was wrong; the hint about the daemon is only right for auth.
-        try:
-            detail = json.loads(e.read()).get("error", "")
-        except Exception:
-            detail = ""
-        hint = "" if detail or e.code not in (401, 403) else \
-            " (is the daemon running? do you need --token?)"
-        print(f"error: {detail or e}{hint}", file=sys.stderr)
-        return 1
-    except Exception as e:
-        print(f"error: {e} (is the daemon running? do you need --token?)", file=sys.stderr)
+    # --resolve performs a live lookup, which can take a slow upstream's full
+    # timeout on its own; five seconds reported those as a dead daemon.
+    out = _call(args, path, timeout=20 if args.resolve else 5)
+    if out is None:
         return 1
     if args.as_json:
         print(json.dumps(out, indent=2))
         return 0
     print(out.get("verdict", ""))
     for f in out.get("findings", []):
-        print(f"  · [{f['stage']}] {f['verdict']}: {f['detail']}")
+        # a finding from a newer daemon may lack a field; say less, not crash
+        detail = f.get("detail", "")
+        print(f"  · [{f.get('stage', '?')}] {f.get('verdict', '?')}"
+              + (f": {detail}" if detail else ""))
     live = out.get("live") or {}
     if live and "error" not in live:
         answers = ", ".join(live.get("answers") or []) or "no addresses"
         print(f"  · [live] {live.get('action')}: {live.get('rcode')} -> {answers}")
         for ede in live.get("extended_errors", []):
-            print(f"  · [live] extended error {ede['code']}: {ede['text']}")
+            print(f"  · [live] extended error {ede.get('code')}: {ede.get('text', '')}")
+    elif live.get("error"):
+        print(f"  · [live] could not resolve it now: {live['error']}")
     recent = out.get("recent") or []
     if recent:
-        print(f"  · [log] {len(recent)} recent quer(y|ies); last action "
+        n = len(recent)
+        print(f"  · [log] {n} recent {'query' if n == 1 else 'queries'}; last action "
               f"{recent[0].get('action')}")
     return 0
 
 
 def _do_pause(args) -> int:
-    seconds = args.duration
-    body = json.dumps({"seconds": seconds, "client": args.client}).encode()
-    req = urllib.request.Request(
-        args.url + "/api/v1/pause", data=body, method="POST",
-        headers={"Content-Type": "application/json",
-                 **({"Authorization": f"Bearer {args.token}"} if args.token else {})})
-    try:
-        with urllib.request.urlopen(req, timeout=5) as r:
-            print(json.dumps(json.loads(r.read()), indent=2))
-        return 0
-    except Exception as e:
-        print(f"error: {e} (is the daemon running? do you need --token?)", file=sys.stderr)
+    seconds = args.duration         # parsed by _duration; a typo already exited 2
+    if not 0 <= seconds <= 86_400:
+        print("error: a pause is 0 (resume) to 24h; for longer, `trench toggle`",
+              file=sys.stderr)
+        return 2
+    out = _call(args, "/api/v1/pause", "POST", body={"seconds": seconds, "client": args.client})
+    if out is None:
         return 1
+    if not _human(args) or not isinstance(out, dict):
+        print(json.dumps(out, indent=2))
+        return 0
+    who = args.client or "everyone"
+    if seconds == 0:
+        print(f"filtering resumed for {who}")
+    else:
+        until = out.get("clients", {}).get(args.client) if args.client else out.get("paused_until")
+        at = time.strftime("%H:%M:%S", time.localtime(until)) if until else "?"
+        print(f"filtering paused for {who} until {at}; `trench pause 0"
+              + (f" --client {args.client}" if args.client else "") + "` resumes now")
+    return 0
 
 
 def _do_import(args) -> int:
@@ -356,12 +500,17 @@ def _do_regex_test(args) -> int:
     from ..filter.parser import parse_line, parse_list
     if args.rule.startswith("@"):
         from pathlib import Path
-        rules = parse_list(Path(args.rule[1:]).read_text())
+        try:
+            rules = parse_list(Path(args.rule[1:]).read_text())
+        except OSError as e:
+            print(f"cannot read rules from {args.rule[1:]}: {e.strerror or e}", file=sys.stderr)
+            return 1
     else:
         r = parse_line(args.rule)
         rules = [r] if r else []
     if not rules:
-        print("no valid rule parsed", file=sys.stderr)
+        print(f"no valid rule parsed from {args.rule!r} — expected adblock (||ads.example^), "
+              "hosts (0.0.0.0 ads.example), a bare domain, or /regex/", file=sys.stderr)
         return 1
     engine = FilterEngine.compile(rules)
     rc = 0

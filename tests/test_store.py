@@ -51,6 +51,23 @@ async def test_querylog_write_and_search(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_querylog_action_accepts_a_list(tmp_path):
+    """The console's `blocked` covers every action it paints as blocked."""
+    db = Database(tmp_path / "a.db")
+    await db.connect()
+    ql = QueryLog(db)
+    for action in ("blocked", "refused", "ratelimited", "cached", "forwarded"):
+        ql.enqueue(mkrec(qname=f"{action}.example", action=action))
+    await ql._flush()
+    got = await ql.search(action="blocked,refused,ratelimited")
+    assert sorted(r["action"] for r in got) == ["blocked", "ratelimited", "refused"]
+    assert await ql.search_count(action="blocked,refused,ratelimited") == 3
+    # a trailing or doubled comma is not an empty-string action
+    assert await ql.search_count(action="cached,,") == 1
+    await db.close()
+
+
+@pytest.mark.asyncio
 async def test_querylog_privacy(tmp_path):
     db = Database(tmp_path / "p.db")
     await db.connect()

@@ -270,17 +270,33 @@ def test_why_lists_addresses_when_there_are_some(api, capsys):
     assert "-> 93.184.216.34" in capsys.readouterr().out
 
 
-def test_why_skips_a_live_block_that_only_carries_an_error(api, capsys):
+def test_why_says_when_the_live_resolution_failed(api, capsys):
+    # --resolve was asked for; a failure to resolve is an answer too, and used
+    # to vanish silently, which read as "nothing to report".
     api.routes[("GET", "/api/v1/explain")] = (200, {**WHY, "live": {"error": "timed out"}})
     main(["why", "example.com", "--resolve", "--url", api.url])
-    assert "[live]" not in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "[live] could not resolve it now: timed out" in out
+    assert "->" not in out
 
 
 def test_why_summarises_recent_log_entries(api, capsys):
     api.routes[("GET", "/api/v1/explain")] = (200, {
         **WHY, "recent": [{"action": "block"}, {"action": "block"}]})
     main(["why", "ads.example.com", "--url", api.url])
-    assert "[log] 2 recent quer(y|ies); last action block" in capsys.readouterr().out
+    assert "[log] 2 recent queries; last action block" in capsys.readouterr().out
+
+
+def test_why_says_query_for_one_log_entry(api, capsys):
+    api.routes[("GET", "/api/v1/explain")] = (200, {**WHY, "recent": [{"action": "allow"}]})
+    main(["why", "ads.example.com", "--url", api.url])
+    assert "[log] 1 recent query; last action allow" in capsys.readouterr().out
+
+
+def test_why_tolerates_a_finding_with_missing_fields(api, capsys):
+    api.routes[("GET", "/api/v1/explain")] = (200, {"verdict": "v", "findings": [{"stage": "x"}]})
+    assert main(["why", "a.example", "--url", api.url]) == 0
+    assert "[x] ?" in capsys.readouterr().out
 
 
 def test_why_json_mode(api, capsys):
@@ -346,3 +362,97 @@ def test_pause_sends_the_token(api):
 def test_pause_reports_an_unreachable_daemon(capsys):
     assert main(["pause", "--url", DEAD]) == 1
     assert "is the daemon running?" in capsys.readouterr().err
+
+
+def test_pause_rejects_a_duration_it_cannot_read(capsys):
+    with pytest.raises(SystemExit) as exc:
+        main(["pause", "soon", "--url", DEAD])
+    assert exc.value.code == 2
+    assert "invalid duration" in capsys.readouterr().err
+
+
+def test_pause_rejects_more_than_a_day(capsys):
+    assert main(["pause", "25h", "--url", DEAD]) == 2
+    assert "24h" in capsys.readouterr().err
+
+
+# --- errors that say what to do ---
+def test_a_missing_token_is_named_as_the_cause(api, capsys):
+    api.routes[("GET", "/api/v1/system")] = (401, b"")
+    assert main(["status", "--url", api.url]) == 1
+    err = capsys.readouterr().err
+    assert "wants a token" in err and "TRENCH_TOKEN" in err
+
+
+def test_a_rejected_token_is_named_as_the_cause(api, capsys):
+    api.routes[("GET", "/api/v1/system")] = (401, b"")
+    assert main(["status", "--url", api.url, "--token", "old"]) == 1
+    assert "did not accept that token" in capsys.readouterr().err
+
+
+def test_a_token_without_the_scope_says_which_scope(api, capsys):
+    api.routes[("POST", "/api/v1/toggle")] = (403, b"")
+    assert main(["toggle", "--url", api.url, "--token", "viewer-only"]) == 1
+    assert "need editor" in capsys.readouterr().err
+
+
+def test_a_wrong_port_is_suggested_on_404(api, capsys):
+    assert main(["status", "--url", api.url + "/nope"]) == 1
+    assert "404" in capsys.readouterr().err
+
+
+def test_a_non_json_reply_says_so(api, capsys):
+    api.routes[("GET", "/api/v1/system")] = (200, b"<html>")
+    assert main(["status", "--url", api.url]) == 1
+    assert "not with JSON" in capsys.readouterr().err
+
+
+def test_a_url_without_a_scheme_says_so(capsys):
+    assert main(["status", "--url", "127.0.0.1:8089"]) == 1
+    assert "must start with http://" in capsys.readouterr().err
+
+
+def test_nothing_listening_is_said_plainly(capsys):
+    assert main(["status", "--url", DEAD]) == 1
+    assert "nothing is listening at" in capsys.readouterr().err
+
+
+def test_url_and_token_come_from_the_environment(api, monkeypatch):
+    api.routes[("GET", "/api/v1/system")] = (200, {"ok": True})
+    monkeypatch.setenv("TRENCH_URL", api.url)
+    monkeypatch.setenv("TRENCH_TOKEN", "from-env")
+    assert main(["status"]) == 0
+    assert api.seen[-1]["auth"] == "Bearer from-env"
+
+
+# --- a person at a terminal gets sentences; a pipe keeps getting JSON ---
+@pytest.fixture
+def tty(monkeypatch):
+    monkeypatch.setattr("trench.cli.main._isatty", lambda: True)
+
+
+def test_status_on_a_terminal_reads_as_sentences(api, capsys, tty):
+    api.routes[("GET", "/api/v1/system")] = (200, {
+        "version": "2.0.0", "uptime": 7260, "upstream": ["1.1.1.1"], "mode": "parallel"})
+    assert main(["status", "--url", api.url]) == 0
+    out = capsys.readouterr().out
+    assert "trench    2.0.0, up 2h 1m" in out and "upstream  1.1.1.1 (parallel)" in out
+
+
+def test_json_flag_wins_on_a_terminal(api, capsys, tty):
+    api.routes[("GET", "/api/v1/system")] = (200, {"version": "2.0.0"})
+    main(["status", "--json", "--url", api.url])
+    assert json.loads(capsys.readouterr().out) == {"version": "2.0.0"}
+
+
+def test_toggle_off_on_a_terminal_is_loud(api, capsys, tty):
+    api.routes[("POST", "/api/v1/toggle")] = (200, {"enabled": False})
+    main(["toggle", "--url", api.url])
+    assert "filtering is OFF" in capsys.readouterr().out
+
+
+def test_pause_on_a_terminal_says_how_to_undo_it(api, capsys, tty):
+    api.routes[("POST", "/api/v1/pause")] = (200, {"paused_until": 2_000_000_000, "clients": {}})
+    main(["pause", "5m", "--url", api.url])
+    out = capsys.readouterr().out
+    assert "paused for everyone until" in out and "trench pause 0" in out

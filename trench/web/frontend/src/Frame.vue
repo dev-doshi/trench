@@ -12,16 +12,16 @@
  * The wordmark is a caliper's two scales, offset. It is the instrument the
  * product is named for and the only drawn ornament anywhere in the interface.
  */
-import { computed, onMounted, onUnmounted, ref } from "vue";
-import { RouterView, useRoute, useRouter } from "vue-router";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { RouterLink, RouterView, useRoute } from "vue-router";
 import { api } from "./lib/api";
+import { local } from "./lib/local";
 import { store } from "./lib/store";
 import Ico from "./ui/Ico.vue";
 import Palette from "./ui/Palette.vue";
 import Inspector from "./ui/Inspector.vue";
 
 const route = useRoute();
-const router = useRouter();
 const pal = ref<InstanceType<typeof Palette> | null>(null);
 const open = ref(false);
 const s = store.state;
@@ -59,16 +59,38 @@ const state = computed(() => ({
 
 
 onMounted(() => {
-  document.documentElement.dataset.skin = localStorage.getItem("bw_skin") || "auto";
+  document.documentElement.dataset.skin = local.get("bw_skin") || "auto";
 });
 
-function go(to: string) { open.value = false; router.push(to); }
+/** The shortcut as this keyboard spells it: ⌘K on a Mac, Ctrl K elsewhere. */
+const mod = /Mac|iP(hone|ad|od)/.test(navigator.platform || navigator.userAgent) ? "⌘K" : "Ctrl K";
+
+/** The place sheet: `g` or the Places button. Focus goes into it on open and
+ *  back to whatever opened it on close, so the keyboard never loses its place. */
+const sheet = ref<HTMLElement | null>(null);
+let opener: HTMLElement | null = null;
+async function setOpen(v: boolean) {
+  if (v === open.value) return;
+  if (v) opener = document.activeElement as HTMLElement | null;
+  open.value = v;
+  if (v) {
+    await nextTick();
+    (sheet.value?.querySelector("a.on") as HTMLElement | null
+      ?? sheet.value?.querySelector("a") as HTMLElement | null)?.focus();
+  } else {
+    opener?.focus?.();
+    opener = null;
+  }
+}
+watch(() => route.path, () => { if (open.value) { opener = null; open.value = false; } });
 
 function onKey(e: KeyboardEvent) {
-  const tag = (e.target as HTMLElement)?.tagName;
-  if (tag === "INPUT" || tag === "TEXTAREA") return;
-  if (e.key === "g") { open.value = !open.value; e.preventDefault(); }
-  else if (e.key === "Escape") open.value = false;
+  if (e.key === "Escape" && open.value) { setOpen(false); e.preventDefault(); return; }
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const t = e.target as HTMLElement | null;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT"
+            || t.isContentEditable)) return;
+  if (e.key === "g") { setOpen(!open.value); e.preventDefault(); }
 }
 onMounted(() => window.addEventListener("keydown", onKey));
 onUnmounted(() => window.removeEventListener("keydown", onKey));
@@ -82,6 +104,7 @@ async function signOut() {
 
 <template>
   <div>
+    <a class="b-skip" href="#main">Skip to content</a>
     <header class="bframe">
       <div class="bframe-mark">
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -98,36 +121,45 @@ async function signOut() {
       </div>
       <div class="bframe-sep" />
 
-      <nav class="bframe-nav">
-        <a v-for="i in FLAT" :key="i.to" :class="{ on: i.to === route.path }"
-           :title="i.of" @click="go(i.to)">{{ i.name }}</a>
+      <nav class="bframe-nav" aria-label="Places">
+        <RouterLink v-for="i in FLAT" :key="i.to" :to="i.to" :class="{ on: i.to === route.path }"
+                    :aria-current="i.to === route.path ? 'page' : undefined"
+                    :title="i.of">{{ i.name }}</RouterLink>
       </nav>
+      <button class="bframe-btn bframe-places" @click="setOpen(true)"
+              aria-haspopup="dialog" :aria-expanded="open" title="All places (g)">
+        <Ico name="list" :size="15" /> <span class="lbl">{{ FLAT.find((i) => i.to === route.path)?.name || "Places" }}</span>
+      </button>
 
       <div class="bframe-grow" />
 
-      <button class="bframe-btn" @click="pal?.show()">
-        <Ico name="find" :size="15" /> Search <kbd>⌘K</kbd>
+      <button class="bframe-btn" @click="pal?.show()" :aria-keyshortcuts="mod === '⌘K' ? 'Meta+K' : 'Control+K'">
+        <Ico name="find" :size="15" /> <span class="lbl">Search</span> <kbd>{{ mod }}</kbd>
       </button>
-      <div class="bframe-state" :class="state.cls">
-        <span class="led" />{{ state.label }}
+      <div class="bframe-state" :class="state.cls" role="status"
+           :title="state.cls === 'bad' ? 'The live feed is down; it reconnects by itself.' : undefined">
+        <span class="led" aria-hidden="true" /><span class="lbl">{{ state.label }}</span>
       </div>
       <div class="bframe-sep" />
       <button class="bframe-btn" @click="signOut">Sign out</button>
     </header>
 
-    <div class="bsheet" v-if="open" @click.self="open = false">
-      <nav class="bsheet-in">
+    <div class="bsheet" v-if="open" @click.self="setOpen(false)">
+      <nav class="bsheet-in" ref="sheet" role="dialog" aria-modal="true" aria-label="All places">
         <template v-for="g in PLACES" :key="g.group">
           <h4 class="b-cap">{{ g.group }}</h4>
-          <a v-for="i in g.items" :key="i.to" :class="{ on: i.to === route.path }" @click="go(i.to)">
+          <RouterLink v-for="i in g.items" :key="i.to" :to="i.to" :class="{ on: i.to === route.path }"
+                      :aria-current="i.to === route.path ? 'page' : undefined">
             <b>{{ i.name }}</b><em>{{ i.of }}</em>
-          </a>
+          </RouterLink>
         </template>
       </nav>
     </div>
 
     <!-- every view owns its own scrolling and padding, so there is no wrapper -->
-    <RouterView />
+    <main id="main" tabindex="-1">
+      <RouterView />
+    </main>
 
     <Palette ref="pal" />
     <Inspector />

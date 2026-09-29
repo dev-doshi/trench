@@ -5,7 +5,7 @@
  * Node strips the types itself, so a query language with real parsing logic
  * gets real tests without adding a test framework to a two-dependency app.
  */
-import { compile, evaluate, explain, FIELDS, matcher, pushdown, QueryError, type Ctx, type Row } from "./qlang.ts";
+import { compile, evaluate, explain, FIELDS, matcher, pushdown, QueryError, term, type Ctx, type Row } from "./qlang.ts";
 
 let pass = 0;
 const fails: string[] = [];
@@ -135,13 +135,45 @@ ok("missing paren is an error", throws("(blocked"));
 ok("dangling operator is an error", throws("client:"));
 ok("unterminated string is an error", throws('name:"abc'));
 ok("trailing paren is an error", throws("blocked)"));
+ok("a numeric field refuses a word rather than matching nothing", throws("ms>fast"));
+ok("a text field refuses an ordering", throws("client>10"));
+ok("a lone | is an error", throws("blocked |"));
+{
+  const msg = (q: string) => { try { compile(q); return ""; } catch (e) { return (e as Error).message; } };
+  ok("a mistyped field suggests the nearest one", msg("nmae:x").includes("did you mean name"));
+  ok("an unmatched ) says so", msg("blocked)").includes("no matching ("));
+  ok("an unclosed ( says so", msg("(blocked").includes("never closed"));
+  ok("a query cut short says so", msg("blocked and").includes("stops short"));
+}
+
+// ------------------------------------------------------- symbolic operators
+ok("| is or", m("cached | blocked", row()));
+ok("|| is or", m("cached || blocked", row()));
+ok("& is and", !m("cached & blocked", row()));
+ok("&& is and", m("blocked && aws-iot", row()));
+ok("| binds looser than juxtaposition", m("cached | blocked aws-iot", row()));
+ok("the task's own example parses", m("blocked or ms>40", row({ action: "cached", elapsed_us: 50_000 })));
+ok("| inside a bareword is data, not an operator",
+   m("rule:||aws-iot.example.com^", row()));
+
+// ------------------------------------------------ outcome words match colours
+ok("blocked covers refused", m("blocked", row({ action: "refused" })));
+ok("blocked covers ratelimited", m("blocked", row({ action: "ratelimited" })));
+ok("blocked covers safesearch", m("blocked", row({ action: "safesearch" })));
+ok("failed covers a SERVFAIL under any action", m("failed", row({ action: "forwarded", rcode: "SERVFAIL" })));
+ok("forwarded is every other answer", m("forwarded", row({ action: "forwarded", rcode: "NOERROR" })));
+ok("local covers rewrite", m("local", row({ action: "rewrite", rcode: "NOERROR" })));
+ok("safesearch is still one specific action", !m("safesearch", row({ action: "blocked" })));
+eq("forwarded cannot be pushed down", pushdown(compile("forwarded")), {});
+eq("failed cannot be pushed down", pushdown(compile("failed")), {});
+eq("cached pushes down exactly", pushdown(compile("cached")), { action: "cached" });
 
 // ----------------------------------------------------------------- pushdown
 eq("equality on an indexed column is pushed down",
    pushdown(compile("client:10.0.4.71")), { client: "10.0.4.71" });
 eq("several conjoined equalities are all pushed down",
    pushdown(compile("client:10.0.4.71 and blocked")),
-   { client: "10.0.4.71", action: "blocked" });
+   { client: "10.0.4.71", action: "blocked,block,refused,ratelimited,safesearch" });
 eq("or is never pushed down", pushdown(compile("cached or blocked")), {});
 eq("a negated term is not pushed down", pushdown(compile("not cached")), {});
 eq("computed fields have no server equivalent", pushdown(compile("reg:example.com")), {});
@@ -176,16 +208,25 @@ eq("mixed expression pushes down only its conjoined part",
     const pd = pushdown(ast);
     const served = rows.filter((r) =>
       (!pd.client || r.client_ip === pd.client) &&
-      (!pd.action || r.action === pd.action) &&
+      (!pd.action || pd.action.split(",").includes(r.action)) &&
       (!pd.qname || r.qname.includes(pd.qname)));
     const viaServer = served.filter((r) => evaluate(ast, r, ctx));
     eq(`pushdown preserves the result set for: ${q}`, viaServer, direct);
   }
 }
 
+// -------------------------------------------------------- built from data
+ok("an IPv6 client survives being put in a query",
+   m(term("client", "fe80::1"), row({ client_ip: "fe80::1" })));
+ok("a regex rule survives being put in a query",
+   m(term("rule", "/(ads|track)\\./"), row({ rule: "/(ads|track)\\./" })));
+ok("a quote in a value survives", m(term("name", 'a"b.example'), row({ qname: 'a"b.example' })));
+ok("a leading dash is not read as not", m(term("name", "-x.example"), row({ qname: "-x.example" })));
+eq("an ordinary value is left bare", term("name", "a.example.com"), "name=a.example.com");
+
 // ------------------------------------------------------------------ explain
 eq("explain reads back as a sentence, not as a field reference",
-   explain(compile("blocked")), "The outcome contains blocked.");
+   explain(compile("blocked")), "The outcome is blocked.");
 eq("explain uses the noun form for an exact match",
    explain(compile("client=10.0.0.1")), "The device address is 10.0.0.1.");
 eq("explain names a glob as a match",
