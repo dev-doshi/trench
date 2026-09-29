@@ -206,6 +206,15 @@ class App:
             # registration drops nothing.
             self.fast.clear()
 
+    def on_lease_end(self, ip: str) -> None:
+        """A lease given back early (RELEASE/DECLINE): its name must stop
+        resolving now, not when the lease would have run out."""
+        if self.hostnames is None or not self.hostnames.name_for(ip):
+            return
+        self.hostnames.forget(ip)
+        if self.fast is not None:
+            self.fast.clear()       # recorded answers may still carry the name
+
     def _static_names(self) -> set[str]:
         """Names the operator configured by hand, which a lease may not take."""
         out = {r.name.strip(".").lower() for r in self.config.local_records}
@@ -1117,12 +1126,13 @@ class App:
                 from .clients.names import HostNames
                 self.hostnames = HostNames(
                     domain=sc.domain, network=sc.network,
-                    reserved=self._static_names())
+                    reserved=self._static_names(), lifetime=sc.lease_time)
                 self.pipeline.hostnames = self.hostnames
                 register = self.on_lease
                 log.info("DHCP leases will be published as %s names", sc.domain)
             self.dhcp = DhcpServer(scope, self.config.dhcp.server_ip or sc.router,
                                    dns_register=register,
+                                   dns_forget=self.on_lease_end,
                                    dnr_option=(self.discovery.dhcp_option()
                                                if self.discovery is not None else b""))
             await self.dhcp.start(enabled=True, allow_dhcp=self.config.allow_dhcp,

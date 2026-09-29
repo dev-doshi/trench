@@ -295,3 +295,57 @@ def test_the_entries_list_reports_both_halves():
     assert len(rows) == 1
     assert rows[0]["ip"] == "192.168.1.50"
     assert rows[0]["name"] == "laptop.lan"
+
+
+# ----------------------------------------------------- lifetime and reserved
+def test_well_known_labels_cannot_be_claimed_by_a_device():
+    """A device calling itself `wpad` became the proxy auto-config host for
+    every browser on the LAN."""
+    from trench.clients.names import HostNames
+    names = HostNames("lan", "192.168.1.0/24")
+    for label in ("wpad", "WPAD", "isatap", "localhost", "gateway", "router"):
+        assert names.register("192.168.1.50", label) == ""
+    assert names.ip_for("wpad.lan") == ""
+
+
+def test_a_name_expires_with_its_lease(monkeypatch):
+    from trench.clients import names as mod
+    now = [1000.0]
+    monkeypatch.setattr(mod.time, "time", lambda: now[0])
+    names = mod.HostNames("lan", "192.168.1.0/24", lifetime=3600)
+    assert names.register("192.168.1.50", "laptop") == "laptop.lan"
+    now[0] += 3000
+    assert names.ip_for("laptop.lan") == "192.168.1.50"
+    # another device may not take it while it is live
+    assert names.register("192.168.1.51", "laptop") == ""
+    now[0] += 700
+    assert names.ip_for("laptop.lan") == ""
+    assert names.name_for("192.168.1.50") == "" and names.entries() == []
+    assert names.register("192.168.1.51", "laptop") == "laptop.lan"
+
+
+def test_an_expired_holder_gives_the_name_up_to_a_new_device(monkeypatch):
+    from trench.clients import names as mod
+    now = [0.0]
+    monkeypatch.setattr(mod.time, "time", lambda: now[0])
+    names = mod.HostNames("lan", "192.168.1.0/24", lifetime=60)
+    names.register("192.168.1.50", "tv")
+    now[0] = 61
+    assert names.register("192.168.1.60", "tv") == "tv.lan"
+    assert names.ip_for("tv.lan") == "192.168.1.60"
+
+
+def test_a_lease_given_back_early_stops_resolving_at_once(tmp_path):
+    from trench.app import App
+    from trench.engine.fastpath import FastPath
+
+    app = App(Config.load_dict({"data_dir": str(tmp_path)}))
+    app.fast = FastPath(app.pipeline)
+    app.pipeline.fast = app.fast
+    app.hostnames = names()
+    app.on_lease("192.168.1.50", "laptop")
+    app.fast.table[b"key"] = object()
+    app.on_lease_end("192.168.1.99")                 # not ours: nothing dropped
+    assert app.fast.table
+    app.on_lease_end("192.168.1.50")
+    assert app.hostnames.ip_for("laptop.lan") == "" and not app.fast.table

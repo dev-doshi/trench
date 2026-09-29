@@ -325,3 +325,80 @@ def test_a_well_formed_option_list_still_parses():
                            + b"\x35\x01\x01" + b"\x0c\x03abc" + b"\xff")
     assert pkt.msg_type == 1
     assert pkt.hostname() == "abc"
+
+
+# ---------------------------------------------------------- offers and leases
+def _mac(n):
+    return bytes.fromhex(f"0200000000{n:02x}")
+
+
+def test_a_discover_only_holds_the_address_briefly():
+    """An OFFER used to commit a full lease, so a burst of DISCOVERs from
+    spoofed chaddrs emptied the pool for a lease time without a single REQUEST."""
+    scope = _scope()
+    offer = build_reply(_pkt(MessageType.DISCOVER), scope, "192.168.9.1", now=1000)
+    assert offer is not None
+    assert scope.active_leases(now=1000) == []            # an offer is not a lease
+    lease = scope._leases[MAC.hex(":")]
+    assert lease.offered and lease.expire == 1000 + scope.offer_hold
+    other = Scope("192.168.9.0/24", "192.168.9.100", "192.168.9.100")
+    other.allocate("02:00:00:00:00:01", now=0, offer=True)
+    assert other.allocate("02:00:00:00:00:02", now=10) is None       # held
+    assert other.allocate("02:00:00:00:00:02", now=61) is not None   # hold over
+
+
+def test_outstanding_offers_are_capped():
+    scope = Scope("192.168.9.0/24", "192.168.9.10", "192.168.9.109")   # 100 addresses
+    granted = [scope.allocate(_mac(n).hex(":"), now=0, offer=True) for n in range(40)]
+    assert sum(1 for g in granted if g is not None) == 25
+    # A committed lease is still available once the offers are capped.
+    assert scope.allocate("02:00:00:00:01:00", now=0) is not None
+
+
+def test_a_discover_does_not_shorten_a_live_lease():
+    scope = _scope()
+    build_reply(_pkt(MessageType.REQUEST), scope, "192.168.9.1", now=0)
+    before = scope._leases[MAC.hex(":")].expire
+    build_reply(_pkt(MessageType.DISCOVER), scope, "192.168.9.1", now=10)
+    lease = scope._leases[MAC.hex(":")]
+    assert lease.expire == before and not lease.offered
+
+
+def test_release_and_decline_take_the_name_out_of_dns():
+    scope, forgot = _scope(), []
+    ack = build_reply(_pkt(MessageType.REQUEST), scope, "192.168.9.1")
+    ip = ack.yiaddr
+    build_reply(_pkt(MessageType.RELEASE, ciaddr=ip), scope, "192.168.9.1",
+                dns_forget=forgot.append)
+    assert forgot == [ip] and scope.active_leases() == []
+
+    ack = build_reply(_pkt(MessageType.REQUEST), scope, "192.168.9.1")
+    decline = _pkt(MessageType.DECLINE, options={OPT_REQUESTED_IP: opt_ip(ack.yiaddr)})
+    build_reply(decline, scope, "192.168.9.1", dns_forget=forgot.append)
+    assert forgot == [ip, ack.yiaddr] and scope.active_leases() == []
+
+
+def test_decline_of_someone_elses_address_changes_nothing():
+    scope, forgot = _scope(), []
+    ack = build_reply(_pkt(MessageType.REQUEST), scope, "192.168.9.1")
+    decline = DhcpPacket(op=1, chaddr=_mac(9), xid=7, options={
+        OPT_MSG_TYPE: bytes([MessageType.DECLINE]),
+        OPT_REQUESTED_IP: opt_ip(ack.yiaddr)})
+    build_reply(decline, scope, "192.168.9.1", dns_forget=forgot.append)
+    assert forgot == [] and [x.ip for x in scope.active_leases()] == [ack.yiaddr]
+    # nor does one naming another address than the one held
+    wrong = _pkt(MessageType.DECLINE, options={OPT_REQUESTED_IP: opt_ip("192.168.9.200")})
+    build_reply(wrong, scope, "192.168.9.1", dns_forget=forgot.append)
+    assert forgot == [] and scope.active_leases()
+
+
+def test_a_failing_dns_forget_does_not_break_release(caplog):
+    scope = _scope()
+    ack = build_reply(_pkt(MessageType.REQUEST), scope, "192.168.9.1")
+
+    def boom(ip):
+        raise RuntimeError("x")
+    build_reply(_pkt(MessageType.RELEASE, ciaddr=ack.yiaddr), scope, "192.168.9.1",
+                dns_forget=boom)
+    assert scope.active_leases() == []
+    assert "could not remove" in caplog.text

@@ -41,6 +41,13 @@ _LABEL_OK = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 
 DEFAULT_TTL = 60
 
+#: Labels no device may claim, whatever the operator configured. Each one is a
+#: name software on *other* machines looks up and then trusts: a host that took
+#: `wpad` would be handed every browser's proxy settings (WPAD), `isatap` every
+#: Windows host's IPv6 tunnel, and `localhost` would point loopback elsewhere.
+RESERVED_LABELS = frozenset({"wpad", "isatap", "localhost", "local", "gateway",
+                             "router"})
+
 
 def sanitize_hostname(raw: str) -> str:
     """A single safe label from whatever the client offered, or "".
@@ -92,7 +99,7 @@ class HostNames:
 
     def __init__(self, domain: str = "lan", network: str = "",
                  *, ttl: int = DEFAULT_TTL, max_entries: int = 4096,
-                 reserved=None):
+                 reserved=None, lifetime: float = 0):
         self.domain = (domain or "lan").strip(".").lower()
         self.network = ipaddress.ip_network(network, strict=False) if network else None
         self.ttl = ttl
@@ -103,6 +110,11 @@ class HostNames:
         self._by_ip: dict[str, str] = {}        # ip -> label
         self._by_name: dict[str, str] = {}      # fqdn -> ip
         self._seen: dict[str, float] = {}       # ip -> last registration time
+        # How long a registration lasts without being renewed: the DHCP lease
+        # time. 0 keeps names until they are replaced or forgotten. A name used
+        # to outlive the device, so it went on resolving to an address DHCP had
+        # since handed to somebody else — and blocked that name for its owner.
+        self.lifetime = lifetime
 
     # ---------------------------------------------------------------- writing
     def register(self, ip: str, hostname: str) -> str:
@@ -124,11 +136,17 @@ class HostNames:
                         label, ip)
             return ""
         fqdn = f"{label}.{self.domain}"
+        if label in RESERVED_LABELS:
+            log.warning("refusing to register %s for %s: reserved name", fqdn, ip)
+            return ""
         if fqdn in self.reserved:
             log.warning("refusing to register %s for %s: name is configured "
                         "statically", fqdn, ip)
             return ""
         taken = self._by_name.get(fqdn)
+        if taken is not None and taken != ip and self._expired(taken):
+            self.forget(taken)
+            taken = None
         if taken is not None and taken != ip:
             # Two devices offering the same name is ordinary (two phones from
             # the same vendor), not an attack. First one keeps the name; the
@@ -144,6 +162,9 @@ class HostNames:
         self._seen[ip] = time.time()
         self._evict()
         return fqdn
+
+    def _expired(self, ip: str) -> bool:
+        return bool(self.lifetime) and time.time() - self._seen.get(ip, 0) > self.lifetime
 
     def forget(self, ip: str) -> None:
         label = self._by_ip.pop(ip, None)
@@ -164,15 +185,23 @@ class HostNames:
     # ---------------------------------------------------------------- reading
     def name_for(self, ip: str) -> str:
         label = self._by_ip.get(ip)
+        if label and self._expired(ip):
+            self.forget(ip)
+            return ""
         return f"{label}.{self.domain}" if label else ""
 
     def ip_for(self, fqdn: str) -> str:
-        return self._by_name.get(fqdn.strip(".").lower(), "")
+        ip = self._by_name.get(fqdn.strip(".").lower(), "")
+        if ip and self._expired(ip):
+            self.forget(ip)
+            return ""
+        return ip
 
     def entries(self) -> list[dict]:
         return [{"ip": ip, "name": f"{label}.{self.domain}",
                  "since": int(self._seen.get(ip, 0))}
-                for ip, label in sorted(self._by_ip.items())]
+                for ip, label in sorted(self._by_ip.items())
+                if not self._expired(ip)]
 
     # -------------------------------------------------------------- resolving
     def resolve(self, query: Message) -> Message | None:

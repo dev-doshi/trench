@@ -38,16 +38,17 @@ def _subnet_mask(network: str) -> str:
 
 def build_reply(req: DhcpPacket, scope: Scope, server_ip: str,
                 now: float | None = None, dns_register=None,
-                dnr_option: bytes = b"") -> DhcpPacket | None:
+                dnr_option: bytes = b"", dns_forget=None) -> DhcpPacket | None:
     """The reply to one DHCP message, registering the lease in DNS on ACK.
 
     `dns_register(ip, hostname)` is called only for an ACK — an OFFER is not a
     lease, and registering one would put a name in DNS for an address the client
-    may never take.
+    may never take. `dns_forget(ip)` is called when a lease ends early (RELEASE
+    or DECLINE), so its name stops resolving to an address that is now free.
     """
     mt = req.msg_type
     if mt == MessageType.DISCOVER:
-        lease = scope.allocate(req.mac, req.hostname(), now=now)
+        lease = scope.allocate(req.mac, req.hostname(), now=now, offer=True)
         if lease is None:
             return None
         return _reply(req, scope, server_ip, lease.ip, MessageType.OFFER,
@@ -73,9 +74,27 @@ def build_reply(req: DhcpPacket, scope: Scope, server_ip: str,
         # Only the holder of the address may release it: ciaddr carries the
         # address the client claims to be giving up, and it has to be the one
         # we actually granted to this chaddr.
-        scope.release(req.mac, req.ciaddr)
+        _forget(scope.release(req.mac, req.ciaddr), dns_forget)
+        return None
+    if mt == MessageType.DECLINE:
+        # The client found the address already in use (RFC 2131 §4.3.3). The
+        # declined address travels in option 50, not ciaddr, and must be the
+        # one this chaddr holds; the lease is dropped rather than the address
+        # quarantined, since DECLINE is unauthenticated and a quarantine would
+        # let any host empty the pool.
+        declined = req.requested_ip()
+        if declined:
+            _forget(scope.release(req.mac, declined), dns_forget)
         return None
     return None
+
+
+def _forget(ip: str, dns_forget) -> None:
+    if ip and dns_forget is not None:
+        try:
+            dns_forget(ip)
+        except Exception:
+            log.exception("could not remove %s from DNS", ip)
 
 
 def _reply(req: DhcpPacket, scope: Scope, server_ip: str, yiaddr: str,
@@ -123,7 +142,8 @@ class _Proto(asyncio.DatagramProtocol):
             return
         reply = build_reply(req, self.server.scope, self.server.server_ip,
                             dns_register=self.server.dns_register,
-                            dnr_option=self.server.dnr_option)
+                            dnr_option=self.server.dnr_option,
+                            dns_forget=self.server.dns_forget)
         if reply is not None and self.server.transport is not None:
             # broadcast the reply (clients have no IP yet)
             self.server.transport.sendto(reply.to_wire(), ("255.255.255.255", 68))
@@ -133,10 +153,11 @@ class _Proto(asyncio.DatagramProtocol):
 
 class DhcpServer:
     def __init__(self, scope: Scope, server_ip: str, *, dns_register=None,
-                 dnr_option: bytes = b""):
+                 dnr_option: bytes = b"", dns_forget=None):
         self.scope = scope
         self.server_ip = server_ip
         self.dns_register = dns_register
+        self.dns_forget = dns_forget
         # RFC 9463 DNR payload, precomputed by `discovery`. Empty when
         # encrypted-DNS discovery is off, which is the default.
         self.dnr_option = dnr_option
