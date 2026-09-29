@@ -10,6 +10,7 @@ import asyncio
 import json
 import re
 import time
+from typing import Any
 
 from aiohttp import web
 
@@ -86,7 +87,8 @@ def _security_headers(resp) -> None:
 
 API = "/api/v1"
 #: The authenticated principal `_auth_mw` attaches to a request, absent when anonymous.
-_USER = web.RequestKey("user", dict)
+# Anonymous requests store None here, so the key's value type says so.
+_USER: web.RequestKey[dict | None] = web.RequestKey("user", dict)
 
 #: Ceiling on one inbound WebSocket message. The console's own frames are a
 #: handful of bytes; this is generous for them and finite for everyone else.
@@ -1540,7 +1542,7 @@ _BODIES = {
          "name": _S, "comment": _S, "policy": _POLICY}),
 }
 
-_ERROR = {"description": "Refused; the reason is in `error`",
+_ERROR: dict[str, Any] = {"description": "Refused; the reason is in `error`",
           "content": {"application/json": {"schema": {
               "type": "object", "properties": {"error": _S}, "required": ["error"]}}}}
 
