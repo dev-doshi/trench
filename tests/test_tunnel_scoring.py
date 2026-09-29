@@ -15,7 +15,6 @@ from trench.filter.tunnel import (
     TunnelDetector,
     TunnelResult,
     _entropy,
-    _hexish_ratio,
 )
 from trench.wire import Type
 
@@ -32,14 +31,6 @@ def test_entropy_rises_with_variety():
     assert _entropy("ab") == 1.0
     assert _entropy("abcd") == 2.0
     assert _entropy("abcdefgh") > _entropy("aabbccdd")
-
-
-def test_the_encoded_character_ratio():
-    assert _hexish_ratio("") == 0.0
-    assert _hexish_ratio("deadbeef") == 1.0
-    assert _hexish_ratio("abc-123=") == 1.0
-    assert _hexish_ratio("ABC") == 0.0        # upper case is not in the alphabet
-    assert _hexish_ratio("ab_cd") == 0.8
 
 
 # --- score: the shapes that score zero ---
@@ -69,8 +60,10 @@ def test_a_very_long_label_contributes():
 
 def test_a_very_long_name_contributes():
     d = TunnelDetector()
-    chunks = ".".join("abcdefghij" for _ in range(10))
-    assert d.score(f"{chunks}.example.com", int(Type.A)) > 0.2
+    def chunks(n):
+        return ".".join("abcdefghij" for _ in range(n)) + ".example.com"
+    assert len(chunks(6)) < 80 <= len(chunks(10))
+    assert d.score(chunks(10), int(Type.A)) > d.score(chunks(6), int(Type.A))
 
 
 def test_high_entropy_contributes():

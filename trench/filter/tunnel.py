@@ -11,6 +11,10 @@ through `*.s3.amazonaws.com`, a PTR sweep, an Apple device polling its push
 hosts all crossed the rate, and one more trivial signal took them over the
 threshold — on one deployment 96% of this detector's blocks scored exactly the
 threshold that way. A tunnel moving data has the payload shape regardless.
+
+It also added 0.15 when 90% of the subdomain was "encoded" characters, with
+every letter, digit and hyphen counted as encoded: that is every lowercase
+hostname, so any subdomain of 20 characters collected it.
 """
 from __future__ import annotations
 
@@ -39,13 +43,6 @@ def _entropy(s: str) -> float:
     return -sum((c / n) * math.log2(c / n) for c in counts.values())
 
 
-def _hexish_ratio(s: str) -> float:
-    if not s:
-        return 0.0
-    enc = sum(1 for c in s if c in "0123456789abcdefghijklmnopqrstuvwxyz=-")
-    return enc / len(s)
-
-
 class TunnelDetector:
     def __init__(self, *, threshold: float = 0.45, block: bool = False):
         self.threshold = threshold
@@ -62,7 +59,6 @@ class TunnelDetector:
         maxlabel = max(len(la) for la in labels)
         total = len(name)
         ent = _entropy(sub)
-        hexish = _hexish_ratio(sub)
 
         s = 0.0
         if maxlabel >= 30:
@@ -71,8 +67,6 @@ class TunnelDetector:
             s += 0.20 * min(1.0, (total - 80) / 120 + 0.3)
         if ent >= 3.5:                          # high-entropy encoded payload
             s += 0.25 * min(1.0, (ent - 3.5) / 1.0 + 0.3)
-        if hexish >= 0.9 and len(sub) >= 20:
-            s += 0.15
         if qtype in (_NULL, Type.TXT) and len(sub) >= 20:
             s += 0.15                            # NULL/TXT carrying a long payload
         if len(labels) >= 6:

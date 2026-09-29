@@ -89,9 +89,7 @@ def test_a_configured_route_still_wins():
 def test_an_allowed_name_is_not_second_guessed_by_the_detectors():
     name = "a8f3b2c9d4e5f6a7b8c9d0e1f2a3b4c5a8f3b2c9.exfil.example.com"
     blocked = _pipe(Upstream(), tunnel_detection=True, tunnel_block=True)
-    assert asyncio.run(blocked.resolve(_query(name), "10.0.0.2")).answers[0] \
-        .rdata.to_text() == "0.0.0.0"
+    assert asyncio.run(blocked.resolve_ctx(_query(name, Type.TXT), "10.0.0.2")).source == "tunnel"
     allowed = _pipe(Upstream(), operator_rules(["example.com"], []),
                     tunnel_detection=True, tunnel_block=True)
-    assert asyncio.run(allowed.resolve(_query(name), "10.0.0.2")).answers[0] \
-        .rdata.to_text() == "1.2.3.4"
+    assert asyncio.run(allowed.resolve_ctx(_query(name, Type.TXT), "10.0.0.2")).source != "tunnel"

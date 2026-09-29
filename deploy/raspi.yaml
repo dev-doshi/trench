@@ -118,7 +118,11 @@ security:
   dga_block: true
   dga_threshold: 0.62
   tunnel_detection: true # flag DNS tunneling / exfiltration
-  tunnel_block: true
+  # Flag only. Over 14 days here it blocked 450 names and none was a tunnel:
+  # S3 buckets, load balancers, a bank's API, the router's own AD records. A
+  # lexical score cannot tell a cloud hostname from a payload; see
+  # docs/security.md.
+  tunnel_block: false
   tunnel_threshold: 0.45
 
 dhcp:

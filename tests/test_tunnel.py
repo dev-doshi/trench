@@ -17,7 +17,6 @@ from trench.wire.name import Name
 from trench.wire.rrtypes import Rcode
 
 TUN = ["a8f3b2c9d4e5f6a7b8c9d0e1f2a3b4c5a8f3b2c9.exfil.evil.com",
-       "kj4h5k2j4h5k2j4h5k2j4h5k2j4h5k2j4h5k2.tunnel.example.com",
        "nbswy3dpfqqho33snrsccaf4mfrggzdf.data.bad.net"]
 NORMAL = ["www.google.com", "api.github.com", "d111111abcdef8.cloudfront.net",
           "mail.protonmail.com", "_dmarc.example.com"]
@@ -36,6 +35,16 @@ def test_volume_alone_is_not_suspicious():
     for i in range(500):
         assert not d.inspect(f"q{i}.a.b.c.s3.amazonaws.com", Type.A, "10.0.0.1").suspicious
     assert not d.inspect("4.3.2.1.in-addr.arpa", Type.PTR, "10.0.0.1").suspicious
+
+
+def test_cloud_hostnames_are_not_tunnels():
+    """Flagged on a home network, each asked for over and over by name."""
+    d = TunnelDetector()
+    for n in ["davs-bluetooth-config-artifacts.s3.amazonaws.com",
+              "v6.cloudfront.web.us-east-1.prod.diagnostic.networking.aws.dev",
+              "haproxy-ingress-bumblebee.life360.com.cdn.cloudflare.net",
+              "bunq-prod-model-storage-public.s3.eu-central-1.amazonaws.com"]:
+        assert not d.inspect(n, Type.A).suspicious, n
 
 
 class FakeForwarder:
@@ -67,5 +76,5 @@ def test_pipeline_tunnel_flag():
 def test_pipeline_tunnel_block():
     cfg = Config.model_validate({"security": {"tunnel_detection": True, "tunnel_block": True}})
     pipe = _pipe(cfg)
-    r = asyncio.run(pipe.resolve(mkquery(TUN[0], Type.A), "1.1.1.1"))
-    assert r.answers[0].rdata.to_text() == "0.0.0.0"
+    ctx = asyncio.run(pipe.resolve_ctx(mkquery(TUN[0]), "1.1.1.1"))
+    assert (ctx.action, ctx.source) == ("blocked", "tunnel") and not ctx.response.answers

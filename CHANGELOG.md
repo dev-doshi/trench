@@ -125,6 +125,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Removed
 
+- **Tunnel detection's "encoded characters" signal.** It counted every letter,
+  digit and hyphen as encoded, so any subdomain of 20 characters scored it;
+  with it, S3 buckets, load balancers and a bank's API crossed the threshold.
+  `deploy/raspi.yaml` now flags tunnels rather than blocking them.
 - **The `group` table and its create/delete endpoints.** They stored groups no
   verdict ever consulted: a group made in the console could not change what any
   client resolved. Groups are now declared in `filtering.groups` and enforced;
