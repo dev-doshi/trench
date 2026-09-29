@@ -162,3 +162,77 @@ async def test_recursive_servfail_on_bogus():
     resp = await rec.resolve("example.test", Type.A)
     from trench.wire.rrtypes import Rcode
     assert resp.rcode == Rcode.SERVFAIL and not resp.answers
+
+
+# --- CNAME chains: every hop is validated, not only the final name ---
+VICTIM = Name.from_text("bank.test.")
+EVIL = Name.from_text("evil.test.")
+
+
+def _cname_hierarchy(victim_cname=False):
+    """root -> test -> {bank.test, evil.test}, both signed and delegated."""
+    zones = {}
+    tld = Zone(TEST)
+    tld.add(TEST, Type.SOA, _soa(TEST))
+    for n, ip in ((VICTIM, "192.0.2.10"), (EVIL, "203.0.113.66")):
+        z = Zone(n)
+        z.add(n, Type.SOA, _soa(n))
+        if n == VICTIM and victim_cname:
+            z.add(n, Type.CNAME, R.CNAME(EVIL))
+        else:
+            z.add(n, Type.A, R.A(ip))
+        tld.add(n, Type.DS, sign_zone(z).ds)
+        zones[n.to_text()] = z
+    tld_ds = sign_zone(tld).ds
+    root = Zone(ROOT)
+    root.add(ROOT, Type.SOA, _soa(ROOT))
+    root.add(TEST, Type.DS, tld_ds)
+    anchor = sign_zone(root).ds
+    zones.update({".": root, "test.": tld})
+    return zones, [anchor]
+
+
+def _chain_transport(zones, forge=None):
+    async def transport(ip, query):
+        q = query.question
+        if q.rtype == Type.DS:
+            return _msg_for(zones[q.name.parent().to_text()], q.name, Type.DS)
+        if forge is not None and q.name == VICTIM and q.rtype == Type.A:
+            return forge()
+        z = zones[q.name.to_text()]
+        if q.rtype not in (Type.DNSKEY, Type.SOA) and z.records.get(q.name, {}).get(Type.CNAME):
+            return _msg_for(z, q.name, Type.CNAME)
+        return _msg_for(z, q.name, q.rtype)
+    return transport
+
+
+@pytest.mark.asyncio
+async def test_forged_unsigned_cname_into_a_signed_zone_is_bogus():
+    """An unsigned CNAME at a signed name must not reach the client — least
+    of all with AD set because the zone it points into is validly signed."""
+    from trench.resolver.recursive import Recursive
+    from trench.wire.rrtypes import Rcode
+    zones, anchors = _cname_hierarchy()
+
+    def forge():
+        m = Message(id=0, flags=Flags.QR | Flags.AA)
+        m.answers.append(RR(VICTIM, Type.CNAME, Class.IN, 3600, R.CNAME(EVIL)))
+        return m
+
+    rec = Recursive(_chain_transport(zones, forge), root_hints=["10.0.0.1"],
+                    qmin=False, validate=True, anchors=anchors)
+    resp = await rec.resolve("bank.test", Type.A)
+    assert resp.rcode == Rcode.SERVFAIL
+    assert not resp.ad and not resp.answers
+
+
+@pytest.mark.asyncio
+async def test_signed_cname_chain_across_signed_zones_is_secure():
+    from trench.resolver.recursive import Recursive
+    zones, anchors = _cname_hierarchy(victim_cname=True)
+    rec = Recursive(_chain_transport(zones), root_hints=["10.0.0.1"],
+                    qmin=False, validate=True, anchors=anchors)
+    resp = await rec.resolve("bank.test", Type.A)
+    assert resp.ad is True
+    assert [rr.rtype for rr in resp.answers if rr.rtype != Type.RRSIG] == [Type.CNAME, Type.A]
+

@@ -9,8 +9,33 @@ from ..errors import UpstreamError
 from ..log import get
 from ..transport.upstream import Router, Upstream, parse_upstream  # noqa: F401
 from ..wire import Message
+from ..wire.rrtypes import Rcode
 
 log = get("forwarder")
+
+#: Replies that describe the upstream, not the name. RFC 8767 §4 and every
+#: mainstream forwarder treat these as "try somewhere else": a validating
+#: upstream answering SERVFAIL for a name whose signatures it could not check,
+#: or one that has stopped serving us (REFUSED), says nothing about what the
+#: next upstream will answer.
+_FAILOVER_RCODES = frozenset({Rcode.SERVFAIL, Rcode.REFUSED})
+
+#: How long a failure demotes an upstream in the `fastest` ranking, in seconds.
+#: A failure has to be forgotten eventually: a demoted upstream is only asked
+#: when the head fails, so nothing else would ever clear it.
+_FAILURE_MEMORY = 30.0
+
+
+def _rank(up, now: float) -> tuple[int, float]:
+    """Sort key for `fastest`: recent failures first, then smoothed RTT.
+
+    An upstream that does not say when it last failed is taken to have failed
+    just now — the conservative reading.
+    """
+    failures = getattr(up, "failures", 0)
+    if failures and now - getattr(up, "failed_at", now) >= _FAILURE_MEMORY:
+        failures = 0
+    return failures, up.rtt
 
 
 def parse_server(spec: str) -> tuple[str, int]:
@@ -67,7 +92,18 @@ class Forwarder:
         """The label travels back with the answer rather than being reported from
         inside the task: in a parallel race a loser can finish after the winner
         has been picked, and would otherwise take the credit."""
-        return await up.query(query), repr(up)
+        resp = await up.query(query)
+        if resp.rcode in _FAILOVER_RCODES:
+            # Accepted as a success, this ended the whole resolution: the
+            # sequential and fastest strategies never asked the next upstream,
+            # a parallel race was won by whichever server failed quickest, and
+            # the pipeline handed the SERVFAIL to the client even while it held
+            # a stale copy it could have served. Counted as a failure too, so
+            # `fastest` stops ranking a server that only ever refuses.
+            up.failures = getattr(up, "failures", 0) + 1
+            up.failed_at = asyncio.get_running_loop().time()
+            raise UpstreamError(f"{up!r} answered rcode {resp.rcode}")
+        return resp, repr(up)
 
     @staticmethod
     def _won(resp_who: tuple[Message, str], note) -> Message:
@@ -124,11 +160,18 @@ class Forwarder:
 
         One head and everyone else as fallback makes the strategy mean what it
         says at every group size, and leaves the fallback tier non-empty whenever
-        there is anywhere to fall back to. `failures` leads the sort key, so an
-        upstream that just failed is tried last rather than being asked again
-        first.
+        there is anywhere to fall back to. Recent failures lead the sort key
+        (see `_rank`), so an upstream that just failed is tried last rather than
+        being asked again first.
         """
-        ordered = sorted(group, key=lambda u: (u.failures, u.rtt))
+        # Recent failures only. Ranked on the lifetime count, one timeout left an
+        # upstream behind a peer that never failed for good — however slow that
+        # peer became — because the demoted one was never asked again and so
+        # never had the success that resets the count. Once its failure is old
+        # it competes on RTT again: one query probes it, and a second failure
+        # demotes it for another window.
+        now = asyncio.get_running_loop().time()
+        ordered = sorted(group, key=lambda u: _rank(u, now))
         head, tail = ordered[:1], ordered[1:]
         try:
             return await self._parallel(head, query, note)

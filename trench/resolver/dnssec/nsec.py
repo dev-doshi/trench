@@ -99,7 +99,26 @@ def _ancestors(qname: Name, zone: Name) -> list[Name]:
 
 
 def _covered(name: Name, nsecs: list[tuple[Name, R.NSEC]]) -> bool:
-    return any(nsec_covers(o, rd.next_name, name) for o, rd in nsecs)
+    return any(_proves_gap(o, rd, name) for o, rd in nsecs)
+
+
+def _cuts_off(owner: Name, rd: R.NSEC | R.NSEC3, name: Name) -> bool:
+    """True when `name` lies beneath `owner` and `owner` stops the zone there.
+
+    RFC 6840 §4.1. Canonical order puts every name under a delegation (or a
+    DNAME) inside the gap that follows it, so the parent's public NSEC for
+    `child.example` "covers" `www.child.example`. But those names are not the
+    parent's to deny — they belong to the child, or are redirected — and
+    accepting the proof lets anyone replay that one record to forge NXDOMAIN
+    for every name in a delegated zone.
+    """
+    if name == owner or not name.is_subdomain_of(owner):
+        return False
+    return _is_delegation(rd) or bitmap_has(rd.type_bitmap, Type.DNAME)
+
+
+def _proves_gap(owner: Name, rd: R.NSEC, name: Name) -> bool:
+    return nsec_covers(owner, rd.next_name, name) and not _cuts_off(owner, rd, name)
 
 
 def _is_delegation(rd: R.NSEC | R.NSEC3) -> bool:
@@ -165,7 +184,7 @@ def nsec_nxdomain(qname: Name, nsecs: list[tuple[Name, R.NSEC]]) -> bool:
     """
     ce: Name | None = None
     for owner, rd in nsecs:
-        if nsec_covers(owner, rd.next_name, qname):
+        if _proves_gap(owner, rd, qname):
             # Both names bracketing the gap exist in the zone, so the deeper of
             # the two ancestors they share with qname is the closest encloser.
             a = common_suffix(owner, qname)
@@ -208,7 +227,7 @@ def nsec_ds_denial(child: Name, nsecs: list[tuple[Name, R.NSEC]]) -> str | None:
             return None
         return "insecure" if bitmap_has(rd.type_bitmap, Type.NS) else "nocut"
     for owner, rd in nsecs:
-        if nsec_covers(owner, rd.next_name, child):
+        if _proves_gap(owner, rd, child):
             return "nocut"                    # the name does not exist at all
     return None
 
@@ -311,7 +330,14 @@ def _closest_encloser(qname: Name, s: Nsec3Set) -> tuple[Name, Name] | None:
     """Return (closest encloser, next closer): the deepest ancestor of qname
     that exists, and the one-label-deeper name that does not."""
     for anc in _ancestors(qname, s.zone):
-        if s.match(anc) is not None:
+        rd = s.match(anc)
+        if rd is not None:
+            # RFC 5155 §8.3: a closest encloser that is a delegation or a DNAME
+            # is not one. The names beneath it are the child's (or redirected),
+            # so the parent's chain cannot speak for them — the NSEC3 form of
+            # the replay `_cuts_off` refuses for NSEC.
+            if _is_delegation(rd) or bitmap_has(rd.type_bitmap, Type.DNAME):
+                return None
             depth = len(anc.labels)
             return anc, Name(qname.labels[len(qname.labels) - depth - 1:])
     return None

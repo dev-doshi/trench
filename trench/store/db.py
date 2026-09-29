@@ -36,7 +36,11 @@ class Database:
             self.readonly = True
             self._db = await _a.connect(f"file:{self.path}?mode=ro", uri=True)
             self._db.row_factory = _a.Row
-            await self._db.execute("PRAGMA busy_timeout=5000")
+            try:
+                await self._db.execute("PRAGMA busy_timeout=5000")
+            except BaseException:
+                await self.close()
+                raise
             return
         # This file holds scrypt password hashes, TOTP secrets, API-token
         # digests, the query-log salt and every name the household has looked
@@ -47,12 +51,21 @@ class Database:
         self._precreate_private(Path(self.path))
         self._db = await aiosqlite.connect(self.path)
         self._db.row_factory = aiosqlite.Row
-        for pragma in ("PRAGMA journal_mode=WAL",
-                       "PRAGMA synchronous=NORMAL",
-                       "PRAGMA busy_timeout=5000",
-                       "PRAGMA foreign_keys=ON"):
-            await self._db.execute(pragma)
-        await self.apply_migrations()
+        # A connection that failed half-way is closed here, not left for the
+        # caller: its aiosqlite thread is not a daemon thread, so an open one
+        # keeps the process alive after startup has failed — a daemon systemd
+        # never sees exit, and so never restarts. A disk that is full, a file
+        # that is not a database, a migration that fails all land here.
+        try:
+            for pragma in ("PRAGMA journal_mode=WAL",
+                           "PRAGMA synchronous=NORMAL",
+                           "PRAGMA busy_timeout=5000",
+                           "PRAGMA foreign_keys=ON"):
+                await self._db.execute(pragma)
+            await self.apply_migrations()
+        except BaseException:
+            await self.close()
+            raise
 
     @staticmethod
     def _precreate_private(path: Path) -> None:
@@ -95,10 +108,24 @@ class Database:
         for version, descr, sql in MIGRATIONS:
             if version in done:
                 continue
-            await db.executescript(sql)
-            await db.execute("INSERT INTO _migrations(version, applied, descr) VALUES (?,?,?)",
-                             (version, int(time.time()), descr))
-            await db.commit()
+            # One transaction per migration, its bookkeeping row included.
+            # `executescript` commits first and then runs in autocommit, so each
+            # statement used to land on its own: a failure — or a kill during
+            # an upgrade — left half a migration applied and none of it
+            # recorded, to be replayed on top of itself at the next start. That
+            # is harmless only for as long as every migration is idempotent;
+            # the first ALTER TABLE ADD COLUMN would have bricked start-up.
+            # The row is inlined because a script takes no parameters; both
+            # values are ours, and the quote escaping keeps a stray apostrophe
+            # in a description from ending the literal.
+            record = ("INSERT INTO _migrations(version, applied, descr) VALUES "
+                      f"({int(version)}, {int(time.time())}, "
+                      f"'{descr.replace(chr(39), chr(39) * 2)}');")
+            try:
+                await db.executescript(f"BEGIN IMMEDIATE;\n{sql}\n;{record}\nCOMMIT;")
+            except BaseException:
+                await db.rollback()
+                raise
             log.info("applied migration %d: %s", version, descr)
 
     async def secret(self, name: str, *, nbytes: int = 32) -> bytes:
@@ -125,9 +152,31 @@ class Database:
             raise RuntimeError(f"could not store the {name} secret")
         return bytes.fromhex(row["value"])
 
-    async def execute(self, sql: str, params: Iterable[Any] = ()) -> None:
-        await self.conn.execute(sql, tuple(params))
-        await self.conn.commit()
+    async def execute(self, sql: str, params: Iterable[Any] = ()) -> int:
+        """Run one statement and commit. Returns the number of rows it changed."""
+        try:
+            cur = await self.conn.execute(sql, tuple(params))
+            n = cur.rowcount
+            await cur.close()
+            await self.conn.commit()
+            return n
+        except BaseException:
+            await self._rollback()
+            raise
+
+    async def _rollback(self) -> None:
+        """Abandon a write that failed partway.
+
+        sqlite3 leaves the implicit transaction open when a statement fails. The
+        rows written before the failure then stayed pending, holding the WAL
+        write lock, and were committed by whichever unrelated write came next —
+        so a query-log batch reported as failed was in fact half-written, and
+        a VACUUM in between found the database busy.
+        """
+        try:
+            await self.conn.rollback()
+        except Exception:  # noqa: BLE001 — the original error is the one to report
+            log.debug("rollback after a failed write also failed", exc_info=True)
 
     async def vacuum(self) -> None:
         """VACUUM on a dedicated connection.
@@ -162,8 +211,12 @@ class Database:
             await db.close()
 
     async def executemany(self, sql: str, rows: Iterable[Iterable[Any]]) -> None:
-        await self.conn.executemany(sql, [tuple(r) for r in rows])
-        await self.conn.commit()
+        try:
+            await self.conn.executemany(sql, [tuple(r) for r in rows])
+            await self.conn.commit()
+        except BaseException:
+            await self._rollback()
+            raise
 
     # Both readers close their cursor. An unfinalised sqlite3 cursor holds the
     # connection's read transaction open, and SQLite refuses to VACUUM while

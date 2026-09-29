@@ -487,3 +487,22 @@ def test_a_write_failure_disables_the_export(tmp_path):
         exp.write([tuple(getattr(mkrec(), c) if c != "answers" else "[]"
                          for c in _COLUMNS)])
     assert exp._fh is None
+
+
+@pytest.mark.asyncio
+async def test_a_failed_connect_leaves_no_thread_behind(tmp_path):
+    """aiosqlite's worker thread is not a daemon thread: one left open by a
+    failed start keeps the process alive, so systemd never sees it exit."""
+    import sqlite3
+    import threading
+
+    from trench.store.db import Database
+    bad = tmp_path / "trench.db"
+    bad.write_bytes(b"this is not an sqlite database" * 100)
+    before = set(threading.enumerate())
+    db = Database(bad)
+    with pytest.raises(sqlite3.DatabaseError):
+        await db.connect()
+    for t in set(threading.enumerate()) - before:
+        t.join(timeout=5)
+        assert not t.is_alive(), t.name

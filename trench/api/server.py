@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 
 from aiohttp import web
@@ -88,6 +89,10 @@ API = "/api/v1"
 #: Ceiling on one inbound WebSocket message. The console's own frames are a
 #: handful of bytes; this is generous for them and finite for everyone else.
 WS_MAX_MSG_BYTES = 64 * 1024
+#: Live events one websocket client may have queued before new ones are dropped,
+#: and how many are sent per wake of its loop.
+WS_QUEUE = 2000
+WS_BATCH = 256
 
 
 class _NoUpdater(Exception):
@@ -159,6 +164,7 @@ class APIServer:
         self.start_ts = time.time()
         self._runner: web.AppRunner | None = None
         self._ws: set[web.WebSocketResponse] = set()
+        self._bg: set[asyncio.Task] = set()      # background work started by a request
         # Secrets offered for enrolment but not yet proven. Held here rather
         # than written straight to the user row: a secret stored before the
         # operator's authenticator has produced one matching code is a lockout
@@ -185,6 +191,8 @@ class APIServer:
                  self.host, self.port)
 
     async def stop(self) -> None:
+        for task in list(self._bg):
+            task.cancel()
         for ws in list(self._ws):
             await ws.close()
         if self._runner is not None:
@@ -299,8 +307,8 @@ class APIServer:
     async def login(self, request: web.Request) -> web.Response:
         body = await _json(request)
         ip = _client_ip(request)
-        token = await self.auth.login(body.get("name", ""), body.get("password", ""),
-                                      body.get("code", ""), ip)
+        token = await self.auth.login(_str(body, "name"), _str(body, "password"),
+                                      str(body.get("code") or ""), ip)
         if token is None:
             return web.json_response({"error": "invalid credentials"}, status=401)
         resp = web.json_response({"ok": True})
@@ -340,8 +348,8 @@ class APIServer:
     async def tokens_create(self, request: web.Request) -> web.Response:
         user = self._require(request, "admin")
         body = await _json(request)
-        name = (body.get("name") or "").strip()
-        scope = body.get("scope", "viewer")
+        name = _str(body, "name").strip()
+        scope = _str(body, "scope", "viewer")
         # Capped at ten years: past that an expiry is indistinguishable from
         # the `0` that already means "never", and an uncapped value reached
         # `time.time() + days * 86400` and then SQLite, overflowing both.
@@ -361,7 +369,10 @@ class APIServer:
     async def tokens_delete(self, request: web.Request) -> web.Response:
         self._require(request, "admin")
         tid = request.match_info["tid"]
-        if not await self.auth.revoke_api_token(int(tid)):
+        # The route matches any segment; a non-numeric one names no token, and
+        # neither does one past SQLite's integer range, which it cannot bind.
+        ok = tid.isascii() and tid.isdigit() and int(tid) < 2**63
+        if not ok or not await self.auth.revoke_api_token(int(tid)):
             return web.json_response({"error": "not found"}, status=404)
         await self._audit(request, "token.revoke", str(tid))
         return web.json_response({"ok": True})
@@ -602,8 +613,8 @@ class APIServer:
     async def rules_post(self, request: web.Request) -> web.Response:
         self._require(request, "editor")
         body = await _json(request)
-        domain = (body.get("domain") or "").strip().lower()
-        action = body.get("action")
+        domain = _str(body, "domain").strip().lower()
+        action = _str(body, "action")
         f = self.app.filter
         if not domain or action not in ("deny", "allow", "remove"):
             return web.json_response({"error": "bad request"}, status=400)
@@ -732,7 +743,7 @@ class APIServer:
             return web.json_response({"error": "seconds must be a number"}, status=400)
         if seconds < 0 or seconds > 86_400:
             return web.json_response({"error": "seconds must be 0..86400"}, status=400)
-        client = str(body.get("client", "") or "")
+        client = _str(body, "client")
         pipe = self.app.pipeline
         if seconds == 0:
             pipe.resume(client)
@@ -744,9 +755,10 @@ class APIServer:
 
     # ---- settings ----
     async def settings_get(self, request: web.Request) -> web.Response:
-        self._require(request, "viewer")
+        user = self._require(request, "viewer")
         from . import settings as st
-        body = st.describe(self.app.config)
+        body = st.describe(self.app.config,
+                           reveal=AuthManager.has_role(user, "admin"))
         path = self.app._config_path
         body["config_path"] = str(path or "")
         body["writable"], body["why"] = _config_writable(path)
@@ -761,7 +773,7 @@ class APIServer:
         """
         self._require(request, "admin")
         from . import settings as st
-        body = await request.json()
+        body = await _json(request)
         changes = body.get("changes") or {}
         if not isinstance(changes, dict) or not changes:
             raise web.HTTPBadRequest(text="no changes")
@@ -842,7 +854,12 @@ class APIServer:
 
     async def gravity_refresh(self, request: web.Request) -> web.Response:
         self._require(request, "editor")
-        asyncio.ensure_future(self.app.refresh_blocklists())
+        # Held until done: the loop keeps only a weak reference to a task, so an
+        # unreferenced one can be collected part way through a build. The app
+        # serialises builds itself; this only has to keep the task alive.
+        task = asyncio.ensure_future(self.app.refresh_blocklists())
+        self._bg.add(task)
+        task.add_done_callback(self._bg.discard)
         await self._audit(request, "gravity.refresh")
         return web.json_response({"ok": True})
 
@@ -885,7 +902,7 @@ class APIServer:
         except _NoUpdater:
             return web.json_response({"error": "update checking is off"}, status=409)
         body = await _json(request)
-        version = (body.get("version") or "").strip() or None
+        version = _str(body, "version").strip() or None
         from ..ops.update import UpdateError
         try:
             status = await updater.apply(version=version)
@@ -924,9 +941,17 @@ class APIServer:
             return web.json_response({"error": "no query log"}, status=503)
         body = await _json(request)
         from ..ops.whatif import compile_delta, whatif_from_querylog
-        delta = compile_delta(deny=body.get("deny") or [],
-                              allow=body.get("allow") or [],
-                              list_text=body.get("list_text") or "")
+        # A bare string is a sequence too, and was dry-run a character at a
+        # time; a number in the list reached `.strip()` and a 500.
+        lists = {}
+        for key in ("deny", "allow"):
+            value = body.get(key) or []
+            if not isinstance(value, list) or not all(isinstance(d, str) for d in value):
+                return web.json_response(
+                    {"error": f"{key} must be a list of strings"}, status=400)
+            lists[key] = value
+        delta = compile_delta(deny=lists["deny"], allow=lists["allow"],
+                              list_text=_str(body, "list_text"))
         result = await whatif_from_querylog(
             self.app.db, self.app.filter, delta,
             hours=_num(body, "hours", 24, 24 * 30, float),
@@ -1002,16 +1027,22 @@ class APIServer:
     _IDENT_TYPES = ("ip", "cidr", "mac", "clientid", "token")
 
     async def clients_list(self, request: web.Request) -> web.Response:
-        self._require(request, "viewer")
+        user = self._require(request, "viewer")
         rows = await self.app.db.fetchall(
             "SELECT id, ident, ident_type, name, comment, policy FROM client ORDER BY id")
-        return web.json_response({"clients": [dict(r) for r in rows]})
+        out = [dict(r) for r in rows]
+        if not AuthManager.has_role(user, "admin"):
+            # A token ident is a credential; see `clients.model.mask_ident`.
+            from ..clients.model import mask_ident
+            for r in out:
+                r["ident"] = mask_ident(r["ident"], r["ident_type"])
+        return web.json_response({"clients": out})
 
     async def clients_create(self, request: web.Request) -> web.Response:
         self._require(request, "editor")
         body = await _json(request)
-        ident = (body.get("ident") or "").strip()
-        itype = body.get("ident_type", "ip")
+        ident = _str(body, "ident").strip()
+        itype = _str(body, "ident_type", "ip")
         if not ident or itype not in self._IDENT_TYPES:
             return web.json_response({"error": "ident and valid ident_type required"}, status=400)
         policy_obj = body.get("policy") or {}
@@ -1023,7 +1054,7 @@ class APIServer:
         policy = json.dumps(policy_obj)
         await self.app.db.execute(
             "INSERT INTO client(ident, ident_type, name, comment, policy) VALUES(?,?,?,?,?)",
-            (ident, itype, body.get("name", ""), body.get("comment", ""), policy))
+            (ident, itype, _str(body, "name"), _str(body, "comment"), policy))
         await self.app.reload_clients()
         self.app.notify_workers()
         await self._audit(request, "client.create", ident)
@@ -1036,12 +1067,18 @@ class APIServer:
         row = await self.app.db.fetchone("SELECT id FROM client WHERE id=?", (cid,))
         if row is None:
             return web.json_response({"error": "not found"}, status=404)
-        if body.get("ident_type") not in (None, *self._IDENT_TYPES):
+        # A key that is present is a value to write, so `"ident_type": null`
+        # must not slip past the check as "absent" and store NULL; and an
+        # update may not blank the identifier that create insists on.
+        if "ident_type" in body and body["ident_type"] not in self._IDENT_TYPES:
             return web.json_response({"error": "invalid ident_type"}, status=400)
+        if "ident" in body and not _str(body, "ident").strip():
+            return web.json_response({"error": "ident must not be empty"}, status=400)
         fields, params = [], []
         for col in ("ident", "ident_type", "name", "comment"):
             if col in body:
-                fields.append(f"{col}=?"); params.append(body[col])
+                value = _str(body, col)
+                fields.append(f"{col}=?"); params.append(value.strip() if col == "ident" else value)
         if "policy" in body:
             if not isinstance(body["policy"], dict):
                 return web.json_response({"error": "policy must be an object"}, status=400)
@@ -1057,6 +1094,11 @@ class APIServer:
     async def clients_delete(self, request: web.Request) -> web.Response:
         self._require(request, "editor")
         cid = request.match_info["cid"]
+        # Report a missing row as one, like update does, rather than answering
+        # "ok" and writing an audit entry for a deletion that never happened.
+        row = await self.app.db.fetchone("SELECT id FROM client WHERE id=?", (cid,))
+        if row is None:
+            return web.json_response({"error": "not found"}, status=404)
         await self.app.db.execute("DELETE FROM client WHERE id=?", (cid,))
         await self.app.reload_clients()
         self.app.notify_workers()
@@ -1089,12 +1131,14 @@ class APIServer:
         needs is to see them, including whether their lists compiled.
         """
         self._require(request, "viewer")
+        from ..clients.model import mask_ident
         pipe = self.app.pipeline
         configured = self.app.config.filtering.groups or {}
         members: dict[str, list[str]] = {}
         for c in self.app.config.clients:
             if c.group:
-                members.setdefault(c.group, []).append(c.name or c.ident)
+                members.setdefault(c.group, []).append(
+                    c.name or mask_ident(c.ident, c.type))
         out = []
         for name, spec in configured.items():
             live = pipe.group_filters.get(name)
@@ -1136,7 +1180,6 @@ class APIServer:
     async def websocket(self, request: web.Request) -> web.WebSocketResponse:
         """Multiplexed live channel: an initial snapshot, per-query events as they
         happen, and a stats/series refresh every 2s — all typed JSON frames."""
-        from aiohttp import WSMsgType
         # Gate before the upgrade: this feed carries client IPs and queried
         # domains straight out of the in-memory ring, so it needs at least the
         # same role as the REST routes that serve the same data.
@@ -1150,14 +1193,28 @@ class APIServer:
         await ws.prepare(request)
         self._ws.add(ws)
         loop = asyncio.get_running_loop()
-        live: asyncio.Queue = asyncio.Queue(maxsize=2000)
+        live: asyncio.Queue = asyncio.Queue(maxsize=WS_QUEUE)
+        # Events this socket missed because it fell behind. The queue is bounded
+        # so a slow browser can never hold up the resolve path that feeds it;
+        # the cost is gaps in the feed, which the console is now told about in
+        # every stats frame rather than left to assume the feed is complete.
+        dropped = 0
 
         def on_event(ev: dict) -> None:            # called from the resolve path
+            nonlocal dropped
             try:
                 live.put_nowait(ev)
             except asyncio.QueueFull:
-                pass
+                dropped += 1
+
         self.app.counters.subscribe(on_event)
+        # Read in a task of its own, so a close from the client is noticed as it
+        # arrives. The loop used to probe `ws.receive()` with a 1 ms timeout
+        # after every event, which cancelled a read in progress each time and
+        # capped a client at one event per probe: under load the queue filled
+        # and the feed dropped events however fast the client could take them.
+        reader = asyncio.ensure_future(_ws_drain(ws))
+        getter: asyncio.Future | None = None
         try:
             # 1) hydrate: current stats + the recent ring so the feed isn't empty
             await ws.send_str(json.dumps({"type": "hello", "data": {
@@ -1165,27 +1222,32 @@ class APIServer:
                 "series": self.app.counters.series(60),
                 "recent": self.app.counters.recent_events(200),
             }}))
-            last_stats = loop.time()
-            while not ws.closed:
-                try:
-                    ev = await asyncio.wait_for(live.get(), timeout=0.5)
-                    await ws.send_str(json.dumps({"type": "query", "data": ev}))
-                except TimeoutError:
-                    pass
-                # detect client close without blocking the stream
-                try:
-                    msg = await asyncio.wait_for(ws.receive(), timeout=0.001)
-                    if msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSING, WSMsgType.ERROR):
-                        break
-                except TimeoutError:
-                    pass
-                if loop.time() - last_stats >= 2.0:
+            next_stats = loop.time() + 2.0
+            while not ws.closed and not reader.done():
+                getter = asyncio.ensure_future(live.get())
+                done, _ = await asyncio.wait(
+                    {getter, reader}, timeout=max(0.0, next_stats - loop.time()),
+                    return_when=asyncio.FIRST_COMPLETED)
+                if getter in done:
+                    batch = [getter.result()]
+                    while len(batch) < WS_BATCH and not live.empty():
+                        batch.append(live.get_nowait())
+                    for ev in batch:
+                        await ws.send_str(json.dumps({"type": "query", "data": ev}))
+                else:
+                    getter.cancel()
+                getter = None
+                if loop.time() >= next_stats:
                     await ws.send_str(json.dumps({"type": "stats", "data": self._stats_payload(),
-                                                  "series": self.app.counters.series(60)}))
-                    last_stats = loop.time()
-        except (asyncio.CancelledError, ConnectionResetError):
+                                                  "series": self.app.counters.series(60),
+                                                  "dropped": dropped}))
+                    next_stats = loop.time() + 2.0
+        except ConnectionResetError:
             pass
         finally:
+            if getter is not None:
+                getter.cancel()
+            reader.cancel()
             self.app.counters.unsubscribe(on_event)
             self._ws.discard(ws)
         return ws
@@ -1196,11 +1258,48 @@ class APIServer:
         return web.FileResponse(index)
 
 
+async def _ws_drain(ws: web.WebSocketResponse) -> None:
+    """Consume what the client sends, returning once it closes. Nothing the
+    console sends is acted on; reading is what processes pings and the close
+    handshake."""
+    async for _ in ws:
+        pass
+
+
 async def _json(request: web.Request) -> dict:
+    """The request body as a JSON object, or `{}`.
+
+    Every caller goes on to `.get` fields out of it, so a body that parses but
+    is not an object — `[1]`, `"x"`, `3` — is as unusable as one that does not
+    parse, and used to reach that `.get` as an AttributeError and a 500.
+    """
     try:
-        return await request.json()
+        body = await request.json()
     except Exception:
         return {}
+    return body if isinstance(body, dict) else {}
+
+
+def _bad_request(error: str) -> web.HTTPBadRequest:
+    return web.HTTPBadRequest(text=json.dumps({"error": error}),
+                              content_type="application/json")
+
+
+def _str(body: dict, name: str, default: str = "") -> str:
+    """A string field of a JSON body: `default` when absent or null, a 400 when
+    present as anything else.
+
+    JSON gives a field whatever type the sender chose. Handlers `.strip()` it,
+    bind it into SQLite or look it up in a dict, and a number or a list there
+    was an AttributeError, a binding error or an unhashable-type error — each a
+    500, and in `/pause` a list was quietly stringified into a client key.
+    """
+    value = body.get(name)
+    if value is None:
+        return default
+    if not isinstance(value, str):
+        raise _bad_request(f"{name} must be a string")
+    return value
 
 
 def _client_ip(request: web.Request) -> str:
@@ -1315,3 +1414,27 @@ _OPENAPI = {
         "/readyz": {"get": {"summary": "Readiness: 503 until the filter engine is loaded"}},
     },
 }
+
+
+def _complete_operations(doc: dict) -> dict:
+    """Fill in what OpenAPI 3.0 requires of every operation and the summaries
+    above leave out, so the served document validates.
+
+    Without this, 51 operations lacked the mandatory `responses` and the three
+    templated paths never declared `{tid}`/`{cid}` — the spec validator reported
+    54 errors, and generators that validate first (openapi-generator among them)
+    refuse the file outright however complete its route list is. Done here
+    rather than by hand so a route added later cannot reintroduce either.
+    """
+    for path, item in doc["paths"].items():
+        params = [{"name": name, "in": "path", "required": True,
+                   "schema": {"type": "integer"}}
+                  for name in re.findall(r"{(\w+)}", path)]
+        for op in item.values():
+            op.setdefault("responses", {"default": {"description": "See summary"}})
+            if params:
+                op.setdefault("parameters", params)
+    return doc
+
+
+_complete_operations(_OPENAPI)

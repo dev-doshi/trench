@@ -58,7 +58,7 @@ def _build_parser() -> argparse.ArgumentParser:
     why.add_argument("--token", default="")
 
     pause = sub.add_parser("pause", help="suspend filtering for a while")
-    pause.add_argument("duration", nargs="?", default="5m",
+    pause.add_argument("duration", nargs="?", default="5m", type=_duration,
                        help="e.g. 30s, 5m, 1h; 0 resumes")
     pause.add_argument("--client", default="", help="one device only")
     pause.add_argument("--url", default="http://127.0.0.1:8089")
@@ -66,7 +66,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     imp = sub.add_parser("import", help="import PiHole/AdGuard config")
     imp.add_argument("kind", choices=["pihole", "adguard"])
-    imp.add_argument("path")
+    imp.add_argument("path", help="Pi-hole: gravity.db or the directory holding it "
+                     "(e.g. /etc/pihole); AdGuard: AdGuardHome.yaml")
 
     kg = sub.add_parser("keygen-tsig", help="generate a TSIG key (for zone transfers)")
     kg.add_argument("name", nargs="?", default="xfr-key.")
@@ -77,14 +78,17 @@ def _build_parser() -> argparse.ArgumentParser:
     rt.add_argument("rule", help="a rule line, or @path to read rules from a file")
     rt.add_argument("names", nargs="+", help="domain names to test")
 
-    bk = sub.add_parser("backup", help="archive the data directory to a .tar.gz")
+    bk = sub.add_parser("backup", help="archive the data directory to a .tar.gz "
+                        "(safe while the daemon runs)")
     bk.add_argument("out", help="output archive path")
     bk.add_argument("--data-dir", default="./data")
 
-    rs = sub.add_parser("restore", help="restore a data directory from a .tar.gz")
+    rs = sub.add_parser("restore", help="restore a data directory from a .tar.gz "
+                        "(stop the daemon first)")
     rs.add_argument("archive")
     rs.add_argument("--data-dir", default="./data")
-    rs.add_argument("--force", action="store_true", help="overwrite a non-empty target")
+    rs.add_argument("--force", action="store_true",
+                    help="replace the contents of a non-empty target")
 
     pr = sub.add_parser("profile", help="emit an Apple .mobileconfig for encrypted DNS")
     pr.add_argument("--name", default="Trench")
@@ -96,7 +100,11 @@ def _build_parser() -> argparse.ArgumentParser:
     pw.add_argument("user", nargs="?", default="admin")
     pw.add_argument("--data-dir", default="./data")
     pw.add_argument("--db", default="trench.db", help="database file inside the data dir")
-    pw.add_argument("--password", help="new password (omit to generate one and print it)")
+    pwsrc = pw.add_mutually_exclusive_group()
+    pwsrc.add_argument("--password", help="new password (omit to generate one and print it)")
+    pwsrc.add_argument("--password-stdin", action="store_true", dest="password_stdin",
+                       help="read the new password from stdin, keeping it out of "
+                            "`ps` and shell history")
     pw.add_argument("--role", default="admin", help="role if the user has to be created")
     pw.add_argument("--clear-totp", action="store_true", dest="clear_totp",
                     help="also remove the account's two-factor secret")
@@ -227,6 +235,19 @@ def _seconds(text: str) -> float:
     return float(text or 0)
 
 
+def _duration(text: str) -> float:
+    """argparse `type=` for `pause`: a typo is a usage error (exit 2), caught
+    before anything is sent, not a ValueError traceback."""
+    try:
+        seconds = _seconds(text)
+    except ValueError:
+        seconds = -1.0
+    if not seconds >= 0:            # also rejects nan
+        raise argparse.ArgumentTypeError(
+            f"invalid duration {text!r} (use e.g. 30s, 5m, 1h, or 0 to resume)")
+    return seconds
+
+
 def _do_why(args) -> int:
     params = {"name": args.name, "type": args.type}
     if args.client:
@@ -236,6 +257,17 @@ def _do_why(args) -> int:
     path = "/api/v1/explain?" + urllib.parse.urlencode(params)
     try:
         out = _api_call(args.url, path, args.token)
+    except urllib.error.HTTPError as e:
+        # A bad name or type is answered with a JSON error that says exactly
+        # what was wrong; the hint about the daemon is only right for auth.
+        try:
+            detail = json.loads(e.read()).get("error", "")
+        except Exception:
+            detail = ""
+        hint = "" if detail or e.code not in (401, 403) else \
+            " (is the daemon running? do you need --token?)"
+        print(f"error: {detail or e}{hint}", file=sys.stderr)
+        return 1
     except Exception as e:
         print(f"error: {e} (is the daemon running? do you need --token?)", file=sys.stderr)
         return 1
@@ -259,7 +291,7 @@ def _do_why(args) -> int:
 
 
 def _do_pause(args) -> int:
-    seconds = _seconds(args.duration)
+    seconds = args.duration
     body = json.dumps({"seconds": seconds, "client": args.client}).encode()
     req = urllib.request.Request(
         args.url + "/api/v1/pause", data=body, method="POST",
@@ -275,8 +307,28 @@ def _do_pause(args) -> int:
 
 
 def _do_import(args) -> int:
+    import sqlite3
+    from pathlib import Path
+
     from ..ops.migrate_import import import_adguard, import_pihole
-    res = import_pihole(args.path) if args.kind == "pihole" else import_adguard(args.path)
+    path = Path(args.path)
+    if args.kind == "pihole" and path.is_dir():
+        path = path / "gravity.db"      # `trench import pihole /etc/pihole`
+    if not path.is_file():
+        print(f"error: {path} not found", file=sys.stderr)
+        return 1
+    try:
+        res = import_pihole(str(path)) if args.kind == "pihole" else import_adguard(str(path))
+    except sqlite3.Error as e:
+        # Nothing has been written yet, so stdout stays empty and a script
+        # redirecting it into a config file gets no half-document.
+        print(f"error: {path} is not a readable Pi-hole gravity.db ({e})", file=sys.stderr)
+        return 1
+    except (ValueError, AttributeError, TypeError) as e:
+        # yaml.YAMLError is a ValueError subclass; the others are a YAML file
+        # that parsed but is not shaped like AdGuardHome.yaml.
+        print(f"error: {path} is not a usable {args.kind} config ({e})", file=sys.stderr)
+        return 1
     print(f"# imported from {args.kind}: {res.summary()}")
     out = {"filtering": {"sources": res.sources, "deny": res.deny, "allow": res.allow}}
     if res.rules:
@@ -321,32 +373,106 @@ def _do_regex_test(args) -> int:
     return rc
 
 
+_SQLITE_MAGIC = b"SQLite format 3\x00"
+_SQLITE_SIDECARS = ("-wal", "-shm", "-journal")
+
+
+def _sqlite_files(root):
+    """The SQLite databases under `root`, by header rather than by name."""
+    for p in sorted(root.rglob("*")):
+        if not p.is_file() or p.is_symlink() or p.name.endswith(_SQLITE_SIDECARS):
+            continue
+        try:
+            with open(p, "rb") as f:
+                if f.read(16) == _SQLITE_MAGIC:
+                    yield p
+        except OSError:
+            continue
+
+
 def _do_backup(args) -> int:
+    import shutil
+    import sqlite3
     import tarfile
+    import tempfile
     from pathlib import Path
     data = Path(args.data_dir)
-    if not data.exists():
-        print(f"data dir {data} not found", file=sys.stderr)
+    if not data.is_dir():
+        print(f"data dir {data} not found (or not a directory)", file=sys.stderr)
         return 1
-    with tarfile.open(args.out, "w:gz") as tar:
-        tar.add(data, arcname=data.name)
-    print(f"backed up {data} -> {args.out}")
+    # Written beside the target and renamed into place, so a failure halfway
+    # (full disk, Ctrl-C, a cron job killed by a timeout) cannot leave a
+    # truncated archive at the name a restore will later trust.
+    out = Path(args.out)
+    if not out.parent.is_dir():
+        print(f"output directory {out.parent} does not exist", file=sys.stderr)
+        return 1
+    tmp = out.with_name(f".{out.name}.partial")
+    # A live database is not a set of files to copy. The daemon writes the
+    # query log every 250 ms, and a byte copy of `trench.db` plus its `-wal`
+    # taken at different moments is a database SQLite may refuse to open —
+    # found out at restore time. Each one is snapshotted through SQLite's
+    # online-backup API instead, and the snapshot is what goes in the archive,
+    # without the sidecars. Beside the output, not in /tmp: the query log can
+    # be larger than a Pi's RAM-backed /tmp.
+    snapdir = Path(tempfile.mkdtemp(dir=out.parent, prefix=f".{out.name}.snap-"))
+    try:
+        snaps: dict[str, Path] = {}
+        skip: set[str] = set()
+        for i, db in enumerate(_sqlite_files(data)):
+            arc = (Path(data.name) / db.relative_to(data)).as_posix()
+            snap = snapdir / str(i)
+            src = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            try:
+                dst = sqlite3.connect(snap)
+                try:
+                    src.backup(dst)
+                finally:
+                    dst.close()
+            finally:
+                src.close()
+            snaps[arc] = snap
+            skip.update(arc + suffix for suffix in ("",) + _SQLITE_SIDECARS)
+
+        def keep(m):
+            if m.name in skip or Path(m.name).name in (tmp.name, snapdir.name):
+                return None
+            return m
+
+        with tarfile.open(tmp, "w:gz") as tar:
+            tar.add(data, arcname=data.name, filter=keep)
+            for arc, snap in snaps.items():
+                tar.add(snap, arcname=arc)
+        tmp.replace(out)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    finally:
+        shutil.rmtree(snapdir, ignore_errors=True)
+    print(f"backed up {data} -> {out}")
     return 0
 
 
 def _do_restore(args) -> int:
+    import os
+    import shutil
     import tarfile
+    import tempfile
     from pathlib import Path
     dest = Path(args.data_dir)
+    if dest.exists() and not dest.is_dir():
+        print(f"{dest} is not a directory", file=sys.stderr)
+        return 1
     if dest.exists() and any(dest.iterdir()) and not args.force:
         print(f"{dest} is not empty; pass --force to overwrite", file=sys.stderr)
         return 1
-    dest.mkdir(parents=True, exist_ok=True)
     with tarfile.open(args.archive, "r:gz") as tar:
+        # Reading every header walks the whole archive, so a truncated or
+        # corrupt one fails here — before anything in `dest` has been touched.
         members = tar.getmembers()
         # strip the leading archive top-dir so contents land directly in data-dir
         top = members[0].name.split("/")[0] + "/" if members else ""
-        root = dest.resolve()
+        wanted = []
         for m in members:
             if m.name == top.rstrip("/"):
                 continue
@@ -358,25 +484,47 @@ def _do_restore(args) -> int:
             # above deliberately *keeps* names that do not start with `top`, so
             # a `../../etc/trench/trench.yaml` member passed through
             # untouched, and Python 3.11 still extracts with no filter by
-            # default. Links are refused outright; everything else must resolve
-            # inside dest.
+            # default. Links are refused outright; everything else must stay
+            # inside the data dir.
             if m.islnk() or m.issym():
                 print(f"skipping link member {m.name!r}", file=sys.stderr)
                 continue
             if not m.isfile() and not m.isdir():
                 print(f"skipping special member {m.name!r}", file=sys.stderr)
                 continue
-            target = (root / m.name).resolve()
-            if target != root and root not in target.parents:
+            norm = os.path.normpath(m.name)
+            if os.path.isabs(norm) or norm == ".." or norm.startswith("../"):
                 print(f"refusing member outside the data dir: {m.name!r}",
                       file=sys.stderr)
                 return 1
-            # `filter=` only exists from 3.11.4; the resolve() check above is
-            # what actually holds the line on older builds.
-            try:
-                tar.extract(m, dest, filter="data")
-            except TypeError:
-                tar.extract(m, dest)
+            wanted.append(m)
+        # Extracted into a staging directory first, then swapped in. Extracting
+        # over the old contents left every file the archive does not carry in
+        # place — among them a `trench.db-wal` that SQLite then replays into
+        # the restored database, and a failure halfway left a mix of both.
+        # Inside `dest`, so the swap is a rename even when `dest` is a mount
+        # point (a Docker volume), where renaming `dest` itself is not possible.
+        dest.mkdir(parents=True, exist_ok=True)
+        stage = Path(tempfile.mkdtemp(dir=dest, prefix=".restore-"))
+        try:
+            for m in wanted:
+                # `filter=` only exists from 3.11.4; the checks above are what
+                # actually hold the line on older builds.
+                try:
+                    tar.extract(m, stage, filter="data")
+                except TypeError:
+                    tar.extract(m, stage)
+            for child in dest.iterdir():
+                if child == stage:
+                    continue
+                if child.is_dir() and not child.is_symlink():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+            for child in stage.iterdir():
+                child.rename(dest / child.name)
+        finally:
+            shutil.rmtree(stage, ignore_errors=True)
     print(f"restored {args.archive} -> {dest}")
     return 0
 
@@ -415,6 +563,11 @@ async def _do_passwd(args) -> int:
     if not path.exists():
         print(f"no database at {path} (wrong --data-dir?)", file=sys.stderr)
         return 1
+    if args.password_stdin:
+        args.password = sys.stdin.readline().rstrip("\r\n")
+        if not args.password:
+            print("no password on stdin", file=sys.stderr)
+            return 1
     password = args.password or secrets.token_urlsafe(12)
     db = Database(path)
     await db.connect()
@@ -451,7 +604,22 @@ def _do_stamp(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    import sqlite3
+    import tarfile
     args = _build_parser().parse_args(argv)
+    # These are the operator's environment, not bugs: a path that is missing,
+    # unwritable or not an archive. One line and exit 1, never a traceback,
+    # so a script can tell "failed" from "crashed" and a person can act on it.
+    try:
+        return _dispatch(args)
+    except KeyboardInterrupt:
+        return 130
+    except (OSError, EOFError, tarfile.TarError, sqlite3.Error) as e:
+        print(f"trench {args.cmd}: error: {e}", file=sys.stderr)
+        return 1
+
+
+def _dispatch(args) -> int:
     handlers = {
         "keygen-tsig": _do_keygen_tsig, "regex-test": _do_regex_test,
         "backup": _do_backup, "restore": _do_restore,

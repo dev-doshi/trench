@@ -294,6 +294,21 @@ def test_why_reports_an_unreachable_daemon(capsys):
     assert "is the daemon running?" in capsys.readouterr().err
 
 
+def test_why_shows_the_api_error_rather_than_the_daemon_hint(api, capsys):
+    """A 400 for a bad type came out as "HTTP Error 400: Bad Request (is the
+    daemon running?)" — pointing at the one thing that was working."""
+    api.routes[("GET", "/api/v1/explain")] = (400, {"error": "unknown type 'AAA'"})
+    assert main(["why", "x.example.com", "AAA", "--url", api.url]) == 1
+    err = capsys.readouterr().err
+    assert "unknown type 'AAA'" in err and "daemon running" not in err
+
+
+def test_why_hints_at_the_token_on_a_bare_401(api, capsys):
+    api.routes[("GET", "/api/v1/explain")] = (401, b"")
+    assert main(["why", "x.example.com", "--url", api.url]) == 1
+    assert "--token" in capsys.readouterr().err
+
+
 # --- pause ---
 @pytest.mark.parametrize("text,seconds", [
     ("30s", 30), ("5m", 300), ("1h", 3600), ("90", 90), ("0", 0), ("", 0),

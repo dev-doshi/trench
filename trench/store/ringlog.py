@@ -28,6 +28,8 @@ import json
 import mmap
 import struct
 
+from ..shmlock import BoundedLocks
+
 #: head, tail, dropped — three u64 per lane. The writer owns `head` and
 #: `dropped`, the reader owns `tail`, so the two sides never write the same
 #: word; the lock below is what keeps a slot from being read half-written.
@@ -46,6 +48,9 @@ class RecordRing:
         self.slots = slots
         self.slot_bytes = slot_bytes
         self.lane = lane            # which lane this process writes to
+        # Bounded: a worker killed mid-push never releases its lane's lock, and
+        # the primary drains every lane on its event loop.
+        self._guard = BoundedLocks(locks, "query-log lane")
 
     # ---- construction ----
     @classmethod
@@ -88,7 +93,9 @@ class RecordRing:
                 return False
             payload = shrunk
         off = self._lane_off(self.lane)
-        with self.locks[self.lane]:
+        with self._guard.hold(self.lane) as held:
+            if not held:
+                return False
             head, tail, dropped = _LANE_HDR.unpack_from(self.mm, off)
             if head - tail >= self.slots:
                 _LANE_HDR.pack_into(self.mm, off, head, tail, dropped + 1)
@@ -129,7 +136,9 @@ class RecordRing:
         out: list[list] = []
         off = self._lane_off(lane)
         while len(out) < limit:
-            with self.locks[lane]:
+            with self._guard.hold(lane) as held:
+                if not held:
+                    break       # a dead writer's lock: skip the lane, keep the loop
                 head, tail, dropped = _LANE_HDR.unpack_from(self.mm, off)
                 if tail >= head:
                     break
@@ -148,7 +157,8 @@ class RecordRing:
         total = 0
         for lane in range(self.lanes):
             off = self._lane_off(lane)
-            with self.locks[lane]:
-                _, _, dropped = _LANE_HDR.unpack_from(self.mm, off)
+            # A single aligned u64 read: without the lock it can be stale, not
+            # torn, and a stale count is fine for a counter that is only shown.
+            _, _, dropped = _LANE_HDR.unpack_from(self.mm, off)
             total += dropped
         return total

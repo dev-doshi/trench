@@ -574,6 +574,12 @@ class Pipeline:
             d = answer.block
             self._block(ctx, reason=d.reason, source=d.source, rule=d.rule)
             return
+        if (answer.resp is not None and answer.resp.rcode == Rcode.SERVFAIL
+                and self._serve_stale(ctx, key, "stale-fallback")):
+            # RFC 8767 §4: a SERVFAIL is a failed refresh, the same as a
+            # timeout. The forwarder raises on one; a resolver that returns it
+            # (recursive mode, a plugin) must not bypass the retained answer.
+            return
         ctx.response = answer.resp
         ctx.action = "forwarded"
 

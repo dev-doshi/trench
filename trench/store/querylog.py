@@ -12,6 +12,7 @@ import secrets
 import time
 from dataclasses import dataclass
 
+from ..clients.model import mask_client_id
 from ..log import get
 from ..security.hashutil import hash_identifier
 from .db import Database
@@ -23,6 +24,12 @@ SHOW_ALL = 0
 HIDE_CLIENT = 1
 ANON_CLIENT_DOMAIN = 2
 NO_LOG = 3
+
+
+#: Rows per retention transaction; see `QueryLog.retention_sweep`.
+_PRUNE_CHUNK = 5000
+_PRUNE = ("DELETE FROM querylog WHERE rowid IN "
+          "(SELECT rowid FROM querylog WHERE ts < ? LIMIT ?)")
 
 
 @dataclass
@@ -89,6 +96,11 @@ class QueryLog:
         self._queue: asyncio.Queue[QueryRecord] = asyncio.Queue(maxsize=50_000)
         self._writer_task: asyncio.Task | None = None
         self._running = False
+        # Records shed because the queue was full. Counted, and reported by the
+        # writer, so a gap in the log under load is explained rather than silent.
+        self.dropped = 0
+        self._dropped_reported = 0
+        self._dropped_at = float("-inf")
 
     @property
     def recording(self) -> bool:
@@ -140,7 +152,7 @@ class QueryLog:
         try:
             self._queue.put_nowait(rec)
         except asyncio.QueueFull:  # under flood, shed log load rather than block DNS
-            pass
+            self.dropped += 1
 
     async def start(self) -> None:
         if not self._salt_is_persisted and self.db is not None:
@@ -175,7 +187,15 @@ class QueryLog:
         while self._running:
             await asyncio.sleep(self.batch_ms / 1000)
             try:
+                # Keep writing while a full batch is waiting. One batch per tick
+                # capped the log at max_batch / batch_ms — 2,000 rows a second at
+                # the defaults — and anything faster than that filled the queue
+                # and was shed. Each flush awaits the database, so the loop still
+                # yields between batches.
                 await self._flush()
+                while self._running and self._queue.qsize() >= self.max_batch:
+                    await self._flush()
+                self._report_drops()
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -183,6 +203,14 @@ class QueryLog:
                 # of the process, unretrieved and with nothing in the log to say
                 # so. A bad tick is not a reason to stop writing.
                 log.exception("query log flush failed; continuing")
+
+    def _report_drops(self) -> None:
+        shed = self.dropped - self._dropped_reported
+        now = time.monotonic()
+        if shed and now - self._dropped_at >= 60:   # once a minute, not every tick
+            self._dropped_reported, self._dropped_at = self.dropped, now
+            log.warning("query log queue full: %d records dropped (%d total)",
+                        shed, self.dropped)
 
     async def _flush(self) -> None:
         batch: list[QueryRecord] = []
@@ -218,10 +246,25 @@ class QueryLog:
             log.exception("querylog flush failed (%d rows)", len(rows))
 
     async def retention_sweep(self) -> int:
+        """Delete records older than `retention_days`, a chunk at a time.
+
+        One DELETE for the whole backlog — the first sweep after retention is
+        shortened, or after the process was down for a while — was one
+        transaction over millions of rows: the write lock held and the WAL
+        growing for its whole length, while the batched writer queued behind it
+        on the same connection and shed records once its queue filled. Chunks
+        commit separately and yield in between, so log writes interleave. The
+        count is what was actually deleted, not a separate COUNT beforehand
+        that rows arriving in between could make wrong.
+        """
         cutoff = int((time.time() - self.retention_days * 86400) * 1_000_000)
-        before = await self.store.fetchone("SELECT COUNT(*) AS n FROM querylog WHERE ts < ?", (cutoff,))
-        await self.store.execute("DELETE FROM querylog WHERE ts < ?", (cutoff,))
-        n = before["n"] if before else 0
+        n = 0
+        while True:
+            done = await self.store.execute(_PRUNE, (cutoff, _PRUNE_CHUNK))
+            n += max(done, 0)
+            if done < _PRUNE_CHUNK:
+                break
+            await asyncio.sleep(0)
         if n:
             log.info("retention: pruned %d query log rows", n)
         return n
@@ -382,7 +425,10 @@ class QueryLog:
 
 def record_from_ctx(qname: str, qtype: str, ctx, rcode: str, answers: list[str]) -> QueryRecord:
     return QueryRecord(
-        ts=int(time.time() * 1_000_000), client_ip=ctx.client_ip, client_id=ctx.client_id,
+        ts=int(time.time() * 1_000_000), client_ip=ctx.client_ip,
+        # The id a client presents is its credential (DoH path, DoT SNI);
+        # the log is readable by every viewer, so only a masked form goes in.
+        client_id=mask_client_id(ctx.client_id),
         qname=qname, qtype=qtype, proto=ctx.proto, action=ctx.action, reason=ctx.reason,
         rule=ctx.rule, source=ctx.source, upstream=ctx.upstream, rcode=rcode,
         answers=answers, elapsed_us=ctx.elapsed_us(),

@@ -18,6 +18,14 @@ CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 User=trench
 Group=trench
 StateDirectory=trench
+# The example config's `data_dir: ./data` is relative, and a system unit's
+# working directory defaults to `/`. That made it `/data`: read-only under
+# ProtectSystem=strict, so a unit installed exactly as documented could not
+# create its own state. Anchoring here puts it in /var/lib/trench/data.
+WorkingDirectory=/var/lib/trench
+# Config may carry TSIG secrets and API tokens; nothing this writes is for
+# other local users.
+UMask=0027
 # --- sandboxing ---
 NoNewPrivileges=true
 ProtectSystem=strict
@@ -26,10 +34,24 @@ PrivateTmp=true
 PrivateDevices=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
+ProtectKernelLogs=true
 ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+# Plain UDP/TCP sockets only, DHCP included (SO_BROADCAST, no raw sockets), so
+# no AF_NETLINK or AF_PACKET.
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RemoveIPC=true
 LockPersonality=true
+SystemCallArchitectures=native
+# EPERM rather than SIGSYS: libuv (uvloop) probes io_uring and falls back when
+# it is refused, where a kill would take the resolver down.
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
 MemoryDenyWriteExecute=false
 ReadWritePaths=/var/lib/trench /etc/trench
 # A ceiling so an unbounded-growth bug restarts this unit instead of letting the

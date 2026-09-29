@@ -120,9 +120,10 @@ def _verify_sig(pub, algo: int, signature: bytes, data: bytes) -> bool:
     from cryptography.hazmat.primitives.asymmetric import ec, padding, utils
     try:
         if algo in (5, 7, 8, 10):
-            # 7 is RSASHA1-NSEC3-SHA1: the same signature as 5 under another
-            # number. Missing here it raised KeyError, so every zone signed
-            # with it validated as BOGUS.
+            # 7 is RSASHA1-NSEC3-SHA1 (RFC 5155 §2): the same signature as 5,
+            # renumbered only so NSEC3-unaware validators treat it as unknown.
+            # Leaving it out of this table raised KeyError, swallowed below as
+            # a failed verification, so every zone signed with it was BOGUS.
             halg = {5: hashes.SHA1(), 7: hashes.SHA1(), 8: hashes.SHA256(),
                     10: hashes.SHA512()}[algo]
             pub.verify(signature, data, padding.PKCS1v15(), halg)

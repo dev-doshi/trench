@@ -217,3 +217,36 @@ def test_an_update_record_of_a_foreign_class_is_formerr():
     rr = RR(Name.from_text("new.example.com."), Type.A, Class.CH, 60, R.A("10.0.0.9"))
     assert apply_update(zone, _update_msg("example.com.", [rr])) == Rcode.FORMERR
     assert Name.from_text("new.example.com.") not in zone.records
+
+
+async def test_notify_rounds_coalesce_per_zone():
+    """A burst of UPDATEs to one zone used to start one NOTIFY round each, all
+    at once. NOTIFY carries no serial, so one round in flight plus one after it
+    covers every update the burst made."""
+    import asyncio
+
+    from trench.auth_zone.handler import AuthHandler
+
+    class Z:
+        origin = Name.from_text("example.test.")
+
+    h = AuthHandler(ZoneStore())
+    rounds = 0
+    gate = asyncio.Event()
+
+    async def fake(zone):
+        nonlocal rounds
+        rounds += 1
+        await gate.wait()
+
+    h.xfr.notify_secondaries = fake
+    h._schedule_notify(Z)
+    await asyncio.sleep(0)              # the first round is now in flight
+    for _ in range(50):
+        h._schedule_notify(Z)
+    await asyncio.sleep(0)
+    assert rounds == 1
+    gate.set()
+    while h._notifying:
+        await asyncio.sleep(0)
+    assert rounds == 2

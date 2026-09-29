@@ -541,3 +541,20 @@ def test_a_readonly_setting_is_refused_rather_than_silently_ignored():
     import pytest as _p
     with _p.raises(ValueError, match="cannot be set here"):
         st.coerce("allow_dhcp", True)
+
+
+@pytest.mark.parametrize("path,value", [
+    ("cache.max_entries", 1e400),           # JSON `1e400`: int(inf) overflowed to a 500
+    ("cache.max_entries", 1.7),             # would have been saved as 1
+    ("upstream.timeout", float("nan")),     # would have been written as `.nan`
+    ("upstream.timeout", "inf"),
+])
+def test_coerce_refuses_numbers_that_cannot_be_saved_honestly(path, value):
+    with pytest.raises(ValueError):
+        st.coerce(path, value)
+
+
+def test_coerce_still_takes_whole_floats_and_numeric_strings():
+    assert st.coerce("cache.max_entries", 5000.0) == 5000
+    assert st.coerce("cache.max_entries", "5000") == 5000
+    assert st.coerce("upstream.timeout", "2.5") == 2.5

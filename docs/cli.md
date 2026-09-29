@@ -96,9 +96,13 @@ rule before committing it.
 ## Migrating in
 
 ```bash
-trench import pihole /etc/pihole/setupVars.conf
-trench import adguard /opt/AdGuardHome/AdGuardHome.yaml
+trench import pihole /etc/pihole > imported.yaml      # the directory, or its gravity.db
+trench import adguard /opt/AdGuardHome/AdGuardHome.yaml > imported.yaml
 ```
+
+Both print a config fragment on stdout and nothing else; on a missing or
+unreadable source they print one `error:` line on stderr and exit 1, so a
+redirect never captures half a config.
 
 ## Zones and transfers
 
@@ -129,9 +133,16 @@ which is the point, since one of them exists for when you cannot log in.
 ```bash
 trench passwd                                  # set the admin password
 trench passwd alice --role editor
+printf '%s\n' "$PW" | trench passwd alice --password-stdin   # scripts: not in `ps`
 trench backup /backups/trench-$(date +%F).tar.gz
 trench restore /backups/trench-2026-08-19.tar.gz
 ```
+
+`backup` is safe to run against a live server: each database goes in as a
+consistent snapshot, and the archive only appears under its name once it is
+complete. `restore` checks the whole archive before touching anything, then
+*replaces* the data directory's contents rather than merging into them. Stop
+the server first; a running one keeps writing to the files it had open.
 
 ## The server
 

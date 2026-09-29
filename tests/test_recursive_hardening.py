@@ -854,9 +854,11 @@ async def test_a_packet_that_never_left_does_not_cost_budget():
 
 # --- validation wiring ---
 @pytest.mark.asyncio
-async def test_a_validator_defect_is_reported_and_the_answer_still_flows(caplog):
-    """Treating it as INSECURE keeps the answer flowing rather than turning a
-    validator defect into an outage, but it must be visible."""
+async def test_a_validator_defect_is_reported_and_the_answer_is_withheld(caplog):
+    """An exception is not proof the zone is unsigned. Serving the answer as
+    INSECURE let anything that tripped the validator (a malformed key, say)
+    downgrade a signed zone and slip forged data through. It fails closed,
+    visibly, as RFC 4035 section 5.5 asks."""
     tree = Tree({
         ROOT: lambda name, qt: referral("com", "ns1.com", COM),
         COM: lambda name, qt: referral("example.com", "ns.example.com", AUTH),
@@ -873,7 +875,8 @@ async def test_a_validator_defect_is_reported_and_the_answer_still_flows(caplog)
 
     rec._validator = Broken()
     resp = await rec.resolve("www.example.com", int(Type.A))
-    assert ips(resp) == ["93.184.216.34"]
+    assert ips(resp) == []
+    assert resp.rcode == Rcode.SERVFAIL
     assert resp.ad is False, "an unvalidated answer must not claim to be secure"
     assert any("validator error" in r.getMessage() for r in caplog.records)
 

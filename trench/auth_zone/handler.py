@@ -38,6 +38,11 @@ class AuthHandler:
         # Shared across UPDATE and NOTIFY: a valid MAC proves the sender knew
         # the key, not that this is the first time they sent this message.
         self.replay = ReplayWindow()
+        # origin -> the NOTIFY task in flight for it, and origins updated again
+        # while it ran. Held here so the task is strongly referenced; the loop
+        # keeps only a weak one.
+        self._notifying: dict[object, asyncio.Task] = {}
+        self._notify_again: set[object] = set()
 
     # --- configuration ---
     def set_zone_policy(self, origin, *, allow_transfer=(), also_notify=(),
@@ -125,12 +130,35 @@ class AuthHandler:
         return out
 
     def _schedule_notify(self, zone) -> None:
-        """Fire NOTIFY to secondaries in the background (no-op outside a loop)."""
+        """Fire NOTIFY to secondaries in the background (no-op outside a loop).
+
+        One round per zone at a time. NOTIFY carries no serial — a secondary
+        answers it by querying the SOA — so updates that land while a round is
+        in flight need one more round after it, not one each. Every UPDATE used
+        to start its own, so a burst of them fanned out into as many concurrent
+        rounds to every secondary.
+        """
         try:
-            loop = asyncio.get_running_loop()
+            asyncio.get_running_loop()
         except RuntimeError:
             return
-        loop.create_task(self.xfr.notify_secondaries(zone))
+        origin = zone.origin
+        if origin in self._notifying:
+            self._notify_again.add(origin)
+            return
+        task = asyncio.ensure_future(self._notify_rounds(zone))
+        self._notifying[origin] = task
+        task.add_done_callback(lambda _t: self._notifying.pop(origin, None))
+
+    async def _notify_rounds(self, zone) -> None:
+        while True:
+            self._notify_again.discard(zone.origin)
+            try:
+                await self.xfr.notify_secondaries(zone)
+            except Exception:
+                log.exception("NOTIFY for %s failed", zone.origin.to_text())
+            if zone.origin not in self._notify_again:
+                return
 
     def _handle_notify(self, query: Message, client_ip: str,
                        query_wire: bytes = b"") -> bytes:

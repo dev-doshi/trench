@@ -3,6 +3,7 @@ brute-force lockout, TOTP 2FA.
 """
 from __future__ import annotations
 
+import asyncio
 import secrets
 import time
 
@@ -21,6 +22,26 @@ LOCKOUT_MAX = 300.0
 #: Compared against when the account does not exist, so a bad username costs
 #: the same scrypt work as a bad password. Value is irrelevant; only the work is.
 _DUMMY_HASH = hashutil.hash_password(secrets.token_urlsafe(16))
+
+#: scrypt jobs allowed to run at once. Each is ~100 ms of CPU and 32 MB of
+#: memory; the default thread pool would otherwise run dozens side by side for a
+#: burst of login requests.
+_SCRYPT_SLOTS = 2
+_scrypt_gate: asyncio.Semaphore | None = None
+
+
+async def _scrypt(fn, *args):
+    """Run a scrypt hash or verify off the event loop.
+
+    The API shares its loop with the DNS listeners in the primary worker, so a
+    verify run inline froze DNS for its whole duration — and a login request
+    needs no credentials to send.
+    """
+    global _scrypt_gate
+    if _scrypt_gate is None:
+        _scrypt_gate = asyncio.Semaphore(_SCRYPT_SLOTS)
+    async with _scrypt_gate:
+        return await asyncio.to_thread(fn, *args)
 
 
 class AuthManager:
@@ -117,7 +138,7 @@ class AuthManager:
             return None
 
     async def create_user(self, name: str, password: str, role: str = "admin") -> int:
-        ph = hashutil.hash_password(password)
+        ph = await _scrypt(hashutil.hash_password, password)
         await self.db.execute(
             "INSERT INTO app_user(name, pw_hash, role, created) VALUES(?,?,?,?)",
             (name, ph, role, int(time.time())))
@@ -125,8 +146,8 @@ class AuthManager:
         return row["id"]
 
     async def set_password(self, name: str, password: str) -> None:
-        await self.db.execute("UPDATE app_user SET pw_hash=? WHERE name=?",
-                              (hashutil.hash_password(password), name))
+        ph = await _scrypt(hashutil.hash_password, password)
+        await self.db.execute("UPDATE app_user SET pw_hash=? WHERE name=?", (ph, name))
 
     def _locked(self, ip: str) -> float:
         count, last = self._fails.get(ip, (0, 0.0))
@@ -143,25 +164,29 @@ class AuthManager:
         # counter at all.
         if self._locked(ip) > 0 or self._locked(f"user:{name}") > 0:
             return None
+        # Count the attempt as a failure now, before the first await, and clear
+        # it only on success. Recording it after the verify let every request in
+        # a concurrent burst pass the check above before any of them had been
+        # counted, so the threshold did not limit the guessing rate at all.
+        now = time.time()
+        for k in (ip, f"user:{name}"):
+            count, _ = self._fails.get(k, (0, 0.0))
+            self._fails[k] = (count + 1, now)
         row = await self.db.fetchone("SELECT * FROM app_user WHERE name=? AND disabled=0", (name,))
         if row is None:
             # Spend the same scrypt work as a real user before failing. Short-
             # circuiting made a missing account answer instantly and a real one
             # take ~50-100 ms, which enumerates valid operator names.
-            hashutil.verify_password(password, _DUMMY_HASH)
+            await _scrypt(hashutil.verify_password, password, _DUMMY_HASH)
             ok = False
         else:
-            ok = hashutil.verify_password(password, row["pw_hash"])
+            ok = await _scrypt(hashutil.verify_password, password, row["pw_hash"])
             if ok and row["totp_secret"]:
                 ok = totp.verify(row["totp_secret"], code)
                 if ok and not self._consume_totp(row["id"], row["totp_secret"], code):
                     ok = False       # already used: a code is good once
         if not ok:
-            now = time.time()
-            for k in (ip, f"user:{name}"):
-                count, _ = self._fails.get(k, (0, 0.0))
-                self._fails[k] = (count + 1, now)
-            self._sweep(now)
+            self._sweep(time.time())
             return None
         self._fails.pop(ip, None)
         self._fails.pop(f"user:{name}", None)

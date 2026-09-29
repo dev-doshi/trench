@@ -6,13 +6,12 @@ the length-prefixed response and closes the stream.
 """
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from aioquic.asyncio import QuicConnectionProtocol, serve
 from aioquic.quic.configuration import QuicConfiguration
-from aioquic.quic.events import QuicEvent, StreamDataReceived
+from aioquic.quic.events import ConnectionTerminated, QuicEvent, StreamDataReceived, StreamReset
 
 from ..log import get
 from ..security.tls import ensure_cert
@@ -29,27 +28,49 @@ if TYPE_CHECKING:
 
 log = get("doq")
 
+#: RFC 9250 §4.3 error code for a stream refused under load.
+DOQ_EXCESSIVE_LOAD = 0x4
+
 
 class DoQProtocol(LimitedQuicProtocol, QuicConnectionProtocol):
     pipeline: Pipeline = None  # type: ignore[assignment]
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._buffers: dict[int, bytearray] = {}
-        self._tasks: set = set()   # strong refs to in-flight handlers
+        # stream id -> bytes so far, or None once that stream's query has been
+        # dispatched and anything further on it is to be ignored
+        self._buffers: dict[int, bytearray | None] = {}
 
     def quic_event_received(self, event: QuicEvent) -> None:
         if not self.note_quic_event(event):
             return
-        if isinstance(event, StreamDataReceived):
-            buf = self._buffers.setdefault(event.stream_id, bytearray())
-            buf += event.data
-            if event.end_stream or self._complete(buf):
-                data = bytes(buf)
-                self._buffers.pop(event.stream_id, None)
-                task = asyncio.ensure_future(self._answer(event.stream_id, data))
-                self._tasks.add(task)
-                task.add_done_callback(self._tasks.discard)
+        if isinstance(event, ConnectionTerminated):
+            self._buffers.clear()
+        elif isinstance(event, StreamReset):
+            self._buffers.pop(event.stream_id, None)
+        elif isinstance(event, StreamDataReceived):
+            self._on_data(event)
+
+    def _on_data(self, event: StreamDataReceived) -> None:
+        sid = event.stream_id
+        buf = self._buffers.get(sid, bytearray())
+        if buf is None:
+            # RFC 9250 §4.2: one query per stream. Dispatching every complete
+            # message let a single stream start an unbounded run of resolves.
+            if event.end_stream:
+                self._buffers.pop(sid, None)
+            return
+        buf += event.data
+        if not (event.end_stream or self._complete(buf)):
+            self._buffers[sid] = buf
+            return
+        if event.end_stream:
+            self._buffers.pop(sid, None)
+        else:
+            self._buffers[sid] = None   # answered; wait for the peer's FIN
+        if not self.spawn(self._answer(sid, bytes(buf))):
+            self._quic.reset_stream(sid, DOQ_EXCESSIVE_LOAD)
+            self.transmit()
 
     @staticmethod
     def _complete(buf: bytearray) -> bool:

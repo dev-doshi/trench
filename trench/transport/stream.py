@@ -30,6 +30,10 @@ from ..log import get
 
 log = get("stream")
 
+#: How long outstanding answers are waited for after the client stops sending,
+#: when no idle timeout is configured to bound it.
+_FINISH_CAP = 30.0
+
 
 @dataclass(frozen=True)
 class StreamLimits:
@@ -110,6 +114,11 @@ async def serve_stream(reader: asyncio.StreamReader, writer: asyncio.StreamWrite
     slots = asyncio.Semaphore(limits.max_inflight)
     inflight: set[asyncio.Task] = set()
     timeout = limits.idle_timeout
+    # Whether queries already read are still owed an answer. A client that
+    # sends its queries and then half-closes (RFC 7766 §6.2.1: "a client MAY
+    # close ... after sending its queries") or simply falls idle is waiting for
+    # them; a connection dropped for being stuck, or torn down, is not.
+    finish = True
     try:
         while True:
             hdr = await _read(reader, 2, timeout)
@@ -130,11 +139,14 @@ async def serve_stream(reader: asyncio.StreamReader, writer: asyncio.StreamWrite
             except TimeoutError:
                 log.warning("%s connection from %s dropped: %d queries outstanding "
                             "and no progress", proto, client_ip, limits.max_inflight)
+                finish = False
                 break
             task = asyncio.ensure_future(
                 _answer(data, client_ip, respond, writer, slots, timeout, proto))
             inflight.add(task)
             task.add_done_callback(inflight.discard)
+        if finish and inflight:
+            await asyncio.wait(set(inflight), timeout=timeout or _FINISH_CAP)
     except Exception:
         log.exception("%s stream error", proto)
     finally:

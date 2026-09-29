@@ -122,6 +122,59 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **DNSSEC: algorithm 7 validated as BOGUS.** RSASHA1-NSEC3-SHA1 (RFC 5155 §2)
+  was missing from the verifier's hash table, so every zone signed with it
+  failed validation.
+- **DNSSEC: an ancestor's delegation or DNAME record could forge NXDOMAIN.**
+  The parent's public NSEC for a delegation sorts every name in the child into
+  its gap; it is now refused as a proof for those names (RFC 6840 §4.1), and an
+  NSEC3 delegation is no longer accepted as a closest encloser (RFC 5155 §8.3).
+- **DoQ and DoH upstreams sent the client's message ID.** RFC 9250 §4.2.1
+  requires 0 over DoQ, and a conforming server rejects anything else; DoH
+  (RFC 8484 §4.1) now sends 0 too, for cacheability.
+- **DHCP options longer than 255 octets crashed the reply.** They are now split
+  and rejoined per RFC 3396, which the DNR option (RFC 9463) needs once several
+  endpoints and a long hostname are advertised.
+- A SERVFAIL or REFUSED from an upstream was accepted as the answer. The
+  `sequential` and `fastest` strategies never asked the next upstream, a
+  `parallel` race was won by whichever server failed quickest, and a retained
+  stale answer was not served in its place. Both rcodes now fail over, count
+  against the upstream's `fastest` ranking, and fall back to stale data when
+  every upstream fails.
+- A DoQ upstream that never completed its handshake held each query for
+  aioquic's 60 s idle timeout; the whole exchange is now bounded by
+  `upstream.timeout`.
+- Schema migrations are applied in one transaction with their bookkeeping row,
+  so a failure or a kill mid-upgrade no longer leaves half a migration applied
+  and unrecorded. A failed write is rolled back rather than left pending, to be
+  committed in part by the next unrelated write.
+- The persisted cache is written atomically, restored within `max_entries`, and
+  a malformed TTL in it is skipped rather than raising on every later lookup of
+  that name.
+- Under the `fastest` strategy a single failure demoted an upstream for good:
+  it was only asked again when the new head failed, so nothing ever cleared
+  the count. A failure now demotes it for 30 seconds.
+- A TCP or DoT connection that stopped answering without closing (a dropped NAT
+  mapping, a vanished peer) stayed pooled, and every later query to that
+  upstream timed out on it. A connection with no reply at all within a query's
+  timeout is now closed and reopened, and a peer that stops reading can no
+  longer hold a query in an unbounded send.
+- The TCP fallback for a truncated UDP reply gave connect, length prefix and
+  body a full timeout each; the exchange now has one.
+- Query-log retention deleted the whole backlog in one transaction, holding the
+  write lock while the log writer queued behind it and shed records. It now
+  deletes in chunks of 5,000 and reports the rows it actually removed.
+- A TCP client that sent its queries and then half-closed the connection had
+  every answer still in flight cancelled when its FIN arrived. Pending answers
+  are now sent, within the idle timeout, before the connection is closed.
+- A worker killed while holding one of the shared cache's cross-process locks
+  left it held forever, and every other worker froze on its next lookup in that
+  stripe. Lock waits are now bounded at 50 ms; a lock that times out is logged,
+  skipped at no further cost (a cache miss), and re-probed without blocking
+  every 5 seconds.
+- The same applied to the cross-worker query-log ring: a worker killed
+  mid-push froze the primary worker on its next log flush, taking its DNS and
+  API with it. Lane locks are bounded the same way.
 - The container healthcheck probed a hardcoded port 53 while both `Config`'s
   default and `trench.example.yaml` listen on 5354, so the general-purpose
   Compose deployment marked a container unhealthy while it was resolving

@@ -35,8 +35,11 @@ belong to the deployment rather than to policy, and are edited in the file.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, field
 from typing import Any
+
+from ..clients.model import mask_ident
 
 #: What `App.apply_config` can adopt into a running process. The names are the
 #: appliers themselves; `App.adopters()` maps each to the method that runs it.
@@ -474,6 +477,8 @@ class Col:
     options: list[str] = field(default_factory=list)
     placeholder: str = ""
     help: str = ""
+    #: Redacted for anyone below admin; see `collection_values`.
+    secret: bool = False
 
 
 @dataclass
@@ -582,7 +587,7 @@ COLLECTIONS: list[Collection] = [
             Col("algorithm", "Algorithm", "select",
                 options=["hmac-sha256.", "hmac-sha384.", "hmac-sha512.",
                          "hmac-sha1.", "hmac-md5.sig-alg.reg.int."]),
-            Col("secret", "Secret (base64)"),
+            Col("secret", "Secret (base64)", secret=True),
         ]),
     Collection(
         "dhcp.scope.reservations", "Fixed addresses", "DHCP", "map",
@@ -638,12 +643,40 @@ def _plain(v: Any) -> Any:
     return v
 
 
-def collection_values(config) -> dict[str, Any]:
+REDACTED = "(hidden)"
+
+
+def collection_values(config, reveal: bool = False) -> dict[str, Any]:
+    """Every collection as JSON. Secrets are only included when `reveal`.
+
+    This used to return everything to the lowest role that can read settings,
+    TSIG secrets and DoH client tokens included — so a read-only API token was
+    enough to sign zone updates and to impersonate any token-identified client.
+    Only an admin, who could overwrite those values anyway, sees them.
+    """
     out: dict[str, Any] = {}
     for c in COLLECTIONS:
         v = _dig(config, c.path)
-        out[c.path] = _plain(v) if v is not None else ([] if c.shape == "list" else {})
+        v = _plain(v) if v is not None else ([] if c.shape == "list" else {})
+        if not reveal:
+            v = _redact(c, v)
+        out[c.path] = v
     return out
+
+
+def _redact(c: Collection, value: Any) -> Any:
+    secret_cols = [col.name for col in c.columns if col.secret]
+    rows = value if isinstance(value, list) else list(value.values()) \
+        if isinstance(value, dict) else []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for name in secret_cols:
+            if row.get(name):
+                row[name] = REDACTED
+        if c.path == "clients" and "ident" in row:
+            row["ident"] = mask_ident(row["ident"], row.get("type", ""))
+    return value
 
 
 def coerce_collection(path: str, value: Any) -> Any:
@@ -666,12 +699,12 @@ def coerce_collection(path: str, value: Any) -> Any:
     return value
 
 
-def describe(config) -> dict[str, Any]:
+def describe(config, reveal: bool = False) -> dict[str, Any]:
     return {
         "groups": GROUPS,
         "collections": [{**asdict(c), "restart": c.restart, "scalar": c.scalar}
                         for c in COLLECTIONS],
-        "collection_values": collection_values(config),
+        "collection_values": collection_values(config, reveal),
         # `restart` is derived, not stored, so the badge the operator sees and
         # the behaviour of the running process cannot say different things.
         "fields": [{**asdict(f), "restart": f.restart} for f in FIELDS],
@@ -708,9 +741,20 @@ def coerce(path: str, value: Any) -> Any:
             raise ValueError(f"{path}: {value!r} is not a boolean")
         return bool(value)
     if f.type == "int":
+        # JSON numbers arrive as floats whenever they carry a point or an
+        # exponent. `int(1.7)` would quietly save 1, and `int(1e400)` — which
+        # JSON parses to infinity — raised OverflowError past the handler's
+        # ValueError/TypeError net as a 500.
+        if isinstance(value, float) and not value.is_integer():
+            raise ValueError(f"{path}: {value!r} is not a whole number")
         return int(value)
     if f.type == "float":
-        return float(value)
+        # `float("nan")`, `NaN` and `Infinity` all parse, and would be written
+        # to the config file as `.nan`/`.inf` for every later start to load.
+        v = float(value)
+        if not math.isfinite(v):
+            raise ValueError(f"{path}: {value!r} is not a finite number")
+        return v
     if f.type == "list":
         if isinstance(value, str):
             return [ln.strip() for ln in value.splitlines() if ln.strip()]

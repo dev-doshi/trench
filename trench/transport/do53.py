@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import socket
 from typing import TYPE_CHECKING
 
 from ..errors import WireError
@@ -18,6 +19,18 @@ if TYPE_CHECKING:
     from ..engine import Pipeline
 
 log = get("do53")
+
+#: Receive buffer asked of the kernel for the UDP listener. The Linux default is
+#: around 200 KB, a few hundred datagrams: a burst that arrives while the loop is
+#: busy for a few milliseconds overflows it and the kernel drops the excess
+#: before trench ever sees it. The kernel clamps this to `net.core.rmem_max`.
+UDP_RCVBUF = 4 * 1024 * 1024
+
+#: Replies asyncio may hold for a UDP socket the kernel will not take more from.
+#: A datagram transport buffers without limit on EAGAIN, and nothing calls
+#: `pause_writing` usefully for UDP, so past this the reply is dropped instead —
+#: a UDP client that is not answered retries, a buffer that is not bounded grows.
+UDP_MAX_SEND_BUFFER = 1024 * 1024
 
 
 def _try_parse(data: bytes) -> Message | None:
@@ -49,12 +62,28 @@ class _UDPProtocol(asyncio.DatagramProtocol):
         self.max_inflight = max_inflight
         self.inflight = 0
         self.dropped = 0
+        self.send_dropped = 0      # replies shed because the socket was backed up
         self._tasks: set = set()   # strong refs to in-flight handlers
         self.fast = fast
         self.transport: asyncio.DatagramTransport | None = None
 
     def connection_made(self, transport) -> None:
         self.transport = transport
+
+    def _send(self, out: bytes, addr) -> None:
+        transport = self.transport
+        if transport is None:
+            return
+        # Every datagram transport asyncio ships implements this (it is how the
+        # loop's own flow control reads the backlog); typeshed only declares it
+        # on the write-transport base.
+        if transport.get_write_buffer_size() > UDP_MAX_SEND_BUFFER:  # type: ignore[attr-defined]
+            self.send_dropped += 1
+            if self.send_dropped % 1000 == 1:
+                log.warning("udp: send buffer full, dropping replies (%d dropped so far)",
+                            self.send_dropped)
+            return
+        transport.sendto(out, addr)
 
     def datagram_received(self, data: bytes, addr) -> None:
         # A replayable query is answered here, in the callback, without ever
@@ -70,7 +99,7 @@ class _UDPProtocol(asyncio.DatagramProtocol):
                 log.exception("fast path error; falling back")
                 out = None
             if out is not None:
-                self.transport.sendto(out, addr)
+                self._send(out, addr)
                 return
         if self.max_inflight and self.inflight >= self.max_inflight:
             self.dropped += 1
@@ -95,17 +124,29 @@ class _UDPProtocol(asyncio.DatagramProtocol):
                 query = _try_parse(data)
                 if query is not None and self.auth.claims(query):
                     out = self.auth.handle_udp(data, query, addr[0])
-                    if out and self.transport is not None:
-                        self.transport.sendto(out, addr)
+                    if out:
+                        self._send(out, addr)
                     return
             out = await process_query(self.pipeline, data, addr[0], "udp",
                                       stream=False, fast=self.fast)
-            if out and self.transport is not None:
-                self.transport.sendto(out, addr)
+            if out:
+                self._send(out, addr)
         except Exception:
             log.exception("udp handler error")
         finally:
             self.inflight -= 1
+
+
+def _grow_rcvbuf(sock) -> None:
+    """Raise the socket's receive buffer to `UDP_RCVBUF`; never lower it, since
+    an operator may already have set it higher."""
+    if sock is None:
+        return
+    try:
+        if sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF) < UDP_RCVBUF:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, UDP_RCVBUF)
+    except OSError as e:
+        log.debug("could not raise the UDP receive buffer: %s", e)
 
 
 def _tcp_responder(pipeline: Pipeline, auth):
@@ -167,6 +208,7 @@ class Do53Server(Frontend):
                 self._udp_transport, _ = await loop.create_datagram_endpoint(
                     make_udp, local_addr=(self.host, self.port),
                     reuse_port=self.reuse_port)
+            _grow_rcvbuf(self._udp_transport.get_extra_info("socket"))
         if self.tcp:
             respond = _tcp_responder(self.pipeline, self.auth)
 
@@ -184,6 +226,10 @@ class Do53Server(Frontend):
     async def stop(self) -> None:
         if self._udp_transport is not None:
             self._udp_transport.close()
+        if self.udp_protocol is not None:
+            # Nothing is left to send their answers through.
+            for task in list(self.udp_protocol._tasks):
+                task.cancel()
         if self._tcp_server is not None:
             self._tcp_server.close()
             await self._tcp_server.wait_closed()

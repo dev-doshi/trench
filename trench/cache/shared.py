@@ -19,6 +19,8 @@ import struct
 import time
 from typing import TYPE_CHECKING
 
+from ..shmlock import BoundedLocks
+
 if TYPE_CHECKING:
     # Type-only: `multiprocessing` is imported inside `create`, which is the one
     # place that needs it, and importing it at module scope costs every process
@@ -51,6 +53,8 @@ class SharedCache:
         self.slots = slots
         self.payload = payload
         self.slot_size = _HDR_LEN + payload
+        # Bounded: a worker killed mid-write never releases its stripe.
+        self._guard = BoundedLocks(locks, "shared cache stripe")
 
     @classmethod
     def create(cls, slots: int = 16384, payload: int = 1232) -> SharedCache:
@@ -60,13 +64,15 @@ class SharedCache:
         locks = [multiprocessing.Lock() for _ in range(_STRIPES)]
         return cls(mm, locks, slots, payload)
 
-    def _slot(self, k: int) -> tuple[int, Lock]:
+    def _slot(self, k: int) -> tuple[int, int]:
         bucket = k % self.slots
-        return bucket * self.slot_size, self.locks[bucket % _STRIPES]
+        return bucket * self.slot_size, bucket % _STRIPES
 
     def get(self, k: int) -> tuple[bytes, float] | None:
-        off, lock = self._slot(k)
-        with lock:
+        off, stripe = self._slot(k)
+        with self._guard.hold(stripe) as held:
+            if not held:
+                return None
             kh, inserted, ttl, length = _HDR.unpack_from(self.mm, off)
             if kh != k or length == 0:
                 return None
@@ -79,16 +85,20 @@ class SharedCache:
     def put(self, k: int, wire: bytes, ttl: int) -> None:
         if not wire or len(wire) > self.payload or ttl <= 0:
             return
-        off, lock = self._slot(k)
-        with lock:
+        off, stripe = self._slot(k)
+        with self._guard.hold(stripe) as held:
+            if not held:
+                return
             _HDR.pack_into(self.mm, off, k, time.monotonic(), int(ttl), len(wire))
             self.mm[off + _HDR_LEN: off + _HDR_LEN + len(wire)] = wire
 
     def delete(self, k: int) -> None:
         """Invalidate one slot. Needed so a targeted flush is not undone by the
         next L1 miss reading the flushed answer straight back out of L2."""
-        off, lock = self._slot(k)
-        with lock:
+        off, stripe = self._slot(k)
+        with self._guard.hold(stripe) as held:
+            if not held:
+                return      # get() treats this stripe as empty while it is wedged
             kh, _, _, _ = _HDR.unpack_from(self.mm, off)
             if kh == k:
                 _HDR.pack_into(self.mm, off, 0, 0.0, 0, 0)
@@ -99,12 +109,14 @@ class SharedCache:
         One lock acquisition per stripe, not one per slot. Taking a
         cross-process lock 16k times ran on the event-loop thread — every
         in-flight query waited on it — and a worker killed mid-clear (this
-        deployment has an OOM history) left a stripe lock held forever, which
-        no reader can time out of.
+        deployment has an OOM history) could leave a stripe lock held forever;
+        `BoundedLocks` is what the other workers do about that.
         """
         blank = _HDR.pack(0, 0.0, 0, 0)
         for i in range(_STRIPES):
-            with self.locks[i]:
+            with self._guard.hold(i) as held:
+                if not held:
+                    continue
                 for b in range(i, self.slots, _STRIPES):
                     off = b * self.slot_size
                     self.mm[off:off + _HDR_LEN] = blank

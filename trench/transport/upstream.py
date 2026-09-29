@@ -286,6 +286,7 @@ class _StreamConn:
         self._lock = asyncio.Lock()
         self._next_id = 0
         self.closed = True
+        self.last_rx = 0.0      # loop time of the latest reply read off the wire
 
     async def _open(self) -> None:
         spec = self.up.spec
@@ -304,6 +305,7 @@ class _StreamConn:
                 hdr = await self.reader.readexactly(2)          # type: ignore[union-attr]
                 n = int.from_bytes(hdr, "big")
                 data = await self.reader.readexactly(n)         # type: ignore[union-attr]
+                self.last_rx = asyncio.get_running_loop().time()
                 if len(data) >= 2:
                     fut = self._pending.pop(int.from_bytes(data[:2], "big"), None)
                     if fut is not None and not fut.done():
@@ -335,14 +337,36 @@ class _StreamConn:
                 await self._open()
         mid = self._alloc_id()
         out = mid.to_bytes(2, "big") + wire[2:]         # rewrite id for multiplexing
-        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future = loop.create_future()
         self._pending[mid] = fut
+        sent = loop.time()
+        writer = self.writer
         try:
             self.writer.write(len(out).to_bytes(2, "big") + out)   # type: ignore[union-attr]
-            await self.writer.drain()                              # type: ignore[union-attr]
-            return await asyncio.wait_for(fut, self.up.timeout)
+            # `drain` is inside the budget: a peer that stops reading fills the
+            # send buffer, and an unbounded drain then held the query forever.
+            return await asyncio.wait_for(self._send_and_wait(fut), self.up.timeout)
+        except TimeoutError:
+            # Only the connection this query went out on: another query may
+            # already have replaced it with a fresh one.
+            if self.last_rx < sent and self.writer is writer:
+                # Not one reply on this connection in a whole timeout, to this
+                # query or any other. That is a dead path — a NAT that dropped
+                # the mapping, a peer that vanished without a FIN — not a slow
+                # answer, and nothing else will ever notice: TCP keepalive
+                # takes hours, so every later query would queue behind it and
+                # time out too. Drop it so the next query reconnects.
+                log.info("closing silent %s connection to %s",
+                         self.up.spec.scheme, self.up)
+                await self.close()
+            raise
         finally:
             self._pending.pop(mid, None)
+
+    async def _send_and_wait(self, fut: asyncio.Future) -> bytes:
+        await self.writer.drain()                              # type: ignore[union-attr]
+        return await fut
 
     async def close(self) -> None:
         if self._reader_task is not None:
@@ -403,9 +427,11 @@ class Upstream:
         self.trust_ad = trust_ad
         self.rtt = 0.05
         self.failures = 0
+        self.failed_at = 0.0   # loop time of the latest failure; see Forwarder._fastest
         self._session = None  # aiohttp session for DoH
         self._conn: _StreamConn | None = None  # persistent TCP/DoT connection
         self._pool: UdpPool | None = None
+        self._ssl: dict[tuple[str, ...], ssl.SSLContext] = {}
         if udp_source_ports > 0 and spec.scheme == "udp":
             self._pool = UdpPool(spec.host, spec.port, udp_source_ports)
 
@@ -439,12 +465,28 @@ class Upstream:
                 # the id is connection-local and already matched by the reader
                 _check_response(resp, msg, check_id=False)
                 resp.id = msg.id          # undo the connection-local id used to multiplex
-            elif scheme == "https":
-                resp = Message.parse(await self._doh(msg.to_wire()))
-                _check_response(resp, msg, check_id=False)  # RFC 8484: id is 0
-            elif scheme == "quic":
-                resp = Message.parse(await self._doq(msg.to_wire()))
-                _check_response(resp, msg, check_id=False)
+            elif scheme in ("https", "quic"):
+                # RFC 9250 §4.2.1 (MUST) and RFC 8484 §4.1 (SHOULD): the
+                # message ID is 0 on these transports — the stream or HTTP
+                # exchange already pairs query with response, and a fixed ID
+                # keeps DoH GETs cacheable. A conforming DoQ server treats a
+                # non-zero ID as a protocol error and aborts, so passing the
+                # client's ID through failed every query to one.
+                sent = copy.copy(msg)
+                sent.id = 0
+                wire = sent.to_wire()
+                if scheme == "https":
+                    raw = await self._doh(wire)
+                else:
+                    # The whole exchange is bounded, handshake included. Only the
+                    # read used to be: aioquic's `connect` waits for the handshake
+                    # until its idle timeout — 60 s by default — so a black-holed
+                    # DoQ upstream held every query routed to it for a minute,
+                    # far past any client's patience and the stale-serving timer.
+                    raw = await self._doq(wire)
+                resp = Message.parse(raw)
+                _check_response(resp, sent, check_id=False)
+                resp.id = msg.id          # hand the client back its own id
             else:
                 raise ValueError(f"unknown scheme {scheme}")
             if not self._ad_trusted():
@@ -455,6 +497,7 @@ class Upstream:
             return resp
         except Exception:
             self.failures += 1
+            self.failed_at = loop.time()
             raise
 
     def _ad_trusted(self) -> bool:
@@ -515,21 +558,38 @@ class Upstream:
 
     async def _tcp(self, wire: bytes, ssl_ctx=None) -> bytes:
         """One-shot TCP query on a dedicated connection (used for UDP truncation
-        fallback, where the pooled connection may be a different transport)."""
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(self.spec.host, self.spec.port, ssl=ssl_ctx,
-                                    server_hostname=self.spec.sni or None if ssl_ctx else None),
-            self.timeout)
+        fallback, where the pooled connection may be a different transport).
+
+        One budget for the whole exchange. Connect, length prefix and body each
+        used to get a full `timeout` of their own, so a peer that trickled its
+        reply could hold a truncated query for three timeouts on top of the UDP
+        one — long past the point any client was still waiting.
+        """
+        return await asyncio.wait_for(self._tcp_exchange(wire, ssl_ctx), self.timeout)
+
+    async def _tcp_exchange(self, wire: bytes, ssl_ctx=None) -> bytes:
+        reader, writer = await asyncio.open_connection(
+            self.spec.host, self.spec.port, ssl=ssl_ctx,
+            server_hostname=self.spec.sni or None if ssl_ctx else None)
         try:
             writer.write(len(wire).to_bytes(2, "big") + wire)
             await writer.drain()
-            hdr = await asyncio.wait_for(reader.readexactly(2), self.timeout)
-            n = int.from_bytes(hdr, "big")
-            return await asyncio.wait_for(reader.readexactly(n), self.timeout)
+            n = int.from_bytes(await reader.readexactly(2), "big")
+            return await reader.readexactly(n)
         finally:
             writer.close()
 
     def _tls_ctx(self, alpn: list[str]) -> ssl.SSLContext:
+        """One context per ALPN set, built once. `create_default_context` loads
+        the system CA store, about 23 ms of blocking work on the event loop, and
+        this ran on every reconnect — up to three times for one query while an
+        upstream was flapping."""
+        ctx = self._ssl.get(tuple(alpn))
+        if ctx is None:
+            ctx = self._ssl[tuple(alpn)] = self._new_tls_ctx(alpn)
+        return ctx
+
+    def _new_tls_ctx(self, alpn: list[str]) -> ssl.SSLContext:
         ctx = ssl.create_default_context()
         ctx.set_alpn_protocols(alpn)
         if not self.verify:
@@ -551,33 +611,52 @@ class Upstream:
             return await r.read()
 
     async def _doq(self, wire: bytes) -> bytes:
-        from aioquic.asyncio import QuicConnectionProtocol, connect
+        # The whole exchange, handshake included. `connect` waits for the
+        # handshake with no deadline of its own, so an unreachable upstream held
+        # the query for aioquic's 60-second idle timeout rather than ours.
+        return await asyncio.wait_for(self._doq_exchange(wire), self.timeout)
+
+    async def _doq_exchange(self, wire: bytes) -> bytes:
+        from aioquic.asyncio import QuicConnectionProtocol
         from aioquic.quic.configuration import QuicConfiguration
         from aioquic.quic.events import StreamDataReceived
 
-        cfg = QuicConfiguration(is_client=True, alpn_protocols=["doq"])
+        from .quicclient import quic_connect
+
+        cfg = QuicConfiguration(is_client=True, alpn_protocols=["doq"],
+                                idle_timeout=self.timeout)
         if not self.verify:
             cfg.verify_mode = ssl.CERT_NONE
 
         class _C(QuicConnectionProtocol):
             def __init__(self, *a, **k):
                 super().__init__(*a, **k)
-                self.fut = asyncio.get_event_loop().create_future()
+                self.fut = asyncio.get_running_loop().create_future()
                 self.buf = bytearray()
+                self.sid: int | None = None
             def quic_event_received(self, event):
-                if isinstance(event, StreamDataReceived):
+                if isinstance(event, StreamDataReceived) and event.stream_id == self.sid:
                     self.buf += event.data
-                    if event.end_stream and not self.fut.done():
+                    if self.fut.done():
+                        return
+                    # One length-prefixed message, never more: a peer streaming
+                    # without end is cut off at the largest a DNS message can be.
+                    if len(self.buf) > 2 + 65535:
+                        self.fut.set_exception(UpstreamError("DoQ response too long"))
+                    elif event.end_stream:
                         self.fut.set_result(bytes(self.buf))
 
-        async with connect(self.spec.host, self.spec.port, configuration=cfg,
-                           create_protocol=_C) as client:
-            sid = client._quic.get_next_available_stream_id()
+        async with quic_connect(self.spec.host, self.spec.port, configuration=cfg,
+                                create_protocol=_C) as client:
+            sid = client.sid = client._quic.get_next_available_stream_id()
             client._quic.send_stream_data(sid, len(wire).to_bytes(2, "big") + wire,
                                           end_stream=True)
             client.transmit()
-            data = await asyncio.wait_for(client.fut, self.timeout)
-            return data[2:]  # strip 2-byte length prefix
+            data = await client.fut
+            n = int.from_bytes(data[:2], "big") if len(data) >= 2 else -1
+            if n != len(data) - 2:
+                raise UpstreamError("DoQ response length prefix does not match")
+            return data[2:]
 
     async def close(self) -> None:
         if self._session is not None and not self._session.closed:

@@ -14,9 +14,17 @@ TLS state and a flow-control window, and leaves half-open handshakes to
 aioquic's own address validation, which is where they belong. A refused
 connection is closed rather than dropped, so the peer is told rather than left
 waiting.
+
+The mixin also owns the connection's handler tasks. A task spawned for a query
+belongs to the connection it arrived on: when that connection terminates there
+is nobody left to answer, so the task is cancelled rather than left to run a
+full resolve for a peer that has gone. `MAX_INFLIGHT` bounds how many can be
+outstanding on one connection at once.
 """
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Coroutine
 from typing import TYPE_CHECKING, Any
 
 from aioquic.quic import events
@@ -25,6 +33,11 @@ from ..log import get
 from .stream import ConnectionTracker
 
 log = get("quic")
+
+#: Handlers one QUIC connection may have running at once. aioquic's own stream
+#: limit bounds this only while every query occupies a stream of its own, so it
+#: is enforced here as well rather than inferred from the peer's behaviour.
+MAX_INFLIGHT = 128
 
 
 class LimitedQuicProtocol:
@@ -49,6 +62,7 @@ class LimitedQuicProtocol:
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._admitted: str | None = None
+        self._tasks: set[asyncio.Task] = set()   # strong refs to in-flight handlers
 
     def peer_ip(self) -> str:
         paths = getattr(self._quic, "_network_paths", None)
@@ -67,7 +81,23 @@ class LimitedQuicProtocol:
             self._admitted = client
         elif isinstance(event, events.ConnectionTerminated):
             self.release()
+            self.cancel_tasks()
         return True
+
+    def spawn(self, coro: Coroutine) -> bool:
+        """Run a handler for this connection. False, with `coro` closed unrun,
+        when the connection already has `MAX_INFLIGHT` handlers outstanding."""
+        if len(self._tasks) >= MAX_INFLIGHT:
+            coro.close()
+            return False
+        task = asyncio.ensure_future(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return True
+
+    def cancel_tasks(self) -> None:
+        for task in list(getattr(self, "_tasks", ())):
+            task.cancel()
 
     def release(self) -> None:
         if self._admitted is not None and self.tracker is not None:

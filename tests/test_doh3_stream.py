@@ -211,6 +211,7 @@ def test_body_data_accumulates_across_events():
     from aioquic.h3.events import DataReceived
     proto = _protocol()
     wire = mkquery().to_wire()
+    proto._streams[4] = _Stream()       # HEADERS always precede DATA in HTTP/3
     proto._on_data(DataReceived(data=wire[:5], stream_id=4, stream_ended=False))
     proto._on_data(DataReceived(data=wire[5:], stream_id=4, stream_ended=False))
     assert bytes(proto._streams[4].body) == wire

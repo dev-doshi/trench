@@ -5,7 +5,6 @@ frames it with aioquic's H3Connection instead of aiohttp.
 """
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urlsplit
@@ -14,7 +13,7 @@ from aioquic.asyncio import QuicConnectionProtocol, serve
 from aioquic.h3.connection import H3Connection
 from aioquic.h3.events import DataReceived, HeadersReceived
 from aioquic.quic.configuration import QuicConfiguration
-from aioquic.quic.events import QuicEvent
+from aioquic.quic.events import ConnectionTerminated, QuicEvent, StreamReset
 
 from ..log import get
 from ..security.tls import ensure_cert
@@ -31,6 +30,9 @@ if TYPE_CHECKING:
     from ..engine import Pipeline
 
 log = get("doh3")
+
+#: Largest request body accepted: the largest possible DNS message.
+MAX_BODY = 65535
 
 
 class _Stream:
@@ -51,11 +53,15 @@ class DoH3Protocol(LimitedQuicProtocol, QuicConnectionProtocol):
         super().__init__(*args, **kwargs)
         self._http: H3Connection | None = None
         self._streams: dict[int, _Stream] = {}
-        self._tasks: set = set()   # strong refs to in-flight handlers
 
     def quic_event_received(self, event: QuicEvent) -> None:
         if not self.note_quic_event(event):
             return
+        if isinstance(event, ConnectionTerminated):
+            self._streams.clear()
+            return
+        if isinstance(event, StreamReset):
+            self._streams.pop(event.stream_id, None)
         if self._http is None:
             self._http = H3Connection(self._quic)
         for h3event in self._http.handle_event(event):
@@ -72,17 +78,27 @@ class DoH3Protocol(LimitedQuicProtocol, QuicConnectionProtocol):
             elif k == b":path":
                 st.path = v.decode()
         if event.stream_ended:
-            task = asyncio.ensure_future(self._respond(event.stream_id))
-            self._tasks.add(task)
-            task.add_done_callback(self._tasks.discard)
+            self._dispatch(event.stream_id)
 
     def _on_data(self, event: DataReceived) -> None:
-        st = self._streams.setdefault(event.stream_id, _Stream())
+        st = self._streams.get(event.stream_id)
+        if st is None:
+            return                      # refused or already answered
         st.body += event.data
+        if len(st.body) > MAX_BODY:
+            # A DNS message is at most 65535 octets. Without a cap the body grew
+            # for as long as the peer kept sending, flow control topping the
+            # window up as fast as it was consumed.
+            self._streams.pop(event.stream_id, None)
+            self._send(event.stream_id, 413, b"payload too large", b"text/plain")
+            return
         if event.stream_ended:
-            task = asyncio.ensure_future(self._respond(event.stream_id))
-            self._tasks.add(task)
-            task.add_done_callback(self._tasks.discard)
+            self._dispatch(event.stream_id)
+
+    def _dispatch(self, stream_id: int) -> None:
+        if not self.spawn(self._respond(stream_id)):
+            self._streams.pop(stream_id, None)
+            self._send(stream_id, 503, b"busy", b"text/plain")
 
     async def _respond(self, stream_id: int) -> None:
         st = self._streams.pop(stream_id, None)
