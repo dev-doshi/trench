@@ -302,7 +302,14 @@ class Cache:
                 items.append([[key.qname.hex(), *key[1:]], e.msg.to_wire().hex(), rem])
             except Exception:
                 continue
-        Path(path).write_text(json.dumps(items))
+        # Written aside and renamed into place. The dump runs at shutdown, which
+        # is exactly when a supervisor's stop timeout sends SIGKILL; a write in
+        # place cut off there left a truncated file that restored nothing.
+        import os
+        target = Path(path)
+        tmp = target.with_name(target.name + ".tmp")
+        tmp.write_text(json.dumps(items))
+        os.replace(tmp, target)
         return len(items)
 
     def load(self, path) -> int:
@@ -328,9 +335,24 @@ class Cache:
                 key_list, wire_hex, ttl = item
                 key = CacheKey(bytes.fromhex(key_list[0]), *key_list[1:])
                 msg = Message.parse(bytes.fromhex(wire_hex))
+                # Checked here, not trusted: a TTL that is not a number used to
+                # be stored as-is and then raised TypeError from `get` on every
+                # query for that name, long after start-up had reported success.
+                if isinstance(ttl, bool) or not isinstance(ttl, int) or ttl <= 0:
+                    continue
+                # Capped, not clamped: it is a remaining lifetime, and raising
+                # it to `min_ttl` would extend an answer past its own TTL.
+                ttl = min(ttl, self.max_ttl)
             except Exception:
                 continue
             self._store[key] = _Entry(msg=msg, inserted=now, ttl=ttl,
                                       stale_until=now + ttl + self.serve_stale_max)
             n += 1
-        return n
+        # The same bound `put` keeps. A dump taken under a larger `max_entries`
+        # — or one simply edited by hand — was restored in full, leaving the
+        # cache over its limit until enough new answers had been stored to trim
+        # it. The file is in LRU order, so the oldest are the ones dropped.
+        while len(self._store) > self.max_entries:
+            self._store.popitem(last=False)
+            self.stats["evictions"] += 1
+        return min(n, len(self._store))

@@ -443,7 +443,13 @@ class Upstream:
                 resp = Message.parse(await self._doh(msg.to_wire()))
                 _check_response(resp, msg, check_id=False)  # RFC 8484: id is 0
             elif scheme == "quic":
-                resp = Message.parse(await self._doq(msg.to_wire()))
+                # The whole exchange is bounded, handshake included. Only the
+                # read used to be: aioquic's `connect` waits for the handshake
+                # until its idle timeout — 60 s by default — so a black-holed
+                # DoQ upstream held every query routed to it for a minute,
+                # far past any client's patience and the stale-serving timer.
+                resp = Message.parse(await asyncio.wait_for(
+                    self._doq(msg.to_wire()), self.timeout))
                 _check_response(resp, msg, check_id=False)
             else:
                 raise ValueError(f"unknown scheme {scheme}")
@@ -555,14 +561,15 @@ class Upstream:
         from aioquic.quic.configuration import QuicConfiguration
         from aioquic.quic.events import StreamDataReceived
 
-        cfg = QuicConfiguration(is_client=True, alpn_protocols=["doq"])
+        cfg = QuicConfiguration(is_client=True, alpn_protocols=["doq"],
+                                idle_timeout=self.timeout)
         if not self.verify:
             cfg.verify_mode = ssl.CERT_NONE
 
         class _C(QuicConnectionProtocol):
             def __init__(self, *a, **k):
                 super().__init__(*a, **k)
-                self.fut = asyncio.get_event_loop().create_future()
+                self.fut = asyncio.get_running_loop().create_future()
                 self.buf = bytearray()
             def quic_event_received(self, event):
                 if isinstance(event, StreamDataReceived):

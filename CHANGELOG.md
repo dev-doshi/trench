@@ -122,6 +122,22 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A SERVFAIL or REFUSED from an upstream was accepted as the answer. The
+  `sequential` and `fastest` strategies never asked the next upstream, a
+  `parallel` race was won by whichever server failed quickest, and a retained
+  stale answer was not served in its place. Both rcodes now fail over, count
+  against the upstream's `fastest` ranking, and fall back to stale data when
+  every upstream fails.
+- A DoQ upstream that never completed its handshake held each query for
+  aioquic's 60 s idle timeout; the whole exchange is now bounded by
+  `upstream.timeout`.
+- Schema migrations are applied in one transaction with their bookkeeping row,
+  so a failure or a kill mid-upgrade no longer leaves half a migration applied
+  and unrecorded. A failed write is rolled back rather than left pending, to be
+  committed in part by the next unrelated write.
+- The persisted cache is written atomically, restored within `max_entries`, and
+  a malformed TTL in it is skipped rather than raising on every later lookup of
+  that name.
 - The container healthcheck probed a hardcoded port 53 while both `Config`'s
   default and `trench.example.yaml` listen on 5354, so the general-purpose
   Compose deployment marked a container unhealthy while it was resolving

@@ -9,8 +9,16 @@ from ..errors import UpstreamError
 from ..log import get
 from ..transport.upstream import Router, Upstream, parse_upstream  # noqa: F401
 from ..wire import Message
+from ..wire.rrtypes import Rcode
 
 log = get("forwarder")
+
+#: Replies that describe the upstream, not the name. RFC 8767 §4 and every
+#: mainstream forwarder treat these as "try somewhere else": a validating
+#: upstream answering SERVFAIL for a name whose signatures it could not check,
+#: or one that has stopped serving us (REFUSED), says nothing about what the
+#: next upstream will answer.
+_FAILOVER_RCODES = frozenset({Rcode.SERVFAIL, Rcode.REFUSED})
 
 
 def parse_server(spec: str) -> tuple[str, int]:
@@ -67,7 +75,17 @@ class Forwarder:
         """The label travels back with the answer rather than being reported from
         inside the task: in a parallel race a loser can finish after the winner
         has been picked, and would otherwise take the credit."""
-        return await up.query(query), repr(up)
+        resp = await up.query(query)
+        if resp.rcode in _FAILOVER_RCODES:
+            # Accepted as a success, this ended the whole resolution: the
+            # sequential and fastest strategies never asked the next upstream,
+            # a parallel race was won by whichever server failed quickest, and
+            # the pipeline handed the SERVFAIL to the client even while it held
+            # a stale copy it could have served. Counted as a failure too, so
+            # `fastest` stops ranking a server that only ever refuses.
+            up.failures = getattr(up, "failures", 0) + 1
+            raise UpstreamError(f"{up!r} answered rcode {resp.rcode}")
+        return resp, repr(up)
 
     @staticmethod
     def _won(resp_who: tuple[Message, str], note) -> Message:

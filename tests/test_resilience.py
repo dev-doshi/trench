@@ -1,0 +1,204 @@
+"""Behaviour under upstream degradation, a partial write, and a bad restore.
+
+Each test here is a reproduction of a defect found by a reliability audit:
+
+  * a SERVFAIL or REFUSED from one upstream ended the resolution — the next
+    upstream was never asked, and a retained stale answer was not served;
+  * a DoQ upstream that never completed its handshake held a query for aioquic's
+    60 s idle timeout rather than `upstream.timeout`;
+  * a migration that failed partway left its first statements applied and
+    nothing recorded, and a failed write batch was committed in part by the next
+    unrelated write;
+  * a restored cache file ignored `max_entries`, and a hand-edited TTL made every
+    later lookup of that name raise.
+"""
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import time
+
+import pytest
+from test_cache_freshness import _good, build, query
+from test_forwarder_strategies import FakeUpstream, _forwarder, _query
+
+from trench.cache import Cache
+from trench.errors import UpstreamError
+from trench.store import db as dbmod
+from trench.transport.upstream import Upstream, parse_upstream
+from trench.wire.rrtypes import Rcode
+
+
+class FailingRcode(FakeUpstream):
+    """Answers promptly, with a failure rcode."""
+
+    def __init__(self, label, rcode=Rcode.SERVFAIL, **kw):
+        super().__init__(label, **kw)
+        self.rcode = rcode
+
+    async def query(self, q):
+        self.asked += 1
+        return q.reply(self.rcode)
+
+
+# --- a failure rcode fails over ---
+@pytest.mark.asyncio
+@pytest.mark.parametrize("strategy", ["sequential", "fastest", "parallel"])
+@pytest.mark.parametrize("rcode", [Rcode.SERVFAIL, Rcode.REFUSED])
+async def test_a_failure_rcode_falls_through_to_the_next_upstream(strategy, rcode):
+    bad = FailingRcode("bad", rcode)
+    good = FakeUpstream("good", delay=0.01, rtt=1.0)   # slower, ranked second
+    seen: list[str] = []
+    resp = await _forwarder([bad, good], strategy).resolve(_query(), seen.append)
+    assert resp.rcode == Rcode.NOERROR, f"{strategy} served the {rcode!r}"
+    assert seen == ["good"]
+    assert bad.failures == 1, "a refusing upstream kept its fastest ranking"
+
+
+@pytest.mark.asyncio
+async def test_every_upstream_failing_is_an_upstream_error():
+    fwd = _forwarder([FailingRcode("a"), FailingRcode("b")], "sequential")
+    with pytest.raises(UpstreamError):
+        await fwd.resolve(_query())
+
+
+@pytest.mark.asyncio
+async def test_nxdomain_is_an_answer_not_a_failure():
+    nx = FailingRcode("nx", Rcode.NXDOMAIN)
+    other = FakeUpstream("other")
+    resp = await _forwarder([nx, other], "sequential").resolve(_query())
+    assert resp.rcode == Rcode.NXDOMAIN and other.asked == 0
+
+
+# --- a SERVFAIL refresh falls back to stale ---
+class ServfailResolver:
+    """Stands in for a resolver that returns SERVFAIL rather than raising (the
+    recursive resolver does)."""
+
+    def __init__(self):
+        self.servfail = False
+        self.calls = 0
+
+    async def resolve(self, q, note=None):
+        self.calls += 1
+        if self.servfail:
+            return q.reply(Rcode.SERVFAIL)
+        r = _good(ttl=1)
+        r.id = q.id
+        return r
+
+
+@pytest.mark.asyncio
+async def test_stale_is_served_when_the_refresh_is_a_servfail():
+    up = ServfailResolver()
+    p = build(up)
+    await p.resolve(query(), "10.0.0.1")
+    await asyncio.sleep(1.05)
+    up.servfail = True
+    resp = await p.resolve(query(), "10.0.0.1")
+    assert resp.rcode == Rcode.NOERROR and resp.answers, "SERVFAIL beat the stale copy"
+    assert up.calls == 2, "stale was served without attempting a refresh"
+
+
+@pytest.mark.asyncio
+async def test_a_servfail_with_nothing_retained_is_still_a_servfail():
+    up = ServfailResolver()
+    up.servfail = True
+    resp = await build(up).resolve(query(), "10.0.0.1")
+    assert resp.rcode == Rcode.SERVFAIL
+
+
+# --- DoQ: the handshake is inside the timeout ---
+@pytest.mark.asyncio
+async def test_a_doq_handshake_that_never_completes_is_bounded(monkeypatch):
+    import aioquic.asyncio as aq
+
+    @contextlib.asynccontextmanager
+    async def black_hole(*_a, **_k):
+        await asyncio.sleep(3600)
+        yield None
+
+    monkeypatch.setattr(aq, "connect", black_hole)
+    up = Upstream(parse_upstream("quic://192.0.2.1"), timeout=0.2)
+    t0 = time.monotonic()
+    with pytest.raises(TimeoutError):
+        await up.query(_query())
+    assert time.monotonic() - t0 < 2, "the DoQ handshake ignored upstream.timeout"
+
+
+# --- SQLite: all or nothing ---
+@pytest.mark.asyncio
+async def test_a_failed_migration_leaves_nothing_behind(tmp_path, monkeypatch):
+    path = tmp_path / "t.db"
+    monkeypatch.setattr(dbmod, "MIGRATIONS", [
+        (1, "it's broken", "CREATE TABLE a(x); SELECT nope FROM missing;")])
+    d = dbmod.Database(path)
+    with pytest.raises(Exception, match="missing"):
+        await d.connect()
+    names = {r[0] for r in await d.fetchall(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "a" not in names, "half a migration was applied"
+    assert not await d.fetchall("SELECT * FROM _migrations")
+    await d.close()
+
+    # fixed and re-run: applies once, recorded with its description intact
+    monkeypatch.setattr(dbmod, "MIGRATIONS", [
+        (1, "it's fixed", "CREATE TABLE a(x);")])
+    d = dbmod.Database(path)
+    await d.connect()
+    rows = await d.fetchall("SELECT version, descr FROM _migrations")
+    assert [tuple(r) for r in rows] == [(1, "it's fixed")]
+    await d.close()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_batch_is_not_committed_by_the_next_write(tmp_path):
+    d = dbmod.Database(tmp_path / "t.db")
+    await d.connect()
+    sql = "INSERT INTO querylog(ts, qname) VALUES (?, ?)"
+    with pytest.raises(Exception, match="NOT NULL"):
+        await d.executemany(sql, [(1, "a"), (None, "bad"), (3, "c")])
+    assert not d.conn._conn.in_transaction, "the failed batch still holds the write lock"
+    await d.executemany(sql, [(4, "d")])
+    rows = await d.fetchall("SELECT qname FROM querylog")
+    assert [r[0] for r in rows] == ["d"], "part of a failed batch was committed"
+    await d.close()
+
+
+# --- cache restore ---
+def _dump(tmp_path, n):
+    big = Cache(max_entries=n)
+    for i in range(n):
+        name = f"n{i}.example."
+        big.put(big.key_for(query(name)), _good(name))
+    path = tmp_path / "cache.json"
+    big.dump(path)
+    return path
+
+
+def test_a_restore_respects_max_entries(tmp_path):
+    path = _dump(tmp_path, 50)
+    c = Cache(max_entries=10)
+    assert c.load(path) == 10
+    assert c.size == 10
+    newest = Cache.key_for(query("n49.example."))
+    assert c.get(newest) is not None, "kept the oldest entries, not the newest"
+
+
+def test_a_bad_ttl_in_the_restore_file_is_skipped(tmp_path):
+    path = _dump(tmp_path, 3)
+    items = json.loads(path.read_text())
+    items[0][2] = "300"
+    items[1][2] = -5
+    path.write_text(json.dumps(items))
+    c = Cache()
+    assert c.load(path) == 1
+    for key in list(c._store):
+        assert c.get(key) is not None
+
+
+def test_the_dump_leaves_no_partial_file(tmp_path):
+    path = _dump(tmp_path, 3)
+    assert not (tmp_path / "cache.json.tmp").exists()
+    assert len(json.loads(path.read_text())) == 3
