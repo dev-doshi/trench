@@ -85,7 +85,7 @@ class DoQProtocol(LimitedQuicProtocol, QuicConnectionProtocol):
                 return
             length = int.from_bytes(data[:2], "big")
             wire = data[2:2 + length]
-            peer = self._quic._network_paths[0].addr[0] if self._quic._network_paths else "?"
+            peer = self.peer_ip()
             resp = await resolve_wire(self.pipeline, wire, peer, "quic")
             if resp is not None:
                 out = resp.to_wire()

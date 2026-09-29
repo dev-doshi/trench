@@ -246,6 +246,16 @@ async def test_a_post_with_the_wrong_content_type_is_a_415(doh):
 
 
 @pytest.mark.asyncio
+async def test_a_post_content_type_with_parameters_is_accepted(doh):
+    """Parameters and case do not change the media type (RFC 9110 §8.3.1)."""
+    import aiohttp
+    async with aiohttp.ClientSession() as s, \
+            s.post(doh.base, data=b"\x00",
+                   headers={"Content-Type": "Application/DNS-Message; charset=binary"}) as r:
+        assert r.status == 400          # past the media-type check, to the parser
+
+
+@pytest.mark.asyncio
 async def test_a_post_of_a_malformed_message_is_a_400(doh):
     import aiohttp
     async with aiohttp.ClientSession() as s, \

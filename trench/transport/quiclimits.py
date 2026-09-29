@@ -63,10 +63,22 @@ class LimitedQuicProtocol:
         super().__init__(*args, **kwargs)
         self._admitted: str | None = None
         self._tasks: set[asyncio.Task] = set()   # strong refs to in-flight handlers
+        self._peer: str | None = None
+
+    def datagram_received(self, data, addr) -> None:
+        # The client's address, from the public callback rather than aioquic's
+        # private `_network_paths`, which would turn every client into "?" —
+        # one policy, one rate-limit bucket — the day it is renamed. Pinned to
+        # the first datagram: that is where the handshake is sent, so a
+        # completed handshake proves the peer receives there, whereas a later
+        # datagram's source is unauthenticated until aioquic decrypts it and
+        # a spoofed one must not rebind the connection to someone else's IP.
+        if getattr(self, "_peer", None) is None and addr:
+            self._peer = addr[0]
+        super().datagram_received(data, addr)  # type: ignore[misc]
 
     def peer_ip(self) -> str:
-        paths = getattr(self._quic, "_network_paths", None)
-        return paths[0].addr[0] if paths else "?"
+        return getattr(self, "_peer", None) or "?"
 
     def note_quic_event(self, event) -> bool:
         """Track this event. False when the connection was refused and closed."""

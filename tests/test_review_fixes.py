@@ -236,3 +236,45 @@ def test_dump_async_round_trips(tmp_path):
     assert not (tmp_path / "cache.json.tmp").exists()
     fresh = Cache()
     assert fresh.load(path) == 1
+
+
+# --- upstream UDP: a mismatched reply is ignored, not fatal ------------------
+def test_a_spoofed_reply_with_the_right_id_does_not_take_the_slot():
+    from trench.transport.upstream import _UdpSocket
+
+    async def go():
+        sock = _UdpSocket()
+        q = mkquery("Example.COM", txid=0x4242)
+        fut = asyncio.get_running_loop().create_future()
+        sock.expect(q.to_wire(), fut)
+        spoof = mkanswer(mkquery("evil.test", txid=0x4242)).to_wire()
+        sock.datagram_received(spoof, ("192.0.2.1", 53))
+        assert not fut.done()
+        real = mkanswer(mkquery("example.com", txid=0x4242)).to_wire()
+        sock.datagram_received(real, ("192.0.2.1", 53))
+        assert fut.done() and fut.result() == real
+        assert not sock.pending and not sock.questions
+
+    asyncio.run(go())
+
+
+# --- QUIC frontends: the peer address comes from the public callback ---------
+def test_the_quic_peer_is_the_first_datagrams_source():
+    from trench.transport.quiclimits import LimitedQuicProtocol
+
+    class Base:
+        def __init__(self, *a, **k):
+            self.seen = []
+
+        def datagram_received(self, data, addr):
+            self.seen.append(addr)
+
+    class P(LimitedQuicProtocol, Base):
+        pass
+
+    p = P()
+    assert p.peer_ip() == "?"
+    p.datagram_received(b"x", ("192.0.2.7", 4433))
+    p.datagram_received(b"x", ("198.51.100.66", 4433))   # unauthenticated source
+    assert p.peer_ip() == "192.0.2.7"
+    assert len(p.seen) == 2

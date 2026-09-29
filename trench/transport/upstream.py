@@ -121,6 +121,23 @@ def _port(text: str, spec: str) -> int:
     return port
 
 
+def _question_of(wire: bytes) -> bytes:
+    """The lowercased question section of a query, or b"" if it has none.
+
+    Lowercased because a 0x20-randomised query may come back in either case.
+    A query's question is never compressed, so the labels can be walked plainly.
+    """
+    if len(wire) < 12 or wire[4:6] == b"\x00\x00":
+        return b""
+    i = 12
+    while i < len(wire) and wire[i] != 0:
+        if wire[i] >= 0xC0:
+            return b""
+        i += wire[i] + 1
+    end = i + 5                                  # the root label, qtype, qclass
+    return wire[12:end].lower() if end <= len(wire) else b""
+
+
 class _UdpSocket(asyncio.DatagramProtocol):
     """One long-lived, connected UDP socket carrying several queries at once.
 
@@ -128,10 +145,11 @@ class _UdpSocket(asyncio.DatagramProtocol):
     outstanding on the same socket and UDP does not promise order.
     """
 
-    __slots__ = ("pending", "transport", "pool", "closed")
+    __slots__ = ("pending", "questions", "transport", "pool", "closed")
 
     def __init__(self, pool: UdpPool | None = None) -> None:
         self.pending: dict[int, asyncio.Future] = {}
+        self.questions: dict[int, bytes] = {}   # txid -> expected question bytes
         self.transport: asyncio.DatagramTransport | None = None
         self.pool = pool
         self.closed = False
@@ -154,13 +172,35 @@ class _UdpSocket(asyncio.DatagramProtocol):
             if not fut.done():
                 fut.set_exception(UpstreamError("upstream socket closed"))
         self.pending.clear()
+        self.questions.clear()
+
+    def expect(self, wire: bytes, fut: asyncio.Future) -> int:
+        """Register `fut` for the reply to the query `wire`; return its id."""
+        txid = (wire[0] << 8) | wire[1]
+        self.pending[txid] = fut
+        self.questions[txid] = _question_of(wire)
+        return txid
+
+    def forget(self, txid: int) -> None:
+        self.pending.pop(txid, None)
+        self.questions.pop(txid, None)
 
     def datagram_received(self, data: bytes, addr) -> None:
-        if len(data) < 2:
+        if len(data) < 12:
             return
-        fut = self.pending.pop((data[0] << 8) | data[1], None)
-        if fut is not None and not fut.done():
-            fut.set_result(data)
+        txid = (data[0] << 8) | data[1]
+        fut = self.pending.get(txid)
+        if fut is None or fut.done():
+            return
+        # RFC 5452 §9.1: a reply whose question does not match is not the
+        # answer, and is dropped rather than accepted. Taking the first datagram
+        # with the right id let one spoofed packet fail the query outright — the
+        # later check rejected it, but the real answer had lost its slot.
+        q = self.questions.get(txid, b"")
+        if q and data[12:12 + len(q)].lower() != q:
+            return
+        self.forget(txid)
+        fut.set_result(data)
 
     def error_received(self, exc: Exception) -> None:
         # A connected UDP socket surfaces ICMP errors here. Nothing identifies
@@ -170,6 +210,7 @@ class _UdpSocket(asyncio.DatagramProtocol):
             if not fut.done():
                 fut.set_exception(exc)
         self.pending.clear()
+        self.questions.clear()
 
     def close(self) -> None:
         if self.transport is not None:
@@ -257,12 +298,12 @@ class UdpPool:
                 raise UpstreamError("no free upstream socket for this query id")
         loop = asyncio.get_running_loop()
         fut = loop.create_future()
-        sock.pending[txid] = fut
+        sock.expect(wire, fut)
         try:
             sock.transport.sendto(wire)          # type: ignore[union-attr]
             return await asyncio.wait_for(fut, timeout)
         finally:
-            sock.pending.pop(txid, None)
+            sock.forget(txid)
 
     def close(self) -> None:
         for s in self._socks:
@@ -521,7 +562,7 @@ class Upstream:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future = loop.create_future()
         proto = _UdpSocket()
-        proto.pending[(wire[0] << 8) | wire[1]] = fut
+        proto.expect(wire, fut)
         transport, _ = await loop.create_datagram_endpoint(
             lambda: proto, remote_addr=(self.spec.host, self.spec.port))
         try:
@@ -575,7 +616,10 @@ class Upstream:
     async def _tcp_exchange(self, wire: bytes, ssl_ctx=None) -> bytes:
         reader, writer = await asyncio.open_connection(
             self.spec.host, self.spec.port, ssl=ssl_ctx,
-            server_hostname=self.spec.sni or None if ssl_ctx else None)
+            # Parenthesised: `sni or None if ssl_ctx else None` parses as
+            # `sni or (...)`, handing plain TCP a server_hostname — which
+            # asyncio rejects — whenever the spec carried a `#name`.
+            server_hostname=(self.spec.sni or None) if ssl_ctx else None)
         try:
             writer.write(len(wire).to_bytes(2, "big") + wire)
             await writer.drain()

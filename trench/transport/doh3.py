@@ -109,7 +109,7 @@ class DoH3Protocol(LimitedQuicProtocol, QuicConnectionProtocol):
             if wire is None:
                 self._send(stream_id, 400, b"bad request", b"text/plain")
                 return
-            peer = self._quic._network_paths[0].addr[0] if self._quic._network_paths else "?"
+            peer = self.peer_ip()
             resp = await resolve_wire(self.pipeline, wire, peer, "h3")
             if resp is None:
                 self._send(stream_id, 400, b"malformed", b"text/plain")
