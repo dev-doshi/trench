@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import random
+import secrets
 import time
 
 from ..log import get
@@ -51,7 +51,7 @@ async def transfer_records(host: str, port: int, origin: Name, *,
     """Run an AXFR/IXFR against a primary; return the raw RR stream (TSIG
     stripped, envelopes verified). Interpretation (full zone vs delta) is the
     caller's job via `apply_ixfr`."""
-    msgid = random.getrandbits(16)
+    msgid = secrets.randbits(16)
     query = build_xfr_query(origin, qtype, client_serial=client_serial, msgid=msgid)
     wire = query.to_wire()
     req_mac: bytes | None = None
@@ -80,6 +80,7 @@ async def transfer_records(host: str, port: int, origin: Name, *,
             if key is not None:
                 req_mac = _verify_envelope(data, key, req_mac, first=envelopes == 0)
             msg = Message.parse(data)
+            _check_envelope(msg, msgid, origin, qtype)
             if msg.rcode != Rcode.NOERROR:
                 raise TransferError(f"transfer refused: rcode {msg.rcode}")
             nbytes += len(data)
@@ -127,12 +128,27 @@ class TransferError(Exception):
     pass
 
 
+def _check_envelope(msg: Message, msgid: int, origin: Name, qtype: int) -> None:
+    """Every message of a transfer answers our query (RFC 5936 §2.2).
+
+    Without TSIG nothing else ties the stream to the question we asked: a
+    reply carrying another id, or another zone's question, is not ours to load.
+    Later envelopes may omit the question; when present it has to match.
+    """
+    if not msg.qr or msg.id != msgid:
+        raise TransferError("transfer reply does not answer our query")
+    q = msg.question
+    if q is not None and (q.name != origin or q.rtype != qtype):
+        raise TransferError(f"transfer reply is for {q.name.to_text()}, "
+                            f"not {origin.to_text()}")
+
+
 async def send_notify(host: str, port: int, origin: Name, *,
                       key: TSIGKey | None = None, timeout: float = 5.0) -> bool:
     """Send a DNS NOTIFY (RFC 1996) to a secondary; return True on ack."""
     from ..wire import Question
     from ..wire.rrtypes import Flags, Opcode
-    m = Message(id=random.getrandbits(16))
+    m = Message(id=secrets.randbits(16))
     m.flags |= (Opcode.NOTIFY << Flags.OPCODE_SHIFT) | Flags.AA
     m.questions.append(Question(origin, Type.SOA))
     wire = m.to_wire()
@@ -147,7 +163,7 @@ async def send_notify(host: str, port: int, origin: Name, *,
         await writer.drain()
         data = await asyncio.wait_for(_read_tcp_message(reader), timeout)
         resp = Message.parse(data)
-        return resp.qr and resp.opcode == Opcode.NOTIFY
+        return resp.qr and resp.id == m.id and resp.opcode == Opcode.NOTIFY
     except (TimeoutError, asyncio.IncompleteReadError, ConnectionError):
         return False
     finally:

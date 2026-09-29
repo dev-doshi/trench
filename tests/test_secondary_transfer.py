@@ -45,7 +45,20 @@ def _envelope(records, rcode=Rcode.NOERROR):
     return m.to_wire()
 
 
-async def _serve(envelopes, host="127.0.0.1", hang=False):
+def _answering(query_wire, wire, wrong_id=False):
+    """`wire` rewritten to answer `query_wire`: its id and its question, as a
+    real primary echoes them. Bytes that do not parse are sent as they are."""
+    try:
+        query, msg = Message.parse(query_wire), Message.parse(wire)
+    except Exception:
+        return wire
+    msg.id = query.id ^ 1 if wrong_id else query.id
+    if msg.questions:
+        msg.questions[:] = query.questions
+    return msg.to_wire()
+
+
+async def _serve(envelopes, host="127.0.0.1", hang=False, wrong_id=False):
     """A primary that replies with `envelopes` (a list of wire messages)."""
     state = {"requests": []}
 
@@ -58,6 +71,7 @@ async def _serve(envelopes, host="127.0.0.1", hang=False):
                 if hang:
                     await asyncio.sleep(60)
                 for wire in envelopes:
+                    wire = _answering(data, wire, wrong_id)
                     writer.write(len(wire).to_bytes(2, "big") + wire)
                     await writer.drain()
         except (asyncio.IncompleteReadError, ConnectionResetError, asyncio.CancelledError):
@@ -188,6 +202,61 @@ async def test_a_primary_that_never_answers_times_out():
 async def test_a_primary_that_is_not_listening_fails_rather_than_hanging():
     with pytest.raises(OSError):
         await transfer_records("127.0.0.1", 1, ORIGIN, timeout=1)
+
+
+# --- the reply has to answer our query ---
+@pytest.mark.asyncio
+async def test_a_reply_with_another_id_is_not_loaded():
+    server, port, _ = await _serve([_full_axfr()], wrong_id=True)
+    try:
+        with pytest.raises(TransferError):
+            await transfer_records("127.0.0.1", port, ORIGIN, timeout=2)
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_a_reply_for_another_zone_is_not_loaded():
+    other = n("evil.example.")
+
+    async def handle(reader, writer):
+        hdr = await reader.readexactly(2)
+        query = Message.parse(await reader.readexactly(int.from_bytes(hdr, "big")))
+        m = Message.parse(_full_axfr())
+        m.id = query.id
+        m.questions[:] = [Question(other, Type.AXFR, Class.IN)]
+        wire = m.to_wire()
+        writer.write(len(wire).to_bytes(2, "big") + wire)
+        await writer.drain()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        with pytest.raises(TransferError):
+            await transfer_records("127.0.0.1", port, ORIGIN, timeout=2)
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_a_notify_ack_with_another_id_is_not_an_ack():
+    async def handle(reader, writer):
+        hdr = await reader.readexactly(2)
+        resp = Message.parse(await reader.readexactly(int.from_bytes(hdr, "big"))).reply()
+        resp.id ^= 0xFFFF
+        wire = resp.to_wire()
+        writer.write(len(wire).to_bytes(2, "big") + wire)
+        await writer.drain()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        assert await send_notify("127.0.0.1", port, ORIGIN, timeout=1) is False
+    finally:
+        server.close()
+        await server.wait_closed()
 
 
 # --- NOTIFY ---
