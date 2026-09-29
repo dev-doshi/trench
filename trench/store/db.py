@@ -210,6 +210,19 @@ class Database:
         finally:
             await db.close()
 
+    async def executescript(self, sql: str) -> None:
+        """Run a script that carries its own BEGIN … COMMIT, as one transaction.
+
+        One call on the connection's thread, so no other statement of this
+        connection — the query-log writer's, above all — runs in the middle of
+        it. No parameters: every value in it must be the caller's own.
+        """
+        try:
+            await self.conn.executescript(sql)
+        except BaseException:
+            await self._rollback()
+            raise
+
     async def executemany(self, sql: str, rows: Iterable[Iterable[Any]]) -> None:
         try:
             await self.conn.executemany(sql, [tuple(r) for r in rows])

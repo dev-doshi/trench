@@ -546,70 +546,11 @@ class APIServer:
            (bucket not in self._AN_BUCKETS and bucket not in ("none", "dow_hour")) or \
            (group != "none" and group not in self._AN_GROUPS):
             return web.json_response({"error": "invalid bucket/group/metric"}, status=400)
-        mexpr = self._AN_METRICS[metric]
-
-        where: list[str] = ["1=1"]
-        args: list[object] = []
-        since, until = _num(q, "since", None), _num(q, "until", None)
-        if since is not None:
-            where.append("ts >= ?"); args.append(since)
-        if until is not None:
-            where.append("ts <= ?"); args.append(until)
-        if q.get("qname"):
-            where.append("qname LIKE ?"); args.append(f"%{q['qname']}%")
-        if q.get("client"):
-            where.append("client_ip = ?"); args.append(q["client"])
-        if q.get("action"):
-            where.append("action = ?"); args.append(q["action"])
-        w = " AND ".join(where)
-        top = _num(q, "top", 8, 12)
-
-        gcol = self._AN_GROUPS.get(group)
-        # `+{gcol}` keeps SQLite off the column's own index when grouping. With
-        # it, the planner walks ix_querylog_qname end to end to skip one sort,
-        # which reads every row ever logged instead of the requested span: top
-        # names over a day took 85 s on a Pi holding two weeks, 0.8 s without.
-        if gcol:  # keep only the busiest groups so charts stay legible
-            rows = await self.app.db.fetchall(
-                f"SELECT {gcol} FROM querylog WHERE {w} GROUP BY +{gcol} "
-                f"ORDER BY COUNT(*) DESC LIMIT ?", (*args, top))
-            keep = [r[0] for r in rows]
-            if not keep:
-                return web.json_response({"series": [], "rows": [], "cells": []})
-            w += f" AND {gcol} IN ({','.join('?' * len(keep))})"
-            args = [*args, *keep]
-
-        if bucket == "dow_hour":
-            rows = await self.app.db.fetchall(
-                "SELECT CAST(strftime('%w', ts/1000000, 'unixepoch') AS INTEGER), "
-                "CAST(strftime('%H', ts/1000000, 'unixepoch') AS INTEGER), "
-                f"{mexpr} FROM querylog WHERE {w} GROUP BY 1, 2", tuple(args))
-            return web.json_response({"cells": [list(r) for r in rows]})
-        if bucket == "none":
-            if gcol:
-                rows = await self.app.db.fetchall(
-                    f"SELECT {gcol}, {mexpr} v FROM querylog WHERE {w} "
-                    f"GROUP BY +{gcol} ORDER BY v DESC", tuple(args))
-                return web.json_response({"rows": [list(r) for r in rows]})
-            rows = await self.app.db.fetchall(
-                f"SELECT {mexpr} FROM querylog WHERE {w}", tuple(args))
-            return web.json_response({"rows": [["all", rows[0][0] if rows else 0]]})
-
-        step = self._AN_BUCKETS[bucket]
-        bexpr = f"(ts / {step * 1_000_000}) * {step}"
-        if gcol:
-            rows = await self.app.db.fetchall(
-                f"SELECT {bexpr} b, {gcol} g, {mexpr} FROM querylog WHERE {w} "
-                f"GROUP BY b, g ORDER BY b", tuple(args))
-            series: dict[str, list] = {}
-            for b, g, v in rows:
-                series.setdefault(str(g), []).append([b, v])
-            return web.json_response(
-                {"series": [{"group": g, "points": p} for g, p in series.items()]})
-        rows = await self.app.db.fetchall(
-            f"SELECT {bexpr} b, {mexpr} FROM querylog WHERE {w} GROUP BY b ORDER BY b",
-            tuple(args))
-        return web.json_response({"series": [{"group": "all", "points": [list(r) for r in rows]}]})
+        return web.json_response(await self.app.querylog.aggregate(
+            since=_num(q, "since", None), until=_num(q, "until", None),
+            bucket=bucket, group=self._AN_GROUPS.get(group), metric=metric,
+            top=_num(q, "top", 8, 12), qname=q.get("qname") or None,
+            client=q.get("client") or None, action=q.get("action") or None))
 
     async def privacy(self, request: web.Request) -> web.Response:
         """What is actually stored, where, and what survives a reboot — legibly."""

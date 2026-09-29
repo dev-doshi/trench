@@ -151,6 +151,18 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Seven days of charts no longer take the console down with them.** Every
+  chart question read the raw query log, and on a Pi a week of it is ~450K rows
+  that 1 GB of RAM cannot keep cached: each of the Overview's nine questions
+  read ~100 MB off the SD card, 7–10 s apiece on one database connection, so a
+  7-day Overview held it for over a minute — refreshed every minute — and
+  Browse, Log and every other page queued behind it. Charts now read hourly
+  rollups (`querylog_hour`, `querylog_hour_name`), kept by a trigger on insert,
+  and only the partial hours at the window's edges from the raw rows; the
+  answers are identical. An existing log is counted into them in the
+  background after the upgrade, newest hour first. The Overview also skips a
+  refresh while the previous one is still loading.
+
 - **Top names over a day read the whole query log.** `/analytics` grouped by
   name or device let SQLite walk that column's index end to end to save one
   sort, ignoring the time range: on a Pi holding two weeks, a day's top names

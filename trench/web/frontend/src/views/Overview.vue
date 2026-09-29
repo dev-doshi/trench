@@ -101,11 +101,12 @@ function pick(h: number) {
 }
 
 // Refresh once a minute while visible: the buckets are hourly, and a hidden
-// tab should cost the Pi nothing.
+// tab should cost the Pi nothing. A tick that finds the last load still
+// running skips, rather than queueing a second one behind it.
 let timer: ReturnType<typeof setInterval> | undefined;
 onMounted(() => {
   load();
-  timer = setInterval(() => { if (!document.hidden) load(); }, 60_000);
+  timer = setInterval(() => { if (!document.hidden && !loading.value) load(); }, 60_000);
 });
 onUnmounted(() => clearInterval(timer));
 

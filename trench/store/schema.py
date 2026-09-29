@@ -141,4 +141,61 @@ MIGRATIONS: list[tuple[int, str, str]] = [
     DROP TABLE IF EXISTS ts_stat;
     DROP TABLE IF EXISTS "group";
     """),
+    # Hourly totals of the query log, for the console's charts. A week of raw
+    # rows is ~450K on a small household; every chart over it read ~100 MB off
+    # an SD card that a 1 GB Pi cannot keep in its page cache, and the Overview
+    # asks nine such questions. The same week is ~20K rows here, and ~110K in
+    # the per-name table.
+    #
+    # Kept by a trigger rather than by the writer, so every path that inserts
+    # a row counts it. Deletes are not mirrored; `querylog_rollup.complete_from`
+    # is the first hour the tables are known to be whole from. Hours before it
+    # — the log as it was before this migration, and the hour retention is
+    # halfway through — are read from `querylog` instead, and the writer
+    # backfills them an hour at a time (see `QueryLog.backfill_rollup`).
+    (7, "hourly rollups of the query log", """
+    CREATE TABLE IF NOT EXISTS querylog_hour (
+        hour INTEGER NOT NULL,                  -- unix epoch of the hour's start
+        action TEXT NOT NULL,
+        client_ip TEXT NOT NULL,
+        qtype TEXT NOT NULL,
+        upstream TEXT NOT NULL,
+        rcode TEXT NOT NULL,
+        n INTEGER NOT NULL,
+        lat_n INTEGER NOT NULL,                 -- rows with an elapsed_us
+        lat_sum INTEGER NOT NULL,
+        lat_max INTEGER NOT NULL,
+        PRIMARY KEY (hour, action, client_ip, qtype, upstream, rcode)
+    ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS querylog_hour_name (
+        hour INTEGER NOT NULL,
+        qname TEXT NOT NULL,
+        action TEXT NOT NULL,
+        n INTEGER NOT NULL,
+        PRIMARY KEY (hour, qname, action)
+    ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS querylog_rollup (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        complete_from INTEGER NOT NULL
+    );
+    -- whole from the hour after the newest row already logged; an empty log is
+    -- whole from the start
+    INSERT OR REPLACE INTO querylog_rollup(id, complete_from)
+        SELECT 1, COALESCE(MAX(ts) / 3600000000 * 3600 + 3600, 0) FROM querylog;
+    CREATE TRIGGER IF NOT EXISTS querylog_rollup_ins AFTER INSERT ON querylog BEGIN
+        INSERT INTO querylog_hour VALUES (
+            NEW.ts / 3600000000 * 3600, COALESCE(NEW.action, ''),
+            COALESCE(NEW.client_ip, ''), COALESCE(NEW.qtype, ''),
+            COALESCE(NEW.upstream, ''), COALESCE(NEW.rcode, ''),
+            1, NEW.elapsed_us IS NOT NULL, COALESCE(NEW.elapsed_us, 0),
+            COALESCE(NEW.elapsed_us, 0))
+        ON CONFLICT (hour, action, client_ip, qtype, upstream, rcode) DO UPDATE SET n = n + 1, lat_n = lat_n + excluded.lat_n,
+            lat_sum = lat_sum + excluded.lat_sum,
+            lat_max = max(lat_max, excluded.lat_max);
+        INSERT INTO querylog_hour_name VALUES (
+            NEW.ts / 3600000000 * 3600, COALESCE(NEW.qname, ''),
+            COALESCE(NEW.action, ''), 1)
+        ON CONFLICT (hour, qname, action) DO UPDATE SET n = n + 1;
+    END;
+    """),
 ]
