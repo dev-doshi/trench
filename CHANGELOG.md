@@ -167,6 +167,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A TCP client that sent its queries and then half-closed the connection had
   every answer still in flight cancelled when its FIN arrived. Pending answers
   are now sent, within the idle timeout, before the connection is closed.
+- A worker killed while holding one of the shared cache's cross-process locks
+  left it held forever, and every other worker froze on its next lookup in that
+  stripe. Lock waits are now bounded at 50 ms; a lock that times out is logged,
+  skipped at no further cost (a cache miss), and re-probed without blocking
+  every 5 seconds.
+- The same applied to the cross-worker query-log ring: a worker killed
+  mid-push froze the primary worker on its next log flush, taking its DNS and
+  API with it. Lane locks are bounded the same way.
 - The container healthcheck probed a hardcoded port 53 while both `Config`'s
   default and `trench.example.yaml` listen on 5354, so the general-purpose
   Compose deployment marked a container unhealthy while it was resolving

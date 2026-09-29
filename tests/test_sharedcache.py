@@ -132,14 +132,17 @@ def test_a_cache_with_no_shared_backend_never_consults_one():
     assert c.stats["shared_hits"] == 0
 
 
-def test_a_stripe_lock_held_by_a_dead_worker_does_not_hang_the_caller():
+def test_a_stripe_lock_held_by_a_dead_worker_does_not_hang_the_caller(monkeypatch):
     """A worker killed inside a critical section never releases its stripe.
     Every other worker used to block on it for good, on the event loop."""
     import time
+
+    from trench import shmlock
+    monkeypatch.setattr(shmlock, "RETRY", 0.0)     # re-probe on the next access
     sc = SharedCache.create(slots=128, payload=64)
     k = 12345
     sc.put(k, b"wire", 60)
-    _, lock = sc._slot(k)
+    lock = sc.locks[sc._slot(k)[1]]
     lock.acquire()                      # the worker that will never release it
     try:
         t = time.monotonic()

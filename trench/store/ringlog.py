@@ -28,17 +28,13 @@ import json
 import mmap
 import struct
 
+from ..shmlock import BoundedLocks
+
 #: head, tail, dropped — three u64 per lane. The writer owns `head` and
 #: `dropped`, the reader owns `tail`, so the two sides never write the same
 #: word; the lock below is what keeps a slot from being read half-written.
 _LANE_HDR = struct.Struct("<QQQ")
 _LEN = struct.Struct("<H")
-
-#: Longest any process waits for a lane lock. The critical sections are a few
-#: microseconds, so this is never reached by contention: it is reached only when
-#: a worker was killed holding the lock, and it turns a lock nobody will ever
-#: release into a lost record rather than an event loop blocked for good.
-LOCK_TIMEOUT = 0.05
 
 
 class RecordRing:
@@ -52,6 +48,9 @@ class RecordRing:
         self.slots = slots
         self.slot_bytes = slot_bytes
         self.lane = lane            # which lane this process writes to
+        # Bounded: a worker killed mid-push never releases its lane's lock, and
+        # the primary drains every lane on its event loop.
+        self._guard = BoundedLocks(locks, "query-log lane")
 
     # ---- construction ----
     @classmethod
@@ -94,10 +93,9 @@ class RecordRing:
                 return False
             payload = shrunk
         off = self._lane_off(self.lane)
-        lock = self.locks[self.lane]
-        if not lock.acquire(timeout=LOCK_TIMEOUT):
-            return False
-        try:
+        with self._guard.hold(self.lane) as held:
+            if not held:
+                return False
             head, tail, dropped = _LANE_HDR.unpack_from(self.mm, off)
             if head - tail >= self.slots:
                 _LANE_HDR.pack_into(self.mm, off, head, tail, dropped + 1)
@@ -106,8 +104,6 @@ class RecordRing:
             _LEN.pack_into(self.mm, slot, len(payload))
             self.mm[slot + _LEN.size: slot + _LEN.size + len(payload)] = payload
             _LANE_HDR.pack_into(self.mm, off, head + 1, tail, dropped)
-        finally:
-            lock.release()
         return True
 
     def _shrink(self, row: list) -> bytes | None:
@@ -139,11 +135,10 @@ class RecordRing:
     def _drain_lane(self, lane: int, limit: int) -> list[list]:
         out: list[list] = []
         off = self._lane_off(lane)
-        lock = self.locks[lane]
         while len(out) < limit:
-            if not lock.acquire(timeout=LOCK_TIMEOUT):
-                break           # a dead writer's lock: skip the lane, keep the loop
-            try:
+            with self._guard.hold(lane) as held:
+                if not held:
+                    break       # a dead writer's lock: skip the lane, keep the loop
                 head, tail, dropped = _LANE_HDR.unpack_from(self.mm, off)
                 if tail >= head:
                     break
@@ -151,8 +146,6 @@ class RecordRing:
                 (length,) = _LEN.unpack_from(self.mm, slot)
                 raw = bytes(self.mm[slot + _LEN.size: slot + _LEN.size + length])
                 _LANE_HDR.pack_into(self.mm, off, head, tail + 1, dropped)
-            finally:
-                lock.release()
             try:
                 out.append(json.loads(raw))
             except ValueError:

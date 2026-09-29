@@ -305,3 +305,106 @@ async def test_retention_prunes_a_backlog_in_chunks(tmp_path, monkeypatch):
     assert [r[0] for r in rows] == ["new"]
     assert not d.conn._conn.in_transaction
     await d.close()
+
+
+# --- shared cache: a worker dying with a stripe lock held ---
+def test_a_dead_lock_holder_does_not_freeze_the_shared_cache():
+    import multiprocessing
+    import os
+    import signal
+
+    from trench.cache.shared import SharedCache
+
+    sc = SharedCache.create(slots=128, payload=64)
+    k = 5
+    sc.put(k, b"answer", 60)
+    stripe = sc._slot(k)[1]
+
+    ctx = multiprocessing.get_context("fork")
+    ready = ctx.Event()
+
+    def hold(lock, ev):
+        lock.acquire()
+        ev.set()
+        time.sleep(3600)
+
+    child = ctx.Process(target=hold, args=(sc.locks[stripe], ready))
+    child.start()
+    try:
+        assert ready.wait(5)
+        os.kill(child.pid, signal.SIGKILL)
+        child.join(5)
+        t0 = time.monotonic()
+        assert sc.get(k) is None             # a miss, not a hang
+        sc.put(k, b"other", 60)
+        sc.delete(k)
+        sc.clear()
+        assert time.monotonic() - t0 < 1, "a dead holder stalled the cache"
+        other = next(i for i in range(128) if sc._slot(i)[1] != stripe)
+        sc.put(other, b"fine", 60)
+        assert sc.get(other)[0] == b"fine", "healthy stripes stopped working"
+    finally:
+        if child.is_alive():
+            child.kill()
+
+
+def test_a_wedged_lock_is_skipped_at_no_cost_and_re_probed():
+    import threading
+
+    from trench import shmlock
+
+    now = [0.0]
+    lock = threading.Lock()
+    guard = shmlock.BoundedLocks([lock], "test lock", clock=lambda: now[0])
+    lock.acquire()                                    # the dead holder
+    t0 = time.monotonic()
+    with guard.hold(0) as held:
+        assert not held
+    first = time.monotonic() - t0
+    t0 = time.monotonic()
+    for _ in range(100):
+        with guard.hold(0) as held:
+            assert not held
+    assert time.monotonic() - t0 < first, "every access waited out the timeout"
+
+    lock.release()
+    with guard.hold(0) as held:
+        assert not held, "re-probed before the retry interval"
+    now[0] += shmlock.RETRY
+    with guard.hold(0) as held:
+        assert held, "a freed lock was never taken again"
+    assert not lock.locked()
+
+
+def test_a_worker_dying_mid_push_does_not_freeze_the_primary():
+    import multiprocessing
+    import os
+    import signal
+
+    from trench.store.ringlog import RecordRing
+
+    ring = RecordRing.create(lanes=3, slots=8, slot_bytes=128)
+    primary, healthy = ring.for_lane(0), ring.for_lane(2)
+    assert healthy.push([1, "ok"])
+
+    ctx = multiprocessing.get_context("fork")
+    ready = ctx.Event()
+
+    def die_holding(lock, ev):
+        lock.acquire()
+        ev.set()
+        time.sleep(3600)
+
+    child = ctx.Process(target=die_holding, args=(ring.locks[1], ready))
+    child.start()
+    try:
+        assert ready.wait(5)
+        os.kill(child.pid, signal.SIGKILL)
+        child.join(5)
+        t0 = time.monotonic()
+        assert primary.drain() == [[1, "ok"]], "the healthy lane was not drained"
+        assert primary.dropped() == 0
+        assert time.monotonic() - t0 < 1, "a dead worker froze the primary"
+    finally:
+        if child.is_alive():
+            child.kill()

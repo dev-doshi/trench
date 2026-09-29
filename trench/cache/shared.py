@@ -19,6 +19,8 @@ import struct
 import time
 from typing import TYPE_CHECKING
 
+from ..shmlock import BoundedLocks
+
 if TYPE_CHECKING:
     # Type-only: `multiprocessing` is imported inside `create`, which is the one
     # place that needs it, and importing it at module scope costs every process
@@ -28,13 +30,6 @@ if TYPE_CHECKING:
 _HDR = struct.Struct("<QdIH")   # keyhash(u64), inserted(f64), ttl(u32), length(u16)
 _HDR_LEN = _HDR.size
 _STRIPES = 64
-
-#: Longest any worker waits for a stripe lock. Holders keep it for a memcpy, so
-#: contention never gets near this; it is reached only when a worker died
-#: holding the lock. That used to block every other worker's event loop — the
-#: whole resolver — on the first query to hash into the stripe. Now the stripe
-#: behaves as empty and the query goes to the worker's own cache and upstream.
-LOCK_TIMEOUT = 0.05
 
 
 def key64(qname: bytes, qtype: int, qclass: int, do: bool, ecs: str = "",
@@ -58,6 +53,8 @@ class SharedCache:
         self.slots = slots
         self.payload = payload
         self.slot_size = _HDR_LEN + payload
+        # Bounded: a worker killed mid-write never releases its stripe.
+        self._guard = BoundedLocks(locks, "shared cache stripe")
 
     @classmethod
     def create(cls, slots: int = 16384, payload: int = 1232) -> SharedCache:
@@ -67,15 +64,15 @@ class SharedCache:
         locks = [multiprocessing.Lock() for _ in range(_STRIPES)]
         return cls(mm, locks, slots, payload)
 
-    def _slot(self, k: int) -> tuple[int, Lock]:
+    def _slot(self, k: int) -> tuple[int, int]:
         bucket = k % self.slots
-        return bucket * self.slot_size, self.locks[bucket % _STRIPES]
+        return bucket * self.slot_size, bucket % _STRIPES
 
     def get(self, k: int) -> tuple[bytes, float] | None:
-        off, lock = self._slot(k)
-        if not lock.acquire(timeout=LOCK_TIMEOUT):
-            return None
-        try:
+        off, stripe = self._slot(k)
+        with self._guard.hold(stripe) as held:
+            if not held:
+                return None
             kh, inserted, ttl, length = _HDR.unpack_from(self.mm, off)
             if kh != k or length == 0:
                 return None
@@ -83,34 +80,28 @@ class SharedCache:
             if remaining <= 0:
                 return None
             wire = bytes(self.mm[off + _HDR_LEN: off + _HDR_LEN + length])
-        finally:
-            lock.release()
         return wire, remaining
 
     def put(self, k: int, wire: bytes, ttl: int) -> None:
         if not wire or len(wire) > self.payload or ttl <= 0:
             return
-        off, lock = self._slot(k)
-        if not lock.acquire(timeout=LOCK_TIMEOUT):
-            return
-        try:
+        off, stripe = self._slot(k)
+        with self._guard.hold(stripe) as held:
+            if not held:
+                return
             _HDR.pack_into(self.mm, off, k, time.monotonic(), int(ttl), len(wire))
             self.mm[off + _HDR_LEN: off + _HDR_LEN + len(wire)] = wire
-        finally:
-            lock.release()
 
     def delete(self, k: int) -> None:
         """Invalidate one slot. Needed so a targeted flush is not undone by the
         next L1 miss reading the flushed answer straight back out of L2."""
-        off, lock = self._slot(k)
-        if not lock.acquire(timeout=LOCK_TIMEOUT):
-            return      # get() treats this stripe as empty while it is wedged
-        try:
+        off, stripe = self._slot(k)
+        with self._guard.hold(stripe) as held:
+            if not held:
+                return      # get() treats this stripe as empty while it is wedged
             kh, _, _, _ = _HDR.unpack_from(self.mm, off)
             if kh == k:
                 _HDR.pack_into(self.mm, off, 0, 0.0, 0, 0)
-        finally:
-            lock.release()
 
     def clear(self) -> None:
         """Invalidate every slot.
@@ -118,17 +109,14 @@ class SharedCache:
         One lock acquisition per stripe, not one per slot. Taking a
         cross-process lock 16k times ran on the event-loop thread — every
         in-flight query waited on it — and a worker killed mid-clear (this
-        deployment has an OOM history) left a stripe lock held forever, which
-        no reader can time out of.
+        deployment has an OOM history) could leave a stripe lock held forever;
+        `BoundedLocks` is what the other workers do about that.
         """
         blank = _HDR.pack(0, 0.0, 0, 0)
         for i in range(_STRIPES):
-            lock = self.locks[i]
-            if not lock.acquire(timeout=LOCK_TIMEOUT):
-                continue    # wedged: get() already treats it as empty
-            try:
+            with self._guard.hold(i) as held:
+                if not held:
+                    continue
                 for b in range(i, self.slots, _STRIPES):
                     off = b * self.slot_size
                     self.mm[off:off + _HDR_LEN] = blank
-            finally:
-                lock.release()

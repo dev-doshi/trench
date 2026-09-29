@@ -115,8 +115,11 @@ async def test_privacy_is_applied_before_anything_crosses_the_boundary(tmp_path)
     assert hash_identifier("secret.test", salt) in published
 
 
-def test_a_lane_lock_held_by_a_dead_worker_sheds_instead_of_hanging():
+def test_a_lane_lock_held_by_a_dead_worker_sheds_instead_of_hanging(monkeypatch):
     import time
+
+    from trench import shmlock
+    monkeypatch.setattr(shmlock, "RETRY", 0.0)     # re-probe on the next access
     ring = RecordRing.create(lanes=2)
     writer = ring.for_lane(1)
     ring.locks[1].acquire()
