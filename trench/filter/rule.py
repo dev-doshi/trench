@@ -8,11 +8,15 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from ..errors import WireError
 from ..wire import rdata as R
 from ..wire.name import Name
 from ..wire.rrtypes import Rcode, Type, type_from_text
+
+if TYPE_CHECKING:
+    from .parser import Glob
 
 
 @dataclass
@@ -37,7 +41,7 @@ class Rule:
     # match forms (exactly one primary form set)
     suffix: str | None = None         # ||domain^ or hosts -> domain + subdomains
     exact: str | None = None          # |domain| -> exact only
-    regex: re.Pattern | None = None   # /regex/
+    regex: re.Pattern | Glob | None = None   # /regex/, or a `*` wildcard rule
     # modifiers
     important: bool = False
     badfilter: bool = False

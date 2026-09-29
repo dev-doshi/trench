@@ -7,6 +7,9 @@ wildcard (`*.d`), and Adblock DNS syntax (`||d^`, `@@`, `$important`,
 from __future__ import annotations
 
 import re
+import time
+from re import _constants as _sre_c  # type: ignore[attr-defined]  # parse tree, for the ReDoS
+from re import _parser as _sre_p  # type: ignore[attr-defined]  # check (not in typeshed)
 
 from ..log import get
 from ..wire.rrtypes import type_from_text
@@ -143,25 +146,152 @@ def _split_modifiers(line: str) -> tuple[str, str]:
     return pattern, modstr
 
 
-#: Nested quantifiers are the classic catastrophic-backtracking shape. A rule
-#: list is remote input and `regex.search` runs against an attacker-chosen name
-#: on the event loop, so one such pattern anywhere in a subscribed list is a
-#: whole-resolver stall.
-_REDOS = re.compile(r"\((?:[^()]*[+*?][^()]*)\)\s*[+*]|(?:\[[^\]]*\][+*]){2,}")
+#: How many unbounded repeats (`*`, `+`, `{n,}`) a list regex may carry. Each
+#: one is a nested loop for the backtracker on a failing match: two cost ~50 us
+#: on a 253-char name, three ~10 ms, four a quarter of a second — per query.
+_MAX_UNBOUNDED = 2
+#: A bounded repeat with a bigger ceiling than this is treated as unbounded.
+_BIG_REPEAT = 16
+#: The slowest a list regex may be on the adversarial probes, in seconds.
+_PROBE_BUDGET = 0.005
+
+_REPEATS = {_sre_c.MAX_REPEAT, _sre_c.MIN_REPEAT, getattr(_sre_c, "POSSESSIVE_REPEAT", None)}
+_REFUSED = {_sre_c.GROUPREF, _sre_c.GROUPREF_EXISTS, _sre_c.ASSERT, _sre_c.ASSERT_NOT}
+
+
+def _redos_reason(pat: str) -> str | None:
+    """Why `pat` could backtrack catastrophically, or None if it cannot.
+
+    List regexes are remote input, and `search` runs against an attacker-chosen
+    name, synchronously, on the loop the listeners share. This walks the parse
+    tree rather than pattern-matching the text: the old textual check saw only
+    innermost groups, so `(a|aa)+` (Fibonacci) and `((a+))+` sailed through.
+    """
+    unbounded = 0
+
+    def walk(sub, in_repeat: bool) -> str | None:
+        nonlocal unbounded
+        for op, av in sub:
+            if op in _REFUSED:
+                return "backreference or lookaround"
+            if op in _REPEATS:
+                lo, hi, body = av
+                if hi == _sre_c.MAXREPEAT or hi > _BIG_REPEAT:
+                    unbounded += 1
+                if hi > 1:
+                    if in_repeat:
+                        return "nested quantifiers"
+                    why = walk(body, True)
+                    if why:
+                        return why
+                else:
+                    why = walk(body, in_repeat)
+                    if why:
+                        return why
+            elif op is _sre_c.BRANCH:
+                for alt in av[1]:
+                    # An alternation under a repeat is ambiguous unless every arm
+                    # is exactly one character — then it is just a class.
+                    if in_repeat and alt.getwidth() != (1, 1):
+                        return "alternation under a quantifier"
+                    why = walk(alt, in_repeat)
+                    if why:
+                        return why
+            elif op is _sre_c.SUBPATTERN:
+                why = walk(av[-1], in_repeat)
+                if why:
+                    return why
+        return None
+
+    try:
+        why = walk(_sre_p.parse(pat, re.IGNORECASE), False)
+    except (re.error, RecursionError, OverflowError):
+        return "does not parse"
+    if why:
+        return why
+    if unbounded > _MAX_UNBOUNDED:
+        return f"{unbounded} unbounded quantifiers"
+    return None
+
+
+def _probes(pat: str) -> list[str]:
+    """Names shaped to make a backtracker fail slowly: long runs of the
+    pattern's own characters with a character at the end that cannot match."""
+    chars = {c for c in pat.lower() if c.isalnum() or c in "-_."} or {"a"}
+    out = []
+    for c in sorted(chars)[:12]:
+        out.append(c * 252 + "!")
+    out.append("".join(sorted(chars)) * (252 // max(1, len(chars))) + "!")
+    return out
 
 
 def _safe_regex(pat: str):
     """Compile a list-supplied pattern, refusing shapes that can blow up."""
-    if _REDOS.search(pat):
-        log.warning("refusing regex rule with nested quantifiers: %s", pat)
-        return None
     if len(pat) > 512:
         log.warning("refusing over-long regex rule (%d chars)", len(pat))
         return None
-    try:
-        return re.compile(pat, re.IGNORECASE)
-    except re.error:
+    why = _redos_reason(pat)
+    if why:
+        log.warning("refusing regex rule (%s): %s", why, pat)
         return None
+    try:
+        rx = re.compile(pat, re.IGNORECASE)
+    except (re.error, RecursionError, OverflowError):
+        return None
+    # Belt and braces: the structural check is conservative, but a real engine
+    # is the only proof. Time the compiled pattern on hostile names once, here,
+    # rather than discovering it on the query path.
+    for probe in _probes(pat):
+        t = time.perf_counter()
+        rx.search(probe)
+        if time.perf_counter() - t > _PROBE_BUDGET:
+            log.warning("refusing regex rule (slow on a %d-char name): %s",
+                        len(probe), pat)
+            return None
+    return rx
+
+
+class Glob:
+    """A `*` wildcard rule, matched in linear time.
+
+    Wildcard rules used to become `^a.*a.*…b$` for `re`, which backtracks to
+    degree k on a failing name: `||a*a*a*a*a*a*a*a*a*b^` did not finish on a
+    62-character query. Only `*` is special here, so greedy leftmost matching
+    of each literal piece is exact and needs no backtracking at all.
+    """
+    __slots__ = ("pattern", "_head", "_mid", "_tail")
+
+    def __init__(self, glob: str):
+        self.pattern = glob.lower()
+        parts = self.pattern.split("*")
+        self._head, self._tail = parts[0], parts[-1]
+        self._mid = tuple(p for p in parts[1:-1] if p)
+
+    def search(self, name: str) -> bool:
+        s = name.lower()
+        if "*" not in self.pattern:
+            return s == self.pattern
+        head, tail = self._head, self._tail
+        if len(s) < len(head) + len(tail) or not s.startswith(head) or not s.endswith(tail):
+            return False
+        pos, stop = len(head), len(s) - len(tail)
+        for piece in self._mid:
+            at = s.find(piece, pos, stop)
+            if at < 0:
+                return False
+            pos = at + len(piece)
+        return True
+
+    match = fullmatch = search     # a glob is anchored at both ends anyway
+
+    def __eq__(self, other):
+        return isinstance(other, Glob) and other.pattern == self.pattern
+
+    def __hash__(self):
+        return hash(self.pattern)
+
+    def __repr__(self):
+        return f"Glob({self.pattern!r})"
 
 
 def _apply_pattern(rule: Rule, pat: str) -> None:
@@ -184,10 +314,7 @@ def _apply_pattern(rule: Rule, pat: str) -> None:
     p = p.lstrip("*.")
     # wildcard in the middle -> regex
     if "*" in p:
-        try:
-            rule.regex = re.compile("^" + re.escape(p).replace(r"\*", ".*") + "$", re.IGNORECASE)
-        except re.error:
-            pass
+        rule.regex = Glob(p)
         return
     p = p.rstrip(".").lower()
     if p:
