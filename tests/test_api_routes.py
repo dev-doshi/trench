@@ -430,6 +430,50 @@ async def test_groups_are_derived_from_what_the_pipeline_runs(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_a_device_put_in_a_group_from_the_console_is_a_member(tmp_path):
+    """Console-managed devices keep their group in the client table's policy.
+    Only the config file was counted, so a group filled from the console
+    reported no devices at all."""
+    app, base = await api_app(
+        tmp_path, filtering={"groups": {"relaxed": {"sources": [], "inherit": False}}})
+    async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True)) as s:
+        await s.post(f"{base}/api/v1/auth/login", json={"name": "admin", "password": "pw"})
+        async with s.post(f"{base}/api/v1/clients/manage", json={
+                "ident": "10.0.0.7", "ident_type": "ip", "name": "tv",
+                "policy": {"group": "relaxed"}}) as r:
+            assert r.status == 200
+        async with s.get(f"{base}/api/v1/groups") as r:
+            groups = (await r.json())["groups"]
+        policy = app.clients.identify("10.0.0.7")
+    await shutdown_api(app)
+    assert groups[0]["clients"] == ["tv"]
+    assert policy.group == "relaxed"
+
+
+@pytest.mark.asyncio
+async def test_moving_a_file_declared_device_lists_it_once_under_its_name(tmp_path):
+    """The console's row overrides the file's entry: the device is in the new
+    group only, and keeps the name the file gave it."""
+    app, base = await api_app(
+        tmp_path,
+        filtering={"groups": {"relaxed": {"sources": [], "inherit": False},
+                              "strict": {"sources": []}}},
+        clients=[{"ident": "10.0.0.7", "type": "ip", "name": "tablet", "group": "relaxed"}])
+    async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True)) as s:
+        await s.post(f"{base}/api/v1/auth/login", json={"name": "admin", "password": "pw"})
+        async with s.post(f"{base}/api/v1/clients/manage", json={
+                "ident": "10.0.0.7", "ident_type": "ip", "name": "",
+                "policy": {"group": "strict"}}) as r:
+            assert r.status == 200
+        async with s.get(f"{base}/api/v1/groups") as r:
+            groups = {g["name"]: g["clients"] for g in (await r.json())["groups"]}
+        policy = app.clients.identify("10.0.0.7")
+    await shutdown_api(app)
+    assert groups == {"relaxed": [], "strict": ["tablet"]}
+    assert (policy.group, policy.name) == ("strict", "tablet")
+
+
+@pytest.mark.asyncio
 async def test_groups_is_empty_when_none_are_configured(api):
     async with api.s.get(f"{api.base}/api/v1/groups") as r:
         assert (await r.json())["groups"] == []
@@ -934,6 +978,10 @@ async def _login_as(base, name, password):
     ("POST", "/api/v1/toggle", "editor"),
     ("POST", "/api/v1/cache/flush", "editor"),
     ("POST", "/api/v1/gravity/refresh", "editor"),
+    ("GET", "/api/v1/jobs", "viewer"),
+    ("POST", "/api/v1/jobs/gravity-refresh/run", "editor"),
+    ("POST", "/api/v1/jobs/reload/run", "admin"),
+    ("POST", "/api/v1/reload", "admin"),
     ("POST", "/api/v1/querylog/purge", "admin"),
     ("PUT", "/api/v1/settings", "admin"),
     ("GET", "/api/v1/audit", "admin"),

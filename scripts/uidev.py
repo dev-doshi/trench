@@ -306,7 +306,11 @@ async def main() -> None:
         "data_dir": tempfile.mkdtemp(prefix="trench-uidev-"),
         "server": {"do53": {"enabled": False}},
         "querylog": {"enabled": True, "privacy_level": 0, "retention_days": 90},
-        "filtering": {"deny": sorted(BLOCKED)},
+        # two groups, so the device-to-group controls have somewhere to put things
+        "filtering": {"deny": sorted(BLOCKED), "groups": {
+            "kids": {"deny": ["tiktok.com", "roblox.com"]},
+            "work": {"inherit": False, "allow": ["doubleclick.net"]},
+        }},
         "clients": [{"ident": d.ip, "type": "ip", "name": d.name} for d in DEVICES],
         "web": {"enabled": True, "host": "127.0.0.1", "port": args.port, "admin_password": "admin"},
     })

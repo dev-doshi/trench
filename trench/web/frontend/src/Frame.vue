@@ -9,12 +9,24 @@
  * Appearance is *not* here. It is a preference set once, not a control worth a
  * permanent seat in the most valuable strip of the window; it lives in Settings.
  *
+ * But not every destination earns the strip. Eleven tabs was two rows' worth of
+ * words on a laptop and scrolled off on anything narrower, and three of them
+ * (History, Breakage, Resolver) are places you go to answer a specific
+ * question, not places you watch. They fold under More; the records that are
+ * really configuration — Privacy, Audit, Jobs — are tabs of Settings.
+ *
+ * The one thing that did earn a seat is the jobs indicator: a blocklist build
+ * is minutes of the heaviest work the box does, and "why is it slow" or "did
+ * my new lists apply" should be answerable without opening anything.
+ *
  * The wordmark is a caliper's two scales, offset. It is the instrument the
  * product is named for and the only drawn ornament anywhere in the interface.
  */
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { RouterLink, RouterView, useRoute } from "vue-router";
 import { api } from "./lib/api";
+import { boxNow, useJobFeed } from "./lib/jobfeed";
+import { headline } from "./lib/jobs";
 import { local } from "./lib/local";
 import { forgetNames } from "./lib/names";
 import { store } from "./lib/store";
@@ -27,29 +39,58 @@ const pal = ref<InstanceType<typeof Palette> | null>(null);
 const open = ref(false);
 const s = store.state;
 
-/* Grouped by what the operator is doing, not by which subsystem owns the code. */
+/* Grouped by what the operator is doing, not by which subsystem owns the code.
+ * `more` marks the places that fold under More in the strip; the sheet (`g`)
+ * still lists everything, including the Settings tabs worth going to directly. */
 const PLACES = [
   { group: "Look", items: [
     { to: "/", name: "Overview", of: "The last day at a glance" },
     { to: "/browse", name: "Browse", of: "Group the traffic by anything, then by anything" },
     { to: "/live", name: "Live", of: "Rates and the tape, as answers arrive" },
     { to: "/log", name: "Log", of: "The rows themselves, for reading and export" },
-    { to: "/history", name: "History", of: "Aggregate over the whole retained log" },
+    { to: "/history", name: "History", of: "Aggregate over the whole retained log", more: true },
   ] },
   { group: "Decide", items: [
     { to: "/policy", name: "Policy", of: "Your rules, read back by what they do" },
-    { to: "/breakage", name: "Breakage", of: "Refusals that look like something stuck" },
-    { to: "/devices", name: "Devices", of: "Who is asking, and what each one is like" },
+    { to: "/devices", name: "Devices", of: "Who is asking, and which group each is in" },
+    { to: "/breakage", name: "Breakage", of: "Refusals that look like something stuck", more: true },
   ] },
   { group: "Account for", items: [
-    { to: "/resolver", name: "Resolver", of: "Where answers come from, and what they cost" },
-    { to: "/privacy", name: "Privacy", of: "What is remembered, and what leaves" },
-    { to: "/audit", name: "Audit", of: "Who changed what, and when" },
-    { to: "/settings", name: "Settings", of: "The few things a browser should own" },
+    { to: "/resolver", name: "Resolver", of: "Where answers come from, and what they cost", more: true },
+    { to: "/settings", name: "Settings", of: "Every knob, plus jobs, privacy and the audit trail" },
+    { to: "/settings?tab=jobs", name: "Jobs", of: "List builds, schedules, memory — run one now", sub: true },
+    { to: "/settings?tab=privacy", name: "Privacy", of: "What is remembered, and what leaves", sub: true },
+    { to: "/settings?tab=audit", name: "Audit", of: "Who changed what, and when", sub: true },
   ] },
 ];
 
-const FLAT = PLACES.flatMap((g) => g.items);
+const ALL = PLACES.flatMap((g) => g.items) as
+  { to: string; name: string; of: string; more?: boolean; sub?: boolean }[];
+const FLAT = ALL.filter((i) => !i.more && !i.sub);
+const MORE = ALL.filter((i) => i.more);
+const SUBTABS = ALL.filter((i) => i.sub).map((i) => i.to.split("tab=")[1]);
+/** Is `to` where we are? A Settings tab listed on its own counts as its own place. */
+function here(to: string): boolean {
+  const [path, q] = to.split("?");
+  if (path !== route.path) return false;
+  const tab = String(route.query.tab || "");
+  return q ? tab === q.replace("tab=", "") : !SUBTABS.includes(tab);
+}
+const moreHere = computed(() => MORE.find((i) => i.to === route.path));
+
+/* More: a small menu, not a second sheet. */
+const moreOpen = ref(false);
+const moreEl = ref<HTMLElement | null>(null);
+function onDocClick(e: MouseEvent) {
+  if (moreOpen.value && moreEl.value && !moreEl.value.contains(e.target as Node)) moreOpen.value = false;
+}
+onMounted(() => document.addEventListener("click", onDocClick));
+onUnmounted(() => document.removeEventListener("click", onDocClick));
+watch(() => route.fullPath, () => { moreOpen.value = false; });
+
+/* Jobs: a quiet word when idle, the running job and its clock when not. */
+const jf = useJobFeed();
+const job = computed(() => { void jf.now; void jf.jobs; return headline(jf.jobs, boxNow()); });
 
 const state = computed(() => ({
   live: { label: "answering", cls: "ok" },
@@ -84,9 +125,10 @@ async function setOpen(v: boolean) {
     opener = null;
   }
 }
-watch(() => route.path, () => { if (open.value) { opener = null; open.value = false; } });
+watch(() => route.fullPath, () => { if (open.value) { opener = null; open.value = false; } });
 
 function onKey(e: KeyboardEvent) {
+  if (e.key === "Escape" && moreOpen.value) { moreOpen.value = false; e.preventDefault(); return; }
   if (e.key === "Escape" && open.value) { setOpen(false); e.preventDefault(); return; }
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   const t = e.target as HTMLElement | null;
@@ -129,12 +171,30 @@ async function signOut() {
                     :aria-current="i.to === route.path ? 'page' : undefined"
                     :title="i.of">{{ i.name }}</RouterLink>
       </nav>
+      <div class="bframe-more" ref="moreEl">
+        <button class="bframe-btn" :class="{ on: moreHere || moreOpen }" @click="moreOpen = !moreOpen"
+                aria-haspopup="menu" :aria-expanded="moreOpen">
+          {{ moreHere?.name || "More" }} <Ico name="down" :size="12" />
+        </button>
+        <div class="bframe-menu" v-if="moreOpen" role="menu">
+          <RouterLink v-for="i in MORE" :key="i.to" :to="i.to" role="menuitem"
+                      :class="{ on: i.to === route.path }">
+            <b>{{ i.name }}</b><em>{{ i.of }}</em>
+          </RouterLink>
+        </div>
+      </div>
       <button class="bframe-btn bframe-places" @click="setOpen(true)"
               aria-haspopup="dialog" :aria-expanded="open" title="All places (g)">
-        <Ico name="list" :size="15" /> <span class="lbl">{{ FLAT.find((i) => i.to === route.path)?.name || "Places" }}</span>
+        <Ico name="list" :size="15" /> <span class="lbl">{{ ALL.find((i) => here(i.to))?.name || "Places" }}</span>
       </button>
 
       <div class="bframe-grow" />
+
+      <RouterLink class="bframe-btn bframe-jobs" :class="job?.tone" to="/settings?tab=jobs"
+                  :title="job ? job.text + ' — open Jobs' : 'Nothing running in the background — open Jobs'"
+                  role="status">
+        <span class="led" aria-hidden="true" /><span class="lbl">{{ job?.text || "Jobs" }}</span>
+      </RouterLink>
 
       <button class="bframe-btn" @click="pal?.show()" :aria-keyshortcuts="mod === '⌘K' ? 'Meta+K' : 'Control+K'">
         <Ico name="find" :size="15" /> <span class="lbl">Search</span> <kbd>{{ mod }}</kbd>
@@ -151,8 +211,8 @@ async function signOut() {
       <nav class="bsheet-in" ref="sheet" role="dialog" aria-modal="true" aria-label="All places">
         <template v-for="g in PLACES" :key="g.group">
           <h4 class="b-cap">{{ g.group }}</h4>
-          <RouterLink v-for="i in g.items" :key="i.to" :to="i.to" :class="{ on: i.to === route.path }"
-                      :aria-current="i.to === route.path ? 'page' : undefined">
+          <RouterLink v-for="i in g.items" :key="i.to" :to="i.to" :class="{ on: here(i.to), sub: i.sub }"
+                      :aria-current="here(i.to) ? 'page' : undefined">
             <b>{{ i.name }}</b><em>{{ i.of }}</em>
           </RouterLink>
         </template>

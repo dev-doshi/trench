@@ -122,18 +122,36 @@ class ClientRegistry:
             # client until someone read the log.
             log.warning("client %s has a non-object policy; ignoring it", row["ident"])
             ov = {}
+        # The console writes an entry for a device the config file already
+        # declares whenever it changes one thing about it — puts it in a group,
+        # exempts it. The row overrides the file on the same ident, so every
+        # field the row did not mention used to fall back to the global
+        # default: the device lost its name, its exemption, its tags. What the
+        # row leaves out now comes from the file's entry for that device.
+        base = next((c for c in cfg.clients
+                     if c.ident.lower() == str(row["ident"]).lower()
+                     and c.type == row["ident_type"]), None)
+
+        def pick(key, file_value, default):
+            if key in ov:
+                return ov[key]
+            if base is not None and file_value is not None:
+                return file_value
+            return default
+
+        name = row["name"] or (base.name if base is not None else "") or ""
         pol = Policy(
-            name=row["name"] or row["ident"],
-            block=bool(ov.get("block", True)),
-            ctags=frozenset(ov.get("tags", [])),
-            safe_search=bool(ov.get("safe_search", fc.safe_search)),
-            safe_browse=bool(ov.get("safe_browse", fc.safe_browse)),
-            parental=bool(ov.get("parental", fc.parental)),
-            services=frozenset(ov.get("services", fc.services)),
-            upstream_group=ov.get("upstream_group", ""),
-            group=ov.get("group", ""),
+            name=name or row["ident"],
+            block=bool(pick("block", base.block if base else None, True)),
+            ctags=frozenset(pick("tags", base.tags if base else None, [])),
+            safe_search=bool(pick("safe_search", base.safe_search if base else None, fc.safe_search)),
+            safe_browse=bool(pick("safe_browse", base.safe_browse if base else None, fc.safe_browse)),
+            parental=bool(pick("parental", base.parental if base else None, fc.parental)),
+            services=frozenset(pick("services", (base.services or None) if base else None, fc.services)),
+            upstream_group=pick("upstream_group", base.upstream_group if base else None, ""),
+            group=pick("group", base.group if base else None, ""),
         )
-        return Client(row["ident"], row["ident_type"], row["name"] or "", pol)
+        return Client(row["ident"], row["ident_type"], name, pol)
 
 
 #: MAC addresses from the OS neighbour table, refreshed on a timer rather than

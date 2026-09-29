@@ -262,6 +262,9 @@ class APIServer:
         r.add_put(f"{API}/settings", self.settings_put)
         r.add_post(f"{API}/cache/flush", self.cache_flush)
         r.add_post(f"{API}/gravity/refresh", self.gravity_refresh)
+        r.add_get(f"{API}/jobs", self.jobs)
+        r.add_post(f"{API}/jobs/{{name}}/run", self.jobs_run)
+        r.add_post(f"{API}/reload", self.reload)
         r.add_get(f"{API}/update", self.update_status)
         r.add_post(f"{API}/update/check", self.update_check)
         r.add_post(f"{API}/update/apply", self.update_apply)
@@ -652,7 +655,8 @@ class APIServer:
     async def audit(self, request: web.Request) -> web.Response:
         self._require(request, "admin")
         rows = await self.app.db.fetchall(
-            "SELECT ts, actor, action, target, ip FROM audit ORDER BY ts DESC LIMIT 200") \
+            "SELECT ts, actor, action, target, detail, ip FROM audit"
+            " ORDER BY ts DESC LIMIT 200") \
             if self.app.db is not None else []
         return web.json_response({"audit": [dict(r) for r in rows]})
 
@@ -875,10 +879,78 @@ class APIServer:
         # Held until done: the loop keeps only a weak reference to a task, so an
         # unreferenced one can be collected part way through a build. The app
         # serialises builds itself; this only has to keep the task alive.
-        task = asyncio.ensure_future(self.app.refresh_blocklists())
-        self._bg.add(task)
-        task.add_done_callback(self._bg.discard)
+        board = getattr(self.app, "jobs", None)
+        if board is not None and "gravity-refresh" in board.jobs:
+            if not board.run_now("gravity-refresh", "console"):
+                return web.json_response({"error": "a blocklist build is already running"},
+                                         status=409)
+        else:
+            task = asyncio.ensure_future(self.app.refresh_blocklists())
+            self._bg.add(task)
+            task.add_done_callback(self._bg.discard)
         await self._audit(request, "gravity.refresh")
+        return web.json_response({"ok": True})
+
+    # ── jobs ─────────────────────────────────────────────────────────────────
+    # What the process is doing in the background. The console polls this, so
+    # it reads only memory and one small table; nothing here touches the lists.
+    async def jobs(self, request: web.Request) -> web.Response:
+        self._require(request, "viewer")
+        from ..gravity.manager import read_table_meta, table_matches
+        from ..jobs import memory
+        app = self.app
+        board = getattr(app, "jobs", None)
+        sources: list[dict] = []
+        if app.db is not None:
+            rows = await app.db.fetchall(
+                "SELECT url, last_update, rule_count, status, error FROM adlist"
+                " ORDER BY url")
+            sources = [dict(r) for r in rows]
+        table: dict = {}
+        path = getattr(app, "table_path", None)
+        if path is not None and hasattr(app, "_fingerprint"):
+            meta = read_table_meta(path)
+            table = {"built_at": meta.get("built_at"), "rules": meta.get("rules"),
+                     "complete": meta.get("complete"),
+                     "matches_config": table_matches(path, app._fingerprint()),
+                     "domains": getattr(app.filter, "size", None)}
+        # Only what the config names, so a list removed from the config does
+        # not linger in the table as if it were still being fetched.
+        named = set(app.config.filtering.sources) | set(app.config.filtering.ip_sources)
+        for g in (app.config.filtering.groups or {}).values():
+            named |= set(g.sources)
+        return web.json_response({
+            "jobs": board.snapshot() if board is not None else [],
+            "building": app._building.locked() if hasattr(app, "_building") else False,
+            "memory": memory(),
+            "table": table,
+            "sources": [x for x in sources if x["url"] in named],
+            "now": time.time(),
+        })
+
+    async def jobs_run(self, request: web.Request) -> web.Response:
+        name = request.match_info["name"]
+        # Reloading re-reads the config file from disk — a heavier act than
+        # re-running a sweep, so it has the admin bar of a settings change.
+        self._require(request, "admin" if name == "reload" else "editor")
+        board = getattr(self.app, "jobs", None)
+        st = board.jobs.get(name) if board is not None else None
+        if st is None or not st.to_json()["runnable"]:
+            return web.json_response({"error": f"no job named {name!r} can be run"},
+                                     status=404)
+        if not board.run_now(name, "console"):
+            return web.json_response({"error": f"{name} is already running"}, status=409)
+        await self._audit(request, "job.run", name)
+        return web.json_response({"ok": True, "job": board.jobs[name].to_json()})
+
+    async def reload(self, request: web.Request) -> web.Response:
+        """What SIGHUP does, from the console: re-read the file, re-apply it,
+        refresh the lists."""
+        self._require(request, "admin")
+        board = getattr(self.app, "jobs", None)
+        if board is None or not board.run_now("reload", "console"):
+            return web.json_response({"error": "a reload is already running"}, status=409)
+        await self._audit(request, "reload")
         return web.json_response({"ok": True})
 
     # ── updates ─────────────────────────────────────────────────────────────
@@ -1176,10 +1248,34 @@ class APIServer:
         pipe = self.app.pipeline
         configured = self.app.config.filtering.groups or {}
         members: dict[str, list[str]] = {}
+        # The devices put in a group from the console, which live in the client
+        # table. Counting only the config file showed every group the console
+        # had just filled as having no devices at all. A row overrides the
+        # file's entry for the same device, so the file's group for it is not
+        # counted — a device moved from the console was listed in both groups.
+        rows = []
+        if self.app.db is not None:
+            rows = await self.app.db.fetchall(
+                "SELECT ident, ident_type, name, policy FROM client")
+        overridden = {(str(r["ident"]).lower(), r["ident_type"]) for r in rows}
+        files = {(c.ident.lower(), c.type): c for c in self.app.config.clients}
         for c in self.app.config.clients:
-            if c.group:
+            if c.group and (c.ident.lower(), c.type) not in overridden:
                 members.setdefault(c.group, []).append(
                     c.name or mask_ident(c.ident, c.type))
+        for r in rows:
+            try:
+                pol = json.loads(r["policy"] or "{}")
+            except ValueError:
+                continue
+            if not isinstance(pol, dict):
+                continue
+            base = files.get((str(r["ident"]).lower(), r["ident_type"]))
+            g = pol.get("group", base.group if base else "")
+            if g:
+                members.setdefault(g, []).append(
+                    r["name"] or (base.name if base else "")
+                    or mask_ident(r["ident"], r["ident_type"]))
         out = []
         for name, spec in configured.items():
             live = pipe.group_filters.get(name)
@@ -1474,6 +1570,11 @@ _OPENAPI = {
         f"{API}/list-reviews": {
             "get": {"summary": "History of blocklist updates and what each changed (viewer)"}},
         f"{API}/gravity/refresh": {"post": {"summary": "Refresh blocklists (editor)"}},
+        f"{API}/jobs": {
+            "get": {"summary": "Background jobs, list sources and memory (viewer)"}},
+        f"{API}/jobs/{{name}}/run": {"post": {"summary": "Run a background job now (editor)"}},
+        f"{API}/reload": {
+            "post": {"summary": "Re-read the config file and refresh the lists (admin)"}},
 
         # --- clients ------------------------------------------------------------
         f"{API}/clients": {"get": {"summary": "Clients seen on the network (viewer)"}},

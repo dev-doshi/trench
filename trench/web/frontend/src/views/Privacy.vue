@@ -11,6 +11,8 @@ import { api } from "../lib/api";
 import { store } from "../lib/store";
 import Ico from "../ui/Ico.vue";
 
+withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false });
+
 const nf = new Intl.NumberFormat();
 const p = ref<any>(null);
 const sys = ref<any>(null);
@@ -77,12 +79,12 @@ const plaintext = computed(() => {
 </script>
 
 <template>
-  <div class="vw">
-    <header class="vw-head">
+  <div :class="embedded ? 'jb-embed' : 'vw'">
+    <header class="vw-head" v-if="!embedded">
       <h2>Privacy</h2>
     </header>
 
-    <div class="vw-body">
+    <div :class="embedded ? '' : 'vw-body'">
       <div class="sec" v-if="p">
         <div class="sec-h"><h5 class="b-cap">What is recorded</h5></div>
         <div class="ev-big" style="margin-bottom:12px">
@@ -109,7 +111,7 @@ const plaintext = computed(() => {
         </dl>
       </div>
 
-      <div class="sec" v-if="p?.levels?.length">
+      <div class="sec" v-if="p?.levels?.length && !embedded">
         <div class="sec-h"><h5 class="b-cap">What gets recorded</h5></div>
         <p class="st-warn" v-if="!canSet" style="margin-bottom:var(--b-3)">{{ cannotWhy }}</p>
         <div class="pv-levels">

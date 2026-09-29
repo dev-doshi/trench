@@ -13,6 +13,8 @@ import { computed, onMounted, ref } from "vue";
 import { api } from "../lib/api";
 import { store } from "../lib/store";
 
+withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false });
+
 const rows = ref<any[]>([]);
 const loading = ref(true);
 const err = ref("");
@@ -43,6 +45,11 @@ const WORDS: Record<string, (t: string) => string> = {
   "client.delete": (t) => `removed a device: ${t}`,
   "group.create": (t) => `created the group ${t}`,
   "group.delete": (t) => `deleted the group ${t}`,
+  "job.run": (t) => `started ${t === "gravity-refresh" ? "a blocklist refresh" : `the job ${t}`} by hand`,
+  "reload": () => "reloaded the config file and the lists",
+  "blocklist refresh applied": () => "applied new blocklists",
+  "blocklist refresh kept previous": () => "tried to refresh the blocklists, and kept the previous ones",
+  "blocklist refresh rejected": () => "rejected a blocklist refresh",
   "auth.login": () => "signed in",
   "auth.logout": () => "signed out",
 };
@@ -60,18 +67,22 @@ const stamp = (ts: number) => {
 </script>
 
 <template>
-  <div class="vw">
-    <header class="vw-head">
+  <div :class="embedded ? 'jb-embed' : 'vw'">
+    <header class="vw-head" v-if="!embedded">
       <h2>Audit</h2>
       <div class="acts"><button class="btn" @click="load">reload</button></div>
     </header>
 
-    <div class="vw-body">
+    <div :class="embedded ? '' : 'vw-body'">
+      <div class="sec-h" v-if="embedded">
+        <h5 class="b-cap">Who changed what, newest first</h5>
+        <div class="acts"><button class="btn" @click="load">reload</button></div>
+      </div>
       <div class="sec">
         <div class="tl" v-if="rows.length">
-          <div class="tl-i" v-for="(r, i) in rows" :key="i" :class="{ mine: r.user === me }">
+          <div class="tl-i" v-for="(r, i) in rows" :key="i" :class="{ mine: (r.actor ?? r.user) === me }">
             <div style="display:flex;gap:12px;align-items:baseline;flex-wrap:wrap">
-              <span class="tl-w">{{ r.user || "someone" }} {{ words(r) }}</span>
+              <span class="tl-w">{{ r.actor || r.user || "someone" }} {{ words(r) }}</span>
               <span class="tl-t" style="margin-left:auto">{{ stamp(r.ts) }}</span>
             </div>
             <div class="tl-m">

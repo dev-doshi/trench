@@ -5,6 +5,7 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { api } from "../lib/api";
 import { term } from "../lib/qlang";
+import { soon } from "../lib/jobfeed";
 import { store } from "../lib/store";
 import Ico from "./Ico.vue";
 
@@ -24,15 +25,18 @@ const NAV = [
   { icon: "broke", title: "Breakage", sub: "Blocks that look like something stuck", to: "/breakage" },
   { icon: "device", title: "Devices", sub: "Who is asking", to: "/devices" },
   { icon: "resolver", title: "Resolver", sub: "Upstreams, cache, latency", to: "/resolver" },
-  { icon: "held", title: "Privacy", sub: "What is remembered", to: "/privacy" },
-  { icon: "list", title: "Audit", sub: "Who changed what", to: "/audit" },
-  { icon: "sort", title: "Settings", sub: "Browser and API access", to: "/settings" },
+  { icon: "sort", title: "Settings", sub: "Every knob the resolver has", to: "/settings" },
+  { icon: "resolver", title: "Jobs", sub: "Settings · blocklist builds, memory, what ran", to: "/settings?tab=jobs" },
+  { icon: "held", title: "Privacy", sub: "Settings · what is remembered", to: "/settings?tab=privacy" },
+  { icon: "list", title: "Audit", sub: "Settings · who changed what", to: "/settings?tab=audit" },
+  { icon: "device", title: "Groups", sub: "Settings · define groups and their lists", to: "/settings?tab=filtering" },
 ];
 
 // ops actions runnable straight from the palette
 async function op(path: string, msg: string | ((r: any) => string)) {
   try {
     const r = await api.post(path);
+    soon();
     store.toast(typeof msg === "string" ? msg : msg(r));
   } catch (e: any) { store.toast("Action failed", e.message, true); }
 }
@@ -43,7 +47,11 @@ const ACTIONS = computed(() => [
     sub: "every device, until switched back",
     run: () => op("/toggle", (r) => (r?.enabled ? "Filtering is on" : "Filtering is off — every name resolves")) },
   { icon: "broke", title: "Flush DNS cache", sub: "drop all cached answers", run: () => op("/cache/flush", "Cache flushed") },
-  { icon: "resolver", title: "Refresh blocklists", sub: "re-download every list", run: () => op("/gravity/refresh", "Blocklist refresh started") },
+  { icon: "resolver", title: "Refresh blocklists", sub: "re-download every list and rebuild",
+    run: () => op("/jobs/gravity-refresh/run", "Blocklist refresh started") },
+  ...(store.state.user?.role === "admin" ? [{
+    icon: "resolver", title: "Reload config", sub: "re-read the config file, then refresh the lists",
+    run: () => op("/reload", "Reload started") }] : []),
   { icon: "span", title: store.state.paused ? "Resume the live tape" : "Pause the live tape", sub: "this browser only", run: () => store.togglePause() },
 ]);
 

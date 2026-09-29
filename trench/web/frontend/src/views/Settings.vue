@@ -6,11 +6,15 @@
  * Saving writes the YAML config file and reloads it: the file is still the
  * source of truth and still hand-editable, it is just no longer the only way in.
  */
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { api, setToken } from "../lib/api";
 import { local } from "../lib/local";
 import { store } from "../lib/store";
 import Collection from "../ui/Collection.vue";
+import Audit from "./Audit.vue";
+import Jobs from "./Jobs.vue";
+import Privacy from "./Privacy.vue";
 
 interface Field {
   path: string; label: string; type: string; group: string; help: string;
@@ -36,6 +40,30 @@ const configPath = ref("");
 const loading = ref(true);
 const busy = ref(false);
 const group = ref("Resolution");
+
+/* The tab is in the URL (?tab=jobs), so the frame's jobs indicator, the palette
+ * and a pasted link can all land on one tab, and back returns to the last one.
+ * Jobs and Audit are records rather than knobs; they live here because they are
+ * what you consult while changing the knobs, not where you go to watch traffic. */
+const EXTRA = ["jobs", "audit", "access", "browser"];
+const route = useRoute();
+const router = useRouter();
+const tabOf = (g: string) => (EXTRA.includes(g) ? g : g.toLowerCase());
+function fromRoute() {
+  const t = String(route.query.tab || "").toLowerCase();
+  if (!t) return;
+  if (EXTRA.includes(t)) { group.value = t; return; }
+  const g = groups.value.find((x) => x.toLowerCase() === t);
+  if (g) group.value = g;
+  else if (!groups.value.length) group.value = t;   // resolved once the schema arrives
+}
+function pick(g: string) {
+  group.value = g;
+  if (String(route.query.tab || "") !== tabOf(g))
+    router.replace({ query: { ...route.query, tab: tabOf(g) } });
+}
+watch(() => route.query.tab, fromRoute, { immediate: true });
+const isForm = computed(() => !EXTRA.includes(group.value));
 
 const token = ref(local.get("dg_token") || "");
 const skin = ref(local.get("bw_skin") || "auto");
@@ -140,6 +168,9 @@ async function load() {
     collections.value = r.collections || [];
     csaved.value = r.collection_values || {};
     cdraft.value = clone(r.collection_values || {});
+    fromRoute();
+    if (!EXTRA.includes(group.value) && !groups.value.includes(group.value))
+      group.value = groups.value[0] || "Resolution";
   } catch (e: any) {
     store.toast("Settings unavailable", e?.message || "", true);
   } finally { loading.value = false; }
@@ -214,7 +245,7 @@ function saveTokenValue() {
   <div class="vw">
     <header class="vw-head">
       <h2>Settings</h2>
-      <div class="acts">
+      <div class="acts" v-if="isForm || totalDirty">
         <span class="st-dirty" v-if="totalDirty">{{ totalDirty }} unsaved</span>
         <button class="btn" v-if="totalDirty" @click="revert">revert</button>
         <button class="btn primary" :disabled="!totalDirty || busy || !writable" @click="save">
@@ -226,17 +257,24 @@ function saveTokenValue() {
     <!-- The tab strip sits in the chrome, so switching groups never moves
          anything above the form. -->
     <nav class="st-tabs">
-      <button v-for="g in groups" :key="g" :class="{ on: g === group }" @click="group = g">
+      <button v-for="g in groups" :key="g" :class="{ on: g === group }" @click="pick(g)">
         {{ g }}<i v-if="dirtyIn(g)" />
       </button>
-      <button :class="{ on: group === 'access' }" @click="group = 'access'">Access</button>
-      <button :class="{ on: group === 'browser' }" @click="group = 'browser'">This browser</button>
+      <span class="st-tabs-gap" aria-hidden="true" />
+      <button :class="{ on: group === 'jobs' }" @click="pick('jobs')">Jobs</button>
+      <button :class="{ on: group === 'audit' }" @click="pick('audit')">Audit</button>
+      <button :class="{ on: group === 'access' }" @click="pick('access')">Access</button>
+      <button :class="{ on: group === 'browser' }" @click="pick('browser')">This browser</button>
     </nav>
 
     <div class="vw-body">
-      <p class="st-warn" v-if="!writable && !loading">{{ why }}</p>
+      <p class="st-warn" v-if="!writable && !loading && isForm">{{ why }}</p>
 
-      <div class="st-form" v-if="group !== 'browser' && group !== 'access'">
+      <Jobs v-if="group === 'jobs'" embedded />
+      <Audit v-else-if="group === 'audit'" embedded />
+      <Privacy v-if="group === 'Privacy'" embedded />
+
+      <div class="st-form" v-if="isForm">
         <label class="st-row" v-for="f in shown" :key="f.path">
           <span class="st-lbl">
             {{ f.label }}
@@ -343,7 +381,7 @@ function saveTokenValue() {
         </div>
       </div>
 
-      <div class="st-form" v-else>
+      <div class="st-form" v-else-if="group === 'browser'">
         <label class="st-row">
           <span class="st-lbl">
             Appearance

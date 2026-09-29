@@ -8,8 +8,10 @@ import { local } from "./lib/local";
 // paint first and then swap, which is a visible flash on every load.
 document.documentElement.dataset.skin = local.get("bw_skin") || "auto";
 
-/* A front page plus ten places. Each place is a question an operator has, not a
- * subsystem of the resolver — which is why there is no "advanced". */
+/* A front page plus the places. Each place is a question an operator has, not a
+ * subsystem of the resolver — which is why there is no "advanced". Privacy,
+ * Audit and Jobs are Settings tabs: they are consulted while changing the
+ * knobs, not visited to watch the network. */
 const routes = [
   {
     path: "/", name: "overview", component: () => import("./views/Overview.vue"),
@@ -25,8 +27,9 @@ const routes = [
   { path: "/breakage", name: "breakage", component: () => import("./views/Breakage.vue") },
   { path: "/devices", name: "devices", component: () => import("./views/Devices.vue") },
   { path: "/resolver", name: "resolver", component: () => import("./views/Resolver.vue") },
-  { path: "/privacy", name: "privacy", component: () => import("./views/Privacy.vue") },
-  { path: "/audit", name: "audit", component: () => import("./views/Audit.vue") },
+  { path: "/privacy", redirect: { path: "/settings", query: { tab: "privacy" } } },
+  { path: "/audit", redirect: { path: "/settings", query: { tab: "audit" } } },
+  { path: "/jobs", redirect: { path: "/settings", query: { tab: "jobs" } } },
   { path: "/settings", name: "settings", component: () => import("./views/Settings.vue") },
 
   // bookmarks from the previous two designs still resolve

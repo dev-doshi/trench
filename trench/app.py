@@ -31,6 +31,7 @@ from .gravity.manager import (
     table_matches,
 )
 from .gravity.schedule import Scheduler
+from .jobs import JobBoard
 from .log import get
 from .resolver.forwarder import Forwarder
 from .stats import Counters
@@ -115,7 +116,13 @@ class App:
         self.supervisor_pid: int | None = None
         self.querylog: QueryLog | None = None
         self.api: APIServer | None = None
-        self.scheduler = Scheduler()
+        #: Background jobs and how their last run went; see `trench.jobs`.
+        self.jobs = JobBoard()
+        self.scheduler = Scheduler(self.jobs)
+        # Looked up at call time rather than bound now, so a replaced method
+        # (a test double, a plugin) is the one "run now" reaches.
+        self.jobs.register("reload", lambda: self.reload())
+        self.jobs.register("gravity-refresh", lambda: self.refresh_blocklists())
         self._bootstrap: asyncio.Task | None = None   # cold-start blocklist fetch
         self._bootstrap_cert: asyncio.Task | None = None  # first ACME issuance
         self._config_mtime: float | None = None   # see _adopt_changed_config
@@ -558,6 +565,7 @@ class App:
         # At first load there is nothing to fall back to: refusing here would
         # leave the resolver with no rules at all, which is worse than adopting
         # a set the operator will be told about. Reported loudly, then adopted.
+        JobBoard.note(f"{engine.size:,} domains from {len(sources)} sources (first build)")
         failures = contract.check(engine, self._assertions())
         if failures:
             self.contract_failures = failures
@@ -594,6 +602,8 @@ class App:
         matcher = await self._gravity.build_extras()
         self.filter.ips = matcher
         self.pipeline.set_group_filters(self._gravity.group_engines)
+        JobBoard.note(f"cached table reused; {matcher.size:,} address prefixes and "
+                      f"{len(self._gravity.group_engines)} group(s) rebuilt")
         return False
 
     async def refresh_blocklists(self) -> None:
@@ -605,12 +615,16 @@ class App:
         none of which knew about the others. Two builds at once is the OOM the
         ceiling exists to prevent.
         """
+        # Both early returns say so: a run started from the console that did
+        # nothing was recorded as "done", which is the one outcome it was not.
         if self._gravity is None:
+            JobBoard.note("no blocklists are loaded in this process", result="skipped")
             return
         if self._building.locked():
             log.info("a blocklist build is already running; skipping this one")
+            JobBoard.note("a build was already running", result="skipped")
             return
-        async with self._building:
+        async with self.jobs.track("gravity-refresh", "request"), self._building:
             await self._refresh_locked()
 
     async def _refresh_locked(self) -> None:
@@ -621,6 +635,7 @@ class App:
             # the result up from the table file, so the lists are fetched once
             # and the compiled copy is shared instead of duplicated N times.
             self.adopt_refreshed_table()
+            JobBoard.note("another worker builds the lists", result="skipped")
             return
         previous = self.filter
         engine = await self._gravity.build()
@@ -635,6 +650,11 @@ class App:
             log.warning("blocklist refresh kept the previous rules: %d of %d "
                         "sources failed (%s)", len(report.errors),
                         len(self._gravity.sources), "; ".join(report.errors[:3]))
+            why = (f"kept the previous rules: {len(report.errors)} of "
+                   f"{len(self._gravity.sources)} sources failed")
+            JobBoard.note(why, result="kept")
+            await self._audit("blocklist refresh kept previous", "gravity",
+                              why + " — " + "; ".join(report.errors[:5]))
             return
         # The operator's own contract for this network. A refresh that would
         # break a name they said must work is a bad deploy, and the answer to a
@@ -646,6 +666,7 @@ class App:
             log.error("blocklist refresh rejected: %s", contract.summarise(failures))
             await self._record_contract_failure(failures)
             mark_table_incomplete(self.table_path)
+            JobBoard.note("rejected: " + contract.summarise(failures), result="rejected")
             return
         self.contract_failures = []
         # Compare against what was running *before* swapping, so the operator
@@ -656,6 +677,13 @@ class App:
         self.pipeline.set_group_filters(getattr(self._gravity, "group_engines", {}))
         self.cache.flush()  # rules changed; drop possibly-stale answers
         release_free_memory()  # the old engine is unreachable now — hand the pages back
+        before = getattr(previous, "size", 0) or 0
+        after = getattr(engine, "size", 0) or 0
+        n = len(self._gravity.sources)
+        applied = (f"{after:,} domains from {n} source{'s' if n != 1 else ''} "
+                   f"({after - before:+,})")
+        JobBoard.note(applied, result="ok")
+        await self._audit("blocklist refresh applied", "gravity", applied)
 
     async def _record_list_review(self, before, after) -> None:
         """Review a refresh: which recently-queried names does it decide
@@ -1194,6 +1222,10 @@ class App:
                 trusted.replace(entries)
 
     async def reload(self) -> None:
+        async with self.jobs.track("reload", "signal"):
+            await self._reload()
+
+    async def _reload(self) -> None:
         """Hot reload (SIGHUP): re-read config, re-apply it, and refresh the
         lists and data files — without dropping in-flight queries or rebinding
         sockets."""
@@ -1470,7 +1502,7 @@ class App:
         try:
             # Under the build lock like every other way into a compile, so a
             # SIGHUP or settings save during the first fetch waits its turn.
-            async with self._building:
+            async with self.jobs.track("gravity-refresh", "startup"), self._building:
                 await self.load_blocklists()
         except asyncio.CancelledError:
             raise

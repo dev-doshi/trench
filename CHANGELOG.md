@@ -8,6 +8,25 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Jobs: what the resolver does when nobody asked it anything.** A blocklist
+  build is minutes of the heaviest work Trench does, and until now its only
+  trace was the container log — a refresh that kept last week's rules because
+  one list was down looked exactly like one that worked. Settings → Jobs shows
+  whether the table being served matches the configured lists, how the last
+  refresh went and its peak memory against the container's ceiling, every
+  scheduled job's last result and next run, and which list failed. Any job can
+  be run from there, and **refresh lists now** and **reload config & lists**
+  (what SIGHUP does, admin only) are one click. The frame shows an indicator
+  while something runs, or when a refresh kept or rejected lists. Applied,
+  kept and rejected refreshes are written to the audit log. API: `GET /jobs`,
+  `POST /jobs/{name}/run`, `POST /reload`.
+- **Putting devices in groups from Devices.** Each device has a group picker
+  beside its filtering switch, and each group lists its members with an
+  **add a device…** menu and a × to take one out. Devices can be named or
+  renamed in place, including the "Not identified" ones the page called a
+  queue of work without offering a way to work it, and a find box filters by
+  name, address or group.
+
 - **Device names instead of bare addresses.** Trench now asks the router for
   the name of each device in the query log with a reverse (PTR) lookup, the
   way Pi-hole does, and every view that shows a client shows its name: Overview,
@@ -107,6 +126,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **A shorter strip.** History, Breakage and Resolver moved behind **More**;
+  Privacy and Audit became Settings tabs beside the new Jobs tab. Old links
+  (`/privacy`, `/audit`, `/jobs`) redirect to the tab.
+
 - **The CLI says what went wrong, in sentences.** API commands read
   `TRENCH_URL`/`TRENCH_TOKEN`, answer in prose at a terminal (JSON when piped
   or with `--json`), and tell apart nothing listening, an unresolvable host, a
@@ -166,6 +189,18 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   edits the Policy page used to make in one worker's memory.
 
 ### Fixed
+
+- **Changing one thing about a device no longer resets the rest.** A device the
+  config file declares got a console entry the first time it was exempted or
+  put in a group, and that entry replaced the file's wholesale: the device lost
+  its name, its tags and its exemption. The entry now overrides only what it
+  says. `/groups` also counted such a device in both its old and new group.
+- **Devices showed no group for devices grouped from the console**, because the
+  page read a field the API does not send; the group lives in the policy.
+- **Audit showed "someone" for every entry.** The page read `user`; the API
+  sends `actor`.
+- **A refresh that did nothing no longer reports "done"**; it says it skipped,
+  and why.
 
 - **Seven days of charts no longer take the console down with them.** Every
   chart question read the raw query log, and on a Pi a week of it is ~450K rows

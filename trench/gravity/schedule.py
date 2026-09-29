@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import time
 from collections.abc import Awaitable, Callable
 
 from ..log import get
@@ -11,7 +12,10 @@ log = get("schedule")
 
 
 class Scheduler:
-    def __init__(self) -> None:
+    def __init__(self, board=None) -> None:
+        # Where each tick's outcome is written (`trench.jobs.JobBoard`). Optional
+        # so the scheduler still works on its own in tests and tools.
+        self.board = board
         # Keyed by name, so a job can be replaced or dropped when the setting
         # behind it changes. Without that a live config change could start a
         # second copy of a job while the first kept running on the old interval.
@@ -29,6 +33,8 @@ class Scheduler:
         across forked workers so they never rebuild at the same moment."""
         self.cancel(name)
         self._running = True
+        if self.board is not None:
+            self.board.register(name, coro_factory, interval=seconds)
         self._tasks[name] = asyncio.ensure_future(
             self._loop(seconds, coro_factory, jitter, name, offset))
 
@@ -38,6 +44,8 @@ class Scheduler:
         if task is None:
             return False
         task.cancel()
+        if self.board is not None:
+            self.board.unschedule(name)
         return True
 
     def running(self, name: str) -> bool:
@@ -45,15 +53,25 @@ class Scheduler:
 
     async def _loop(self, seconds: float, factory, jitter: float, name: str,
                     offset: float = 0.0) -> None:
+        if offset and self.board is not None:
+            self.board.planned(name, time.time() + offset + seconds)
         if offset:
             await asyncio.sleep(offset)
         while self._running:
-            delay = seconds * (1 + random.uniform(-jitter, jitter))
-            await asyncio.sleep(max(1.0, delay))
+            delay = max(1.0, seconds * (1 + random.uniform(-jitter, jitter)))
+            if self.board is not None:
+                self.board.planned(name, time.time() + delay)
+            await asyncio.sleep(delay)
             if not self._running:
                 break
+            if self.board is not None and self.board.busy(name):
+                continue    # started by hand moments ago; this tick is redundant
             try:
-                await factory()
+                if self.board is None:
+                    await factory()
+                else:
+                    async with self.board.track(name, "schedule"):
+                        await factory()
             except asyncio.CancelledError:
                 raise
             except Exception:

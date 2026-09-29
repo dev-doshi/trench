@@ -171,6 +171,16 @@ the wrong change.
 Adding a view: view file + route (`main.ts`) + an entry in `Frame.vue`'s `PLACES`
 + a palette entry (`ui/Palette.vue`).
 
+The strip holds the places visited to watch the network (Overview, Browse, Live,
+Log, Policy, Devices, Settings). Places visited to answer one question —
+History, Breakage, Resolver — are `more: true` and sit behind **More**, whose
+button takes the place's name while you are on it. Records consulted while
+changing knobs — Jobs, Privacy, Audit — are Settings tabs, addressed as
+`/settings?tab=…` so the frame, the palette and a pasted link land on one tab;
+their old paths redirect. A view hosted in a tab takes an `embedded` prop and
+drops its own header. The strip's jobs indicator stays quiet unless something
+is running or a consequential job went wrong (`lib/jobs.ts`, `headline`).
+
 Build check: `npm run build` (runs `vue-tsc`). Dev: `npm run dev` with a backend
 on 127.0.0.1:8089 — `python3 scripts/uidev.py` from the repo root gives one with
 synthetic traffic (login `admin` / `admin`).
