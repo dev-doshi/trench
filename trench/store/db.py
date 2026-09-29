@@ -36,7 +36,11 @@ class Database:
             self.readonly = True
             self._db = await _a.connect(f"file:{self.path}?mode=ro", uri=True)
             self._db.row_factory = _a.Row
-            await self._db.execute("PRAGMA busy_timeout=5000")
+            try:
+                await self._db.execute("PRAGMA busy_timeout=5000")
+            except BaseException:
+                await self.close()
+                raise
             return
         # This file holds scrypt password hashes, TOTP secrets, API-token
         # digests, the query-log salt and every name the household has looked
@@ -47,12 +51,21 @@ class Database:
         self._precreate_private(Path(self.path))
         self._db = await aiosqlite.connect(self.path)
         self._db.row_factory = aiosqlite.Row
-        for pragma in ("PRAGMA journal_mode=WAL",
-                       "PRAGMA synchronous=NORMAL",
-                       "PRAGMA busy_timeout=5000",
-                       "PRAGMA foreign_keys=ON"):
-            await self._db.execute(pragma)
-        await self.apply_migrations()
+        # A connection that failed half-way is closed here, not left for the
+        # caller: its aiosqlite thread is not a daemon thread, so an open one
+        # keeps the process alive after startup has failed — a daemon systemd
+        # never sees exit, and so never restarts. A disk that is full, a file
+        # that is not a database, a migration that fails all land here.
+        try:
+            for pragma in ("PRAGMA journal_mode=WAL",
+                           "PRAGMA synchronous=NORMAL",
+                           "PRAGMA busy_timeout=5000",
+                           "PRAGMA foreign_keys=ON"):
+                await self._db.execute(pragma)
+            await self.apply_migrations()
+        except BaseException:
+            await self.close()
+            raise
 
     @staticmethod
     def _precreate_private(path: Path) -> None:

@@ -133,3 +133,66 @@ def test_pause_rejects_a_bad_duration_before_sending_anything(capsys, bad):
         main(["pause", bad, "--url", "http://127.0.0.1:1"])
     assert e.value.code == 2
     assert "invalid duration" in capsys.readouterr().err
+
+
+def test_restore_replaces_rather_than_merges(tmp_path):
+    """A leftover `trench.db-wal` next to a restored `trench.db` is replayed
+    into it by SQLite: files the archive does not carry must not survive."""
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "keep.txt").write_text("new")
+    archive = tmp_path / "b.tgz"
+    assert main(["backup", str(archive), "--data-dir", str(data)]) == 0
+    dest = tmp_path / "dest"
+    (dest / "sub").mkdir(parents=True)
+    (dest / "trench.db-wal").write_text("stale")
+    (dest / "sub" / "old").write_text("stale")
+    assert main(["restore", str(archive), "--data-dir", str(dest), "--force"]) == 0
+    assert sorted(p.name for p in dest.iterdir()) == ["keep.txt"]
+
+
+def test_a_truncated_archive_leaves_the_target_untouched(tmp_path, capsys):
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "big").write_bytes(__import__("os").urandom(200_000))
+    archive = tmp_path / "b.tgz"
+    assert main(["backup", str(archive), "--data-dir", str(data)]) == 0
+    archive.write_bytes(archive.read_bytes()[:50_000])
+    dest = tmp_path / "dest"
+    dest.mkdir()
+    (dest / "current").write_text("still here")
+    capsys.readouterr()
+    assert main(["restore", str(archive), "--data-dir", str(dest), "--force"]) == 1
+    assert "trench restore: error:" in _one_error_line(capsys)
+    assert sorted(p.name for p in dest.iterdir()) == ["current"]
+
+
+def test_backup_snapshots_a_live_database(tmp_path):
+    """Rows still in the WAL, with the writer's connection open, are in the
+    archive's database — and the archive carries no -wal/-shm to pair wrongly."""
+    import tarfile
+    data = tmp_path / "data"
+    data.mkdir()
+    live = sqlite3.connect(data / "trench.db")
+    live.execute("PRAGMA journal_mode=WAL")
+    live.execute("PRAGMA wal_autocheckpoint=0")
+    live.execute("CREATE TABLE t(x)")
+    live.executemany("INSERT INTO t VALUES(?)", [(i,) for i in range(500)])
+    live.commit()
+    assert (data / "trench.db-wal").stat().st_size > 0
+    try:
+        archive = tmp_path / "b.tgz"
+        assert main(["backup", str(archive), "--data-dir", str(data)]) == 0
+    finally:
+        live.close()
+    with tarfile.open(archive) as tar:
+        assert sorted(tar.getnames()) == ["data", "data/trench.db"]
+    dest = tmp_path / "dest"
+    assert main(["restore", str(archive), "--data-dir", str(dest)]) == 0
+    con = sqlite3.connect(dest / "trench.db")
+    try:
+        assert con.execute("SELECT count(*) FROM t").fetchone() == (500,)
+        assert con.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    finally:
+        con.close()
+    assert not list(tmp_path.glob(".b.tgz*"))

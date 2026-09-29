@@ -107,7 +107,10 @@ trench restore /path/to/trench-2026-08-19.tar.gz
 ```
 
 The archive covers the data directory: the query-log database, users and API
-tokens, custom rules, and zone data.
+tokens, custom rules, and zone data. `backup` can run from cron while the
+server is up — databases are snapshotted through SQLite's backup API, not
+copied mid-write. Stop the server before a `restore`, which replaces the data
+directory's contents wholesale (`--force` when it is not empty).
 
 ## Monitoring
 

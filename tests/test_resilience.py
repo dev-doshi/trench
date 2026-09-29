@@ -136,11 +136,17 @@ async def test_a_failed_migration_leaves_nothing_behind(tmp_path, monkeypatch):
     d = dbmod.Database(path)
     with pytest.raises(Exception, match="missing"):
         await d.connect()
-    names = {r[0] for r in await d.fetchall(
-        "SELECT name FROM sqlite_master WHERE type='table'")}
-    assert "a" not in names, "half a migration was applied"
-    assert not await d.fetchall("SELECT * FROM _migrations")
-    await d.close()
+    # The failed connect closed its own connection (an open one's thread would
+    # keep a daemon that failed to start from exiting); look at the file.
+    import sqlite3
+    con = sqlite3.connect(path)
+    try:
+        names = {r[0] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "a" not in names, "half a migration was applied"
+        assert not con.execute("SELECT * FROM _migrations").fetchall()
+    finally:
+        con.close()
 
     # fixed and re-run: applies once, recorded with its description intact
     monkeypatch.setattr(dbmod, "MIGRATIONS", [

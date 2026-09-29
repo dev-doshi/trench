@@ -78,14 +78,17 @@ def _build_parser() -> argparse.ArgumentParser:
     rt.add_argument("rule", help="a rule line, or @path to read rules from a file")
     rt.add_argument("names", nargs="+", help="domain names to test")
 
-    bk = sub.add_parser("backup", help="archive the data directory to a .tar.gz")
+    bk = sub.add_parser("backup", help="archive the data directory to a .tar.gz "
+                        "(safe while the daemon runs)")
     bk.add_argument("out", help="output archive path")
     bk.add_argument("--data-dir", default="./data")
 
-    rs = sub.add_parser("restore", help="restore a data directory from a .tar.gz")
+    rs = sub.add_parser("restore", help="restore a data directory from a .tar.gz "
+                        "(stop the daemon first)")
     rs.add_argument("archive")
     rs.add_argument("--data-dir", default="./data")
-    rs.add_argument("--force", action="store_true", help="overwrite a non-empty target")
+    rs.add_argument("--force", action="store_true",
+                    help="replace the contents of a non-empty target")
 
     pr = sub.add_parser("profile", help="emit an Apple .mobileconfig for encrypted DNS")
     pr.add_argument("--name", default="Trench")
@@ -97,7 +100,11 @@ def _build_parser() -> argparse.ArgumentParser:
     pw.add_argument("user", nargs="?", default="admin")
     pw.add_argument("--data-dir", default="./data")
     pw.add_argument("--db", default="trench.db", help="database file inside the data dir")
-    pw.add_argument("--password", help="new password (omit to generate one and print it)")
+    pwsrc = pw.add_mutually_exclusive_group()
+    pwsrc.add_argument("--password", help="new password (omit to generate one and print it)")
+    pwsrc.add_argument("--password-stdin", action="store_true", dest="password_stdin",
+                       help="read the new password from stdin, keeping it out of "
+                            "`ps` and shell history")
     pw.add_argument("--role", default="admin", help="role if the user has to be created")
     pw.add_argument("--clear-totp", action="store_true", dest="clear_totp",
                     help="also remove the account's two-factor secret")
@@ -366,8 +373,28 @@ def _do_regex_test(args) -> int:
     return rc
 
 
+_SQLITE_MAGIC = b"SQLite format 3\x00"
+_SQLITE_SIDECARS = ("-wal", "-shm", "-journal")
+
+
+def _sqlite_files(root):
+    """The SQLite databases under `root`, by header rather than by name."""
+    for p in sorted(root.rglob("*")):
+        if not p.is_file() or p.is_symlink() or p.name.endswith(_SQLITE_SIDECARS):
+            continue
+        try:
+            with open(p, "rb") as f:
+                if f.read(16) == _SQLITE_MAGIC:
+                    yield p
+        except OSError:
+            continue
+
+
 def _do_backup(args) -> int:
+    import shutil
+    import sqlite3
     import tarfile
+    import tempfile
     from pathlib import Path
     data = Path(args.data_dir)
     if not data.is_dir():
@@ -381,31 +408,71 @@ def _do_backup(args) -> int:
         print(f"output directory {out.parent} does not exist", file=sys.stderr)
         return 1
     tmp = out.with_name(f".{out.name}.partial")
+    # A live database is not a set of files to copy. The daemon writes the
+    # query log every 250 ms, and a byte copy of `trench.db` plus its `-wal`
+    # taken at different moments is a database SQLite may refuse to open —
+    # found out at restore time. Each one is snapshotted through SQLite's
+    # online-backup API instead, and the snapshot is what goes in the archive,
+    # without the sidecars. Beside the output, not in /tmp: the query log can
+    # be larger than a Pi's RAM-backed /tmp.
+    snapdir = Path(tempfile.mkdtemp(dir=out.parent, prefix=f".{out.name}.snap-"))
     try:
+        snaps: dict[str, Path] = {}
+        skip: set[str] = set()
+        for i, db in enumerate(_sqlite_files(data)):
+            arc = (Path(data.name) / db.relative_to(data)).as_posix()
+            snap = snapdir / str(i)
+            src = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            try:
+                dst = sqlite3.connect(snap)
+                try:
+                    src.backup(dst)
+                finally:
+                    dst.close()
+            finally:
+                src.close()
+            snaps[arc] = snap
+            skip.update(arc + suffix for suffix in ("",) + _SQLITE_SIDECARS)
+
+        def keep(m):
+            if m.name in skip or Path(m.name).name in (tmp.name, snapdir.name):
+                return None
+            return m
+
         with tarfile.open(tmp, "w:gz") as tar:
-            tar.add(data, arcname=data.name,
-                    filter=lambda m: None if Path(m.name).name == tmp.name else m)
+            tar.add(data, arcname=data.name, filter=keep)
+            for arc, snap in snaps.items():
+                tar.add(snap, arcname=arc)
         tmp.replace(out)
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+    finally:
+        shutil.rmtree(snapdir, ignore_errors=True)
     print(f"backed up {data} -> {out}")
     return 0
 
 
 def _do_restore(args) -> int:
+    import os
+    import shutil
     import tarfile
+    import tempfile
     from pathlib import Path
     dest = Path(args.data_dir)
+    if dest.exists() and not dest.is_dir():
+        print(f"{dest} is not a directory", file=sys.stderr)
+        return 1
     if dest.exists() and any(dest.iterdir()) and not args.force:
         print(f"{dest} is not empty; pass --force to overwrite", file=sys.stderr)
         return 1
-    dest.mkdir(parents=True, exist_ok=True)
     with tarfile.open(args.archive, "r:gz") as tar:
+        # Reading every header walks the whole archive, so a truncated or
+        # corrupt one fails here — before anything in `dest` has been touched.
         members = tar.getmembers()
         # strip the leading archive top-dir so contents land directly in data-dir
         top = members[0].name.split("/")[0] + "/" if members else ""
-        root = dest.resolve()
+        wanted = []
         for m in members:
             if m.name == top.rstrip("/"):
                 continue
@@ -417,25 +484,47 @@ def _do_restore(args) -> int:
             # above deliberately *keeps* names that do not start with `top`, so
             # a `../../etc/trench/trench.yaml` member passed through
             # untouched, and Python 3.11 still extracts with no filter by
-            # default. Links are refused outright; everything else must resolve
-            # inside dest.
+            # default. Links are refused outright; everything else must stay
+            # inside the data dir.
             if m.islnk() or m.issym():
                 print(f"skipping link member {m.name!r}", file=sys.stderr)
                 continue
             if not m.isfile() and not m.isdir():
                 print(f"skipping special member {m.name!r}", file=sys.stderr)
                 continue
-            target = (root / m.name).resolve()
-            if target != root and root not in target.parents:
+            norm = os.path.normpath(m.name)
+            if os.path.isabs(norm) or norm == ".." or norm.startswith("../"):
                 print(f"refusing member outside the data dir: {m.name!r}",
                       file=sys.stderr)
                 return 1
-            # `filter=` only exists from 3.11.4; the resolve() check above is
-            # what actually holds the line on older builds.
-            try:
-                tar.extract(m, dest, filter="data")
-            except TypeError:
-                tar.extract(m, dest)
+            wanted.append(m)
+        # Extracted into a staging directory first, then swapped in. Extracting
+        # over the old contents left every file the archive does not carry in
+        # place — among them a `trench.db-wal` that SQLite then replays into
+        # the restored database, and a failure halfway left a mix of both.
+        # Inside `dest`, so the swap is a rename even when `dest` is a mount
+        # point (a Docker volume), where renaming `dest` itself is not possible.
+        dest.mkdir(parents=True, exist_ok=True)
+        stage = Path(tempfile.mkdtemp(dir=dest, prefix=".restore-"))
+        try:
+            for m in wanted:
+                # `filter=` only exists from 3.11.4; the checks above are what
+                # actually hold the line on older builds.
+                try:
+                    tar.extract(m, stage, filter="data")
+                except TypeError:
+                    tar.extract(m, stage)
+            for child in dest.iterdir():
+                if child == stage:
+                    continue
+                if child.is_dir() and not child.is_symlink():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+            for child in stage.iterdir():
+                child.rename(dest / child.name)
+        finally:
+            shutil.rmtree(stage, ignore_errors=True)
     print(f"restored {args.archive} -> {dest}")
     return 0
 
@@ -474,6 +563,11 @@ async def _do_passwd(args) -> int:
     if not path.exists():
         print(f"no database at {path} (wrong --data-dir?)", file=sys.stderr)
         return 1
+    if args.password_stdin:
+        args.password = sys.stdin.readline().rstrip("\r\n")
+        if not args.password:
+            print("no password on stdin", file=sys.stderr)
+            return 1
     password = args.password or secrets.token_urlsafe(12)
     db = Database(path)
     await db.connect()
@@ -520,7 +614,7 @@ def main(argv: list[str] | None = None) -> int:
         return _dispatch(args)
     except KeyboardInterrupt:
         return 130
-    except (OSError, tarfile.TarError, sqlite3.Error) as e:
+    except (OSError, EOFError, tarfile.TarError, sqlite3.Error) as e:
         print(f"trench {args.cmd}: error: {e}", file=sys.stderr)
         return 1
 

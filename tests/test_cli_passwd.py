@@ -171,3 +171,34 @@ async def test_main_runs_passwd_through_asyncio(tmp_path, capsys):
     rc = await asyncio.to_thread(
         main, ["passwd", "admin", "--data-dir", str(tmp_path), "--password", "new"])
     assert rc == 0
+
+
+@pytest.mark.asyncio
+async def test_password_from_stdin_stays_off_the_command_line(tmp_path, capsys,
+                                                              monkeypatch):
+    import io
+    db = await _db(tmp_path)
+    await AuthManager(db).create_user("admin", "old-one")
+    await db.close()
+
+    monkeypatch.setattr("sys.stdin", io.StringIO("from-stdin\n"))
+    assert await run("--data-dir", str(tmp_path), "--password-stdin") == 0
+    # Not echoed back: the caller already has it, and stdout may be a log.
+    assert "from-stdin" not in capsys.readouterr().out
+    db = await _db(tmp_path)
+    try:
+        assert await AuthManager(db).login("admin", "from-stdin")
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_empty_stdin_is_refused_not_turned_into_an_empty_password(
+        tmp_path, capsys, monkeypatch):
+    import io
+    db = await _db(tmp_path)
+    await AuthManager(db).create_user("admin", "old-one")
+    await db.close()
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    assert await run("--data-dir", str(tmp_path), "--password-stdin") == 1
+    assert "no password on stdin" in capsys.readouterr().err
