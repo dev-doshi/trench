@@ -106,6 +106,60 @@ async def test_a_sibling_worker_uses_a_stale_table_rather_than_rebuilding(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_a_sibling_worker_with_no_table_waits_for_the_primary(tmp_path):
+    """The cold-start fetch is the fourth way into a build. When the
+    supervisor's pre-fork build fails and nothing is cached, every worker used
+    to compile its own copy at once — four 300 MB peaks under a 700 MB ceiling.
+    A sibling serves unfiltered until the primary's table lands, then maps it."""
+    src = tmp_path / "list.txt"
+    src.write_text("||ads.example.com^\n")
+    worker = App(_cfg(tmp_path, filtering={"sources": [str(src)]}),
+                 primary=False, worker_idx=1, nworkers=2)
+    built = []
+
+    async def never():
+        built.append(1)
+
+    worker._gravity = worker._make_gravity([str(src)])
+    worker._make_gravity = lambda _s: worker._gravity
+    worker._gravity.build = never
+    assert await worker.load_blocklists(allow_fetch=False) is False
+    assert await worker.load_blocklists() is False
+    assert built == []
+
+    primary, _ = _list_app(tmp_path, text=None)
+    await primary.load_blocklists()
+    assert worker.adopt_refreshed_table() is True
+    from trench.filter import Action
+    assert worker.filter.match("ads.example.com").action == Action.BLOCK
+
+
+@pytest.mark.asyncio
+async def test_a_sibling_without_sources_ignores_a_leftover_table(tmp_path):
+    app, _ = _list_app(tmp_path)
+    await app.load_blocklists()
+    worker = App(_cfg(tmp_path), primary=False, worker_idx=1, nworkers=2)
+    await worker.load_blocklists()
+    assert worker.adopt_refreshed_table() is False
+
+
+@pytest.mark.asyncio
+async def test_the_cold_start_fetch_holds_the_build_lock(tmp_path):
+    """A SIGHUP or a settings save during the first fetch must not start a
+    second compile beside it."""
+    app, _ = _list_app(tmp_path)
+    seen = []
+
+    async def load(**_kw):
+        seen.append(app._building.locked())
+        return False
+
+    app.load_blocklists = load
+    await app._initial_blocklist_fetch()
+    assert seen == [True]
+
+
+@pytest.mark.asyncio
 async def test_the_offline_pass_reports_that_a_fetch_is_owed(tmp_path):
     app, _ = _list_app(tmp_path)
     assert await app.load_blocklists(allow_fetch=False) is True

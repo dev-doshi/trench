@@ -96,9 +96,13 @@ rule before committing it.
 ## Migrating in
 
 ```bash
-trench import pihole /etc/pihole/setupVars.conf
-trench import adguard /opt/AdGuardHome/AdGuardHome.yaml
+trench import pihole /etc/pihole > imported.yaml      # the directory, or its gravity.db
+trench import adguard /opt/AdGuardHome/AdGuardHome.yaml > imported.yaml
 ```
+
+Both print a config fragment on stdout and nothing else; on a missing or
+unreadable source they print one `error:` line on stderr and exit 1, so a
+redirect never captures half a config.
 
 ## Zones and transfers
 

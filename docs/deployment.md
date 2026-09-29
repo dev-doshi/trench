@@ -11,6 +11,11 @@ sandbox (`ProtectSystem=strict`, `PrivateDevices`, `RestrictAddressFamilies`,
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin trench
 sudo mkdir -p /etc/trench
 sudo cp trench.example.yaml /etc/trench/trench.yaml
+# The console's Settings page saves by atomically replacing this file, so the
+# service account needs the directory, not just the file. 0750: the config can
+# hold TSIG secrets.
+sudo chown -R trench:trench /etc/trench
+sudo chmod 0750 /etc/trench
 sudo cp trench.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now trench
@@ -18,7 +23,12 @@ journalctl -u trench -f
 ```
 
 State lives in `/var/lib/trench` (`StateDirectory=`), which is one of only
-two paths the unit can write to.
+two paths the unit can write to. The unit's working directory is that same
+path, so the example config's relative `data_dir: ./data` lands in
+`/var/lib/trench/data`; an absolute `data_dir` must be under
+`/var/lib/trench` or the unit cannot write it.
+
+Check the sandbox after editing the unit: `systemd-analyze security trench`.
 
 ### Freeing port 53
 

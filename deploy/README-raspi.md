@@ -32,15 +32,22 @@ Result: **617,530 block domains** from 4 sources instead of 11.
 This board has 955 MB. The previous deployment was OOM-killed repeatedly
 (`dmesg` showed workers at 592 MB and 793 MB anon-rss). Three causes, all fixed:
 
-1. **`workers: 0` (auto = 4).** Every worker holds its own compiled blocklist,
-   so worker count multiplies memory. Now `workers: 1` (~257 MB total). A single
-   worker benchmarks ~2.9k qps here — far beyond a home LAN.
+1. **`workers: 0` (auto = 4).** Every worker held its own compiled blocklist,
+   so worker count multiplied memory. The blocklist is now one file-backed
+   shared table, built once by the supervisor before it forks and mapped by
+   every worker, so `raspi.yaml` runs `workers: 4` again. Each extra worker
+   costs its interpreter and private caches, not another copy of the lists.
 2. **Rule objects per domain.** The filter engine stored a `Rule` object plus a
    list wrapper for every domain (~600 B each). Modifier-free rules — 99.9% of
    any blocklist — are now stored as `suffix -> source` strings and only
    materialized on an actual hit. Retained engine: **385 MB → 54 MB**.
-3. **Simultaneous refreshes.** Every worker scheduled its own gravity refresh at
-   the same moment, spiking N× together. Refreshes are now staggered per worker.
+3. **Simultaneous builds.** Every worker ran its own gravity refresh, spiking
+   N× together. Now only the primary worker downloads and compiles, one build
+   at a time (the refresh schedule, SIGHUP, a settings change and the cold-start
+   fetch all share one lock), and the others re-map the table it writes. That
+   includes a first boot with no cached table: the siblings serve unfiltered
+   until the primary's table lands (they check every 30 s), rather than
+   compiling four copies at once.
 
 Verified: triggering a full blocklist refresh dips free memory by only ~75 MB
 (446 MB still available) and recovers.

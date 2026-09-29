@@ -58,7 +58,7 @@ def _build_parser() -> argparse.ArgumentParser:
     why.add_argument("--token", default="")
 
     pause = sub.add_parser("pause", help="suspend filtering for a while")
-    pause.add_argument("duration", nargs="?", default="5m",
+    pause.add_argument("duration", nargs="?", default="5m", type=_duration,
                        help="e.g. 30s, 5m, 1h; 0 resumes")
     pause.add_argument("--client", default="", help="one device only")
     pause.add_argument("--url", default="http://127.0.0.1:8089")
@@ -66,7 +66,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     imp = sub.add_parser("import", help="import PiHole/AdGuard config")
     imp.add_argument("kind", choices=["pihole", "adguard"])
-    imp.add_argument("path")
+    imp.add_argument("path", help="Pi-hole: gravity.db or the directory holding it "
+                     "(e.g. /etc/pihole); AdGuard: AdGuardHome.yaml")
 
     kg = sub.add_parser("keygen-tsig", help="generate a TSIG key (for zone transfers)")
     kg.add_argument("name", nargs="?", default="xfr-key.")
@@ -227,6 +228,19 @@ def _seconds(text: str) -> float:
     return float(text or 0)
 
 
+def _duration(text: str) -> float:
+    """argparse `type=` for `pause`: a typo is a usage error (exit 2), caught
+    before anything is sent, not a ValueError traceback."""
+    try:
+        seconds = _seconds(text)
+    except ValueError:
+        seconds = -1.0
+    if not seconds >= 0:            # also rejects nan
+        raise argparse.ArgumentTypeError(
+            f"invalid duration {text!r} (use e.g. 30s, 5m, 1h, or 0 to resume)")
+    return seconds
+
+
 def _do_why(args) -> int:
     params = {"name": args.name, "type": args.type}
     if args.client:
@@ -236,6 +250,17 @@ def _do_why(args) -> int:
     path = "/api/v1/explain?" + urllib.parse.urlencode(params)
     try:
         out = _api_call(args.url, path, args.token)
+    except urllib.error.HTTPError as e:
+        # A bad name or type is answered with a JSON error that says exactly
+        # what was wrong; the hint about the daemon is only right for auth.
+        try:
+            detail = json.loads(e.read()).get("error", "")
+        except Exception:
+            detail = ""
+        hint = "" if detail or e.code not in (401, 403) else \
+            " (is the daemon running? do you need --token?)"
+        print(f"error: {detail or e}{hint}", file=sys.stderr)
+        return 1
     except Exception as e:
         print(f"error: {e} (is the daemon running? do you need --token?)", file=sys.stderr)
         return 1
@@ -259,7 +284,7 @@ def _do_why(args) -> int:
 
 
 def _do_pause(args) -> int:
-    seconds = _seconds(args.duration)
+    seconds = args.duration
     body = json.dumps({"seconds": seconds, "client": args.client}).encode()
     req = urllib.request.Request(
         args.url + "/api/v1/pause", data=body, method="POST",
@@ -275,8 +300,28 @@ def _do_pause(args) -> int:
 
 
 def _do_import(args) -> int:
+    import sqlite3
+    from pathlib import Path
+
     from ..ops.migrate_import import import_adguard, import_pihole
-    res = import_pihole(args.path) if args.kind == "pihole" else import_adguard(args.path)
+    path = Path(args.path)
+    if args.kind == "pihole" and path.is_dir():
+        path = path / "gravity.db"      # `trench import pihole /etc/pihole`
+    if not path.is_file():
+        print(f"error: {path} not found", file=sys.stderr)
+        return 1
+    try:
+        res = import_pihole(str(path)) if args.kind == "pihole" else import_adguard(str(path))
+    except sqlite3.Error as e:
+        # Nothing has been written yet, so stdout stays empty and a script
+        # redirecting it into a config file gets no half-document.
+        print(f"error: {path} is not a readable Pi-hole gravity.db ({e})", file=sys.stderr)
+        return 1
+    except (ValueError, AttributeError, TypeError) as e:
+        # yaml.YAMLError is a ValueError subclass; the others are a YAML file
+        # that parsed but is not shaped like AdGuardHome.yaml.
+        print(f"error: {path} is not a usable {args.kind} config ({e})", file=sys.stderr)
+        return 1
     print(f"# imported from {args.kind}: {res.summary()}")
     out = {"filtering": {"sources": res.sources, "deny": res.deny, "allow": res.allow}}
     if res.rules:
@@ -325,12 +370,26 @@ def _do_backup(args) -> int:
     import tarfile
     from pathlib import Path
     data = Path(args.data_dir)
-    if not data.exists():
-        print(f"data dir {data} not found", file=sys.stderr)
+    if not data.is_dir():
+        print(f"data dir {data} not found (or not a directory)", file=sys.stderr)
         return 1
-    with tarfile.open(args.out, "w:gz") as tar:
-        tar.add(data, arcname=data.name)
-    print(f"backed up {data} -> {args.out}")
+    # Written beside the target and renamed into place, so a failure halfway
+    # (full disk, Ctrl-C, a cron job killed by a timeout) cannot leave a
+    # truncated archive at the name a restore will later trust.
+    out = Path(args.out)
+    if not out.parent.is_dir():
+        print(f"output directory {out.parent} does not exist", file=sys.stderr)
+        return 1
+    tmp = out.with_name(f".{out.name}.partial")
+    try:
+        with tarfile.open(tmp, "w:gz") as tar:
+            tar.add(data, arcname=data.name,
+                    filter=lambda m: None if Path(m.name).name == tmp.name else m)
+        tmp.replace(out)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    print(f"backed up {data} -> {out}")
     return 0
 
 
@@ -451,7 +510,22 @@ def _do_stamp(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    import sqlite3
+    import tarfile
     args = _build_parser().parse_args(argv)
+    # These are the operator's environment, not bugs: a path that is missing,
+    # unwritable or not an archive. One line and exit 1, never a traceback,
+    # so a script can tell "failed" from "crashed" and a person can act on it.
+    try:
+        return _dispatch(args)
+    except KeyboardInterrupt:
+        return 130
+    except (OSError, tarfile.TarError, sqlite3.Error) as e:
+        print(f"trench {args.cmd}: error: {e}", file=sys.stderr)
+        return 1
+
+
+def _dispatch(args) -> int:
     handlers = {
         "keygen-tsig": _do_keygen_tsig, "regex-test": _do_regex_test,
         "backup": _do_backup, "restore": _do_restore,

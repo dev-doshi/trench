@@ -274,15 +274,20 @@ async def test_worker_adopts_a_rebuild_from_another_worker(tmp_path):
     listfile = tmp_path / "list.txt"
     listfile.write_text("||first.example^\n")
 
+    # Started before any table exists: it waits for the primary's rather
+    # than compiling a copy of its own.
     follower = App(_cfg(tmp_path, listfile), primary=False, worker_idx=1, nworkers=2)
     await follower.load_blocklists()
+    assert follower.filter.match("first.example").action.name == "NONE"
+
+    primary = App(_cfg(tmp_path, listfile), primary=True, worker_idx=0, nworkers=2)
+    await primary.load_blocklists()
+    assert follower.adopt_refreshed_table()
     assert follower.filter.match("first.example").action.name == "BLOCK"
     assert not follower.adopt_refreshed_table(), "nothing has changed yet"
 
     # the primary rebuilds from an updated list
     listfile.write_text("||second.example^\n")
-    primary = App(_cfg(tmp_path, listfile), primary=True, worker_idx=0, nworkers=2)
-    await primary.load_blocklists()
     await primary.refresh_blocklists()
 
     assert follower.adopt_refreshed_table()

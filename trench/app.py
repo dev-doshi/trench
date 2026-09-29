@@ -508,6 +508,14 @@ class App:
                     return False  # still fresh, or a sibling worker owns the refresh
                 log.info("cached table is past its refresh interval; rebuilding now")
 
+        if not self.primary and self.nworkers > 1:
+            # Nothing cached and nothing pre-forked, so the primary is about to
+            # build. A sibling that built too would put one compile per worker
+            # under the same memory ceiling — the OOM `refresh_blocklists`
+            # guards against, reached through the cold start instead. Serve
+            # unfiltered until the table lands; `_sync_with_primary` maps it.
+            return False
+
         if not allow_fetch:
             return True
 
@@ -616,7 +624,13 @@ class App:
         worker that misses a round simply catches it on the next one.
         """
         table = getattr(self.filter, "block_table", None)
-        if table is None or not table.stale():
+        if table is None or getattr(table, "path", "") is None:
+            # A sibling that started before any table existed holds only the
+            # empty, unbacked default; the first table to appear is the one to
+            # adopt.
+            if self._gravity is None or cached_table_age(self.table_path) is None:
+                return False
+        elif not table.stale():
             return False
         try:
             fresh = SharedBlockTable.open(self.table_path)
@@ -1277,7 +1291,10 @@ class App:
         resolver answering unfiltered rather than not answering at all; the
         scheduled refresh retries on its own interval."""
         try:
-            await self.load_blocklists()
+            # Under the build lock like every other way into a compile, so a
+            # SIGHUP or settings save during the first fetch waits its turn.
+            async with self._building:
+                await self.load_blocklists()
         except asyncio.CancelledError:
             raise
         except Exception:
