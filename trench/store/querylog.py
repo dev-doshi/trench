@@ -415,7 +415,8 @@ class QueryLog:
                     add(await self.store.fetchall(raw_sql, (a, z, *raw_a)))
             if h1:
                 table = "querylog_hour_name" if names else "querylog_hour"
-                w, args = ["hour >= ?", "hour < ?"], [h0, h1]
+                w = ["hour >= ?", "hour < ?"]
+                args: list[object] = [h0, h1]
                 if client:
                     w.append("client_ip = ?"); args.append(client)
                 if action:
@@ -447,7 +448,7 @@ class QueryLog:
         if bucket == "none":
             got = totals if group else await fetch("none", None, None)
             if group:
-                rows = sorted(([g, value(a)] for (_, g), a in got.items() if g in keep),
+                rows = sorted(([g, value(a)] for (_, g), a in got.items() if g in (keep or ())),
                               key=lambda r: -(r[1] or 0))
                 return {"rows": rows}
             a = got.get((0, ""))

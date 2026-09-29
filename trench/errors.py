@@ -18,3 +18,8 @@ class ConfigError(TrenchError):
 class UpstreamError(TrenchError):
     """All upstreams failed / timed out."""
 
+    #: The servers that were asked, as the query log names them. A failure
+    #: that could not say where it went logged "upstream not recorded", which
+    #: left a dead route indistinguishable from a question never sent.
+    tried: tuple[str, ...] = ()
+

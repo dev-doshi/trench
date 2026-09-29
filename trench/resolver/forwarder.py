@@ -81,11 +81,17 @@ class Forwarder:
         group = self.router.group_for(self._qname(query))
         if not group:
             raise UpstreamError("no upstreams configured")
-        if self.strategy == "sequential":
-            return await self._sequential(group, query, note)
-        if self.strategy in ("fastest", "weighted"):
-            return await self._fastest(group, query, note)
-        return await self._parallel(group, query, note)
+        try:
+            if self.strategy == "sequential":
+                return await self._sequential(group, query, note)
+            if self.strategy in ("fastest", "weighted"):
+                return await self._fastest(group, query, note)
+            return await self._parallel(group, query, note)
+        except UpstreamError as e:
+            # `note` names only a server that answered, so without this a
+            # total failure reached the query log with no server at all.
+            e.tried = tuple(repr(up) for up in group)
+            raise
 
     @staticmethod
     async def _ask(up: Upstream, query: Message) -> tuple[Message, str]:

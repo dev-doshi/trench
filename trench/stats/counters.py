@@ -132,7 +132,9 @@ class Counters:
         self.clients.add(client)
         if action in ("blocked", "block"):
             self.blocked.add(qname)
-        if upstream:
+        if upstream and action != "failed":
+            # The breakdown counts answers. A failed query names the servers
+            # it tried (for the log), and none of them answered it.
             self.upstreams.add(upstream)
         if elapsed_us:
             self.latency_us_sum += elapsed_us

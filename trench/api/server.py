@@ -935,7 +935,7 @@ class APIServer:
         self._require(request, "admin" if name == "reload" else "editor")
         board = getattr(self.app, "jobs", None)
         st = board.jobs.get(name) if board is not None else None
-        if st is None or not st.to_json()["runnable"]:
+        if board is None or st is None or not st.to_json()["runnable"]:
             return web.json_response({"error": f"no job named {name!r} can be run"},
                                      status=404)
         if not board.run_now(name, "console"):

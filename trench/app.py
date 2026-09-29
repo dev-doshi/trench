@@ -599,11 +599,13 @@ class App:
             # assertion keeps the mapped table instead of replacing it.
             await self._refresh_locked()
             return False
-        matcher = await self._gravity.build_extras()
+        gravity = self._gravity
+        assert gravity is not None      # both callers have just built it
+        matcher = await gravity.build_extras()
         self.filter.ips = matcher
-        self.pipeline.set_group_filters(self._gravity.group_engines)
+        self.pipeline.set_group_filters(gravity.group_engines)
         JobBoard.note(f"cached table reused; {matcher.size:,} address prefixes and "
-                      f"{len(self._gravity.group_engines)} group(s) rebuilt")
+                      f"{len(gravity.group_engines)} group(s) rebuilt")
         return False
 
     async def refresh_blocklists(self) -> None:
@@ -1090,9 +1092,9 @@ class App:
                     out[c.ident] = {"name": c.name, "source": "manual", "fqdn": ""}
             if reg.by_mac:
                 for ip, mac in _NEIGHBOURS.items():
-                    c = reg.by_mac.get(mac)
-                    if c is not None and c.name:
-                        out[ip] = {"name": c.name, "source": "manual", "fqdn": ""}
+                    owner = reg.by_mac.get(mac)
+                    if owner is not None and owner.name:
+                        out[ip] = {"name": owner.name, "source": "manual", "fqdn": ""}
         return out
 
     async def _adopt_notary(self) -> None:

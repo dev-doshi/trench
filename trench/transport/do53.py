@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import socket
 import struct
+import sys
 from typing import TYPE_CHECKING
 
 from ..errors import WireError
@@ -11,6 +12,12 @@ from ..log import get
 from ..wire import Message
 from .base import Frontend, not_a_query, process_query
 from .stream import ConnectionTracker, StreamLimits, serve_stream
+
+#: `socket.IP_PKTINFO` arrived in Python 3.12, and 3.11 is supported. Read
+#: from the module alone, the answer-from-destination listener below was
+#: silently off on 3.11 — the Docker bridge losing DNS again. The value is
+#: the Linux kernel's; elsewhere there is nothing to fall back to.
+_IP_PKTINFO: int | None = getattr(socket, "IP_PKTINFO", 8 if sys.platform == "linux" else None)
 
 if TYPE_CHECKING:
     # Type-only. A transport is handed a pipeline; it does not need the
@@ -184,7 +191,8 @@ class _AnswerFromDestination(asyncio.DatagramTransport):
         if sock.family == socket.AF_INET6:
             sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_RECVPKTINFO, 1)
         else:
-            sock.setsockopt(socket.IPPROTO_IP, socket.IP_PKTINFO, 1)
+            assert _IP_PKTINFO is not None   # `start` builds this only when it is
+            sock.setsockopt(socket.IPPROTO_IP, _IP_PKTINFO, 1)
         sock.setblocking(False)
         loop.add_reader(sock.fileno(), self._readable)
         protocol.connection_made(self)
@@ -233,7 +241,7 @@ def _reply_source(anc) -> tuple | None:
     """The control message that makes a reply leave from the address the query
     was sent to, or None to let the kernel choose."""
     for level, kind, data in anc:
-        if level == socket.IPPROTO_IP and kind == socket.IP_PKTINFO:
+        if level == socket.IPPROTO_IP and kind == _IP_PKTINFO:
             # in_pktinfo: ifindex, spec_dst, header destination. Reply from the
             # header destination and let routing pick the interface.
             return (level, kind, struct.pack("=I4s4s", 0, data[8:12], bytes(4)))
@@ -323,7 +331,7 @@ class Do53Server(Frontend):
                 self.udp_protocol = _UDPProtocol(self.pipeline, self.auth,
                                                  self.udp_max_inflight, self.fast)
                 return self.udp_protocol
-            if _wildcard(self.host) and hasattr(socket, "IP_PKTINFO"):
+            if _wildcard(self.host) and _IP_PKTINFO is not None:
                 sock = self.sock_udp or _bind_udp(self.host, self.port, self.reuse_port)
                 self._udp_transport = _AnswerFromDestination(loop, sock, make_udp())
             elif self.sock_udp is not None:

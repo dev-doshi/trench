@@ -2,7 +2,7 @@
 
 **Scope:** the query hot path (`trench/engine/`, `trench/transport/`, `trench/cache/`, `trench/resolver/forwarder.py`, and the client half of `trench/transport/upstream.py`). I also looked at `clients/registry.py`, `engine/ratelimit.py`, `stats/counters.py`, `store/export.py` and the lifecycle parts of `app.py` to check for blocking I/O and unbounded growth. A second pass covered `resolver/recursive.py`, `resolver/dnssec/` and the TSIG, transfer and NOTIFY code in `auth_zone/`; see [Second pass](#second-pass-fixed-in-this-change). I did not review `api/`, `dhcp/`, `filter/`, `auth_zone/update.py` or `ops/` in depth.
 
-**Status:** every finding is closed. M2, M3, M6, L8, L13 and the ID half of M5 were fixed on `main`. L5 is accepted as a design choice. Everything else is fixed on `main` by the follow-up commits of this review. Regression tests are in `tests/test_review_fixes.py`, `tests/test_sanitize.py`, `tests/test_upstream.py`, `tests/test_clients.py` and `tests/test_transport_base.py`. Each finding's heading is followed by its status. After merging with the current `main`, the suite gives 2709 passed, 6 skipped and 0 failed. Ruff and `mypy_gate` pass.
+**Status:** every finding is closed. M2, M3, M6, L8, L13 and the ID half of M5 were fixed on `main`. L5 is accepted as a design choice. Everything else is fixed on `main` by the follow-up commits of this review. Regression tests are in `tests/test_review_fixes.py`, `tests/test_sanitize.py`, `tests/test_upstream.py`, `tests/test_clients.py` and `tests/test_transport_base.py`. Each finding's heading is followed by its status. After merging with the current `main`, the suite gives 2906 passed, 7 skipped and 0 failed. Ruff and `mypy_gate` pass.
 
 **Branch reviewed:** `claude/beautiful-thompson-as41c7` @ `c5b3b5f`
 
@@ -285,6 +285,14 @@ RFC 8945 §5.3 requires a signed reply. Strict primaries discard an unsigned NOT
 - The docstring of `is_subdomain_of` described the opposite of its behaviour. The docstring is corrected, and the function now uses the label-exact `key_is_under`.
 - `sanitize` dropped the target zone's SOA after a cross-zone CNAME, so negative answers there lost their TTL. Authority records are now kept when they belong to any name on the CNAME chain or to an ancestor of one.
 - `RecursiveForwarder` clears its pool without closing the connections. **No change needed:** a UDP `Upstream` opens a socket per query and holds nothing between queries. A comment now says so.
+
+### Third pass: a private reverse lookup that ended in SERVFAIL (all fixed)
+Found from a query-log entry: a PTR for `26.178.168.192.in-addr.arpa` that got SERVFAIL after 1.8 s, logged as "upstream not recorded".
+- **A route could loop.** The reverse zone was routed to the router. A router whose own upstream is Trench passes on the reverse lookups it cannot answer, so the question went back and forth until one side timed out. A local-only name asked by a server that its own route points to is now answered NXDOMAIN locally. IPv4-mapped client addresses are included.
+- **A failed route for a local-only name returned SERVFAIL.** Without the route, the answer is NXDOMAIN, and it still is when the route fails. A SERVFAIL only made the client retry against the same dead route. Stale data is still served first when it is available.
+- **A total upstream failure named no server.** `note` fires only for a server that answered. `UpstreamError` now carries `tried`, and the query log shows the servers that were asked. The per-upstream breakdown (`Counters.upstreams`) still counts only answers.
+- **The answer-from-destination UDP listener was off on Python 3.11.** `socket.IP_PKTINFO` first appears in 3.12. Because the code checked for it with `hasattr`, Docker-bridge clients on 3.11 got answers from the wrong address. `do53.py` now falls back to the Linux value, and `test_do53_source` passes on 3.11.
+- **The mypy gate had 12 new errors from recent commits.** They were in `api/server.py`, `app.py`, `pipeline.py`, `store/querylog.py` and `do53.py`. They are fixed by narrowing, not by adding to the baseline.
 
 ---
 

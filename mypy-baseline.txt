@@ -1,6 +1,6 @@
 # Known mypy findings, recorded by scripts/mypy_gate.py.
 # New findings fail CI; this file may only ever shrink.
-# 61 finding(s).
+# 60 finding(s).
 trench/analyze/lists.py	union-attr	Item "None" of "Any | None" has no attribute "nbytes"
 trench/analyze/lists.py	union-attr	Item "None" of "Any | None" has no attribute "nbytes"
 trench/api/auth.py	index	Value of type "Row | None" is not indexable
@@ -44,7 +44,6 @@ trench/engine/pipeline.py	union-attr	Item "None" of "Question | None" has no att
 trench/engine/pipeline.py	union-attr	Item "None" of "Question | None" has no attribute "rtype"
 trench/engine/responses.py	union-attr	Item "None" of "Question | None" has no attribute "name"
 trench/filter/cnamecloak.py	attr-defined	"Rdata" has no attribute "name"
-trench/resolver/dnssec/chain.py	assignment	Incompatible types in assignment (expression has type "tuple[str, Name, None]", variable has type "tuple[str, Name, list[DNSKEY]]")
 trench/resolver/recursive.py	assignment	Incompatible types in assignment (expression has type "int", variable has type "Type")
 trench/resolver/recursive.py	attr-defined	"Rdata" has no attribute "name"
 trench/resolver/recursive.py	attr-defined	"Rdata" has no attribute "name"

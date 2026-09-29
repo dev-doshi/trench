@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import ipaddress
 import struct
 import time
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -56,6 +57,16 @@ log = get("pipeline")
 #: Failures that are the upstream's or the network's, not ours. Anything else
 #: reaching the handler in `_resolve_upstream` is a bug in this package.
 _UPSTREAM_FAULTS = (TrenchError, OSError, TimeoutError)
+
+
+def _plain_ip(text: str) -> str:
+    """`text` as a canonical address, IPv4-mapped IPv6 unwrapped; else as is."""
+    try:
+        ip = ipaddress.ip_address(text.strip("[]").split("%")[0])
+    except ValueError:
+        return text
+    mapped = getattr(ip, "ipv4_mapped", None)
+    return str(mapped or ip)
 
 #: Shared empty set for the `$client` name match — see `_run`.
 _NO_NAMES: frozenset[str] = frozenset()
@@ -437,7 +448,14 @@ class Pipeline:
         # zones, discovery and DHCP names, which may answer them, and before
         # the filter, whose lists have no business with them. A route the
         # operator configured for one — the router's reverse zone — still wins.
-        if is_local_only(ctx.qname, self.local_suffixes) and not self._routed(ctx):
+        #
+        # Except when the question comes from that route's own server: a
+        # router whose upstream is this resolver passes on the reverse lookups
+        # it cannot answer, and sending them back to it is a loop that ends
+        # only when one side times out — a SERVFAIL, after seconds, for a
+        # question whose answer is NXDOMAIN.
+        if is_local_only(ctx.qname, self.local_suffixes) and (
+                not self._routed(ctx) or self._asked_by_route(ctx)):
             ctx.response = ctx.query.reply(Rcode.NXDOMAIN)
             ctx.action = "authoritative"
             ctx.reason = "local-only name"
@@ -609,8 +627,17 @@ class Pipeline:
                 # since the client just sees SERVFAIL either way — a malformed
                 # A record in an answer hid here for exactly that reason.
                 log.exception("internal error handling the answer for %s", ctx.qname)
-            ctx.response = ctx.query.reply(Rcode.SERVFAIL)
+            ctx.upstream = ", ".join(getattr(e, "tried", ())) or ctx.upstream
             ctx.action = "failed"
+            if is_local_only(ctx.qname, self.local_suffixes):
+                # A routed private or special-use name (the router's reverse
+                # zone) whose route failed. Unrouted, it is NXDOMAIN, and that
+                # is still the answer: a SERVFAIL only sends the client round
+                # again, at the same dead route.
+                ctx.response = ctx.query.reply(Rcode.NXDOMAIN)
+                ctx.reason = "local-only name; its route failed"
+                return
+            ctx.response = ctx.query.reply(Rcode.SERVFAIL)
             return
         if answer.block is not None:
             d = answer.block
@@ -654,6 +681,15 @@ class Pipeline:
     def _routed(self, ctx: QueryContext) -> bool:
         router = getattr(self._forwarder_for(ctx), "router", None)
         return router is not None and router.routed(ctx.qname)
+
+    def _asked_by_route(self, ctx: QueryContext) -> bool:
+        """True if the client is a server that `ctx.qname` routes to."""
+        router = getattr(self._forwarder_for(ctx), "router", None)
+        if router is None:
+            return False
+        client = _plain_ip(ctx.client_ip)
+        return any(_plain_ip(getattr(getattr(up, "spec", None), "host", "")) == client
+                   for up in router.group_for(ctx.qname))
 
     async def _forward(self, fwd: Message, ctx: QueryContext) -> Message:
         """Send upstream and record which server answered.
@@ -1073,7 +1109,7 @@ class Pipeline:
             ql.enqueue(record_from_ctx(qname, qtype, ctx, rcode, answers))
 
 
-_HEADER_REASON = {
+_HEADER_REASON: dict[int, str] = {
     Rcode.REFUSED: "a response, not a query",
     Rcode.NOTIMP: "opcode not supported",   # e.g. a router's DNS UPDATE
     Rcode.BADVERS: "EDNS version not supported",
