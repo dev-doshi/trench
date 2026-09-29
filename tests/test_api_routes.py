@@ -498,9 +498,14 @@ async def test_list_reviews_clamps_its_limit(api):
 
 @pytest.mark.asyncio
 async def test_whatif_needs_a_query_log(api):
-    api.app.db = None
-    async with api.s.post(f"{api.base}/api/v1/whatif", json={"deny": ["x.com"]}) as r:
-        assert r.status == 503
+    # Put the database back afterwards: teardown closes it, and an unclosed
+    # aiosqlite connection is a non-daemon thread that keeps pytest from exiting.
+    db, api.app.db = api.app.db, None
+    try:
+        async with api.s.post(f"{api.base}/api/v1/whatif", json={"deny": ["x.com"]}) as r:
+            assert r.status == 503
+    finally:
+        api.app.db = db
 
 
 @pytest.mark.asyncio

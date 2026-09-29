@@ -72,6 +72,7 @@ async def test_missing_ids_are_404(tmp_path):
             await s.post(f"{base}/auth/login", json={"name": "admin", "password": "pw"})
             assert (await s.delete(f"{base}/auth/tokens/abc")).status == 404
             assert (await s.delete(f"{base}/auth/tokens/²")).status == 404
+            assert (await s.delete(f"{base}/auth/tokens/{2**64}")).status == 404
             assert (await s.delete(f"{base}/clients/manage/999")).status == 404
     finally:
         await app.api.stop(); await app.db.close()

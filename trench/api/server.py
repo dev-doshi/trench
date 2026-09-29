@@ -369,8 +369,10 @@ class APIServer:
     async def tokens_delete(self, request: web.Request) -> web.Response:
         self._require(request, "admin")
         tid = request.match_info["tid"]
-        # The route matches any segment; a non-numeric one names no token.
-        if not (tid.isascii() and tid.isdigit()) or not await self.auth.revoke_api_token(int(tid)):
+        # The route matches any segment; a non-numeric one names no token, and
+        # neither does one past SQLite's integer range, which it cannot bind.
+        ok = tid.isascii() and tid.isdigit() and int(tid) < 2**63
+        if not ok or not await self.auth.revoke_api_token(int(tid)):
             return web.json_response({"error": "not found"}, status=404)
         await self._audit(request, "token.revoke", str(tid))
         return web.json_response({"ok": True})
