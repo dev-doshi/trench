@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import socket
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import TypeVar
 
 from aioquic.asyncio import QuicConnectionProtocol
@@ -61,3 +61,109 @@ async def quic_connect(host: str, port: int, *, configuration: QuicConfiguration
         except TimeoutError:
             pass
         transport.close()
+
+
+class _DoQProtocol(QuicConnectionProtocol):
+    """Pairs each DoQ stream with the query that opened it."""
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.pending: dict[int, tuple[bytearray, asyncio.Future]] = {}
+        self.dead = False
+        self.last_rx = 0.0      # loop time of the latest stream data received
+
+    def quic_event_received(self, event) -> None:
+        from aioquic.quic.events import (
+            ConnectionTerminated,
+            StreamDataReceived,
+            StreamReset,
+        )
+        if isinstance(event, StreamDataReceived):
+            self.last_rx = asyncio.get_running_loop().time()
+            slot = self.pending.get(event.stream_id)
+            if slot is None or slot[1].done():
+                return
+            buf, fut = slot
+            buf += event.data
+            # One length-prefixed message, never more: a peer streaming without
+            # end is cut off at the largest a DNS message can be.
+            if len(buf) > 2 + 65535:
+                fut.set_exception(ConnectionError("DoQ response too long"))
+            elif event.end_stream:
+                fut.set_result(bytes(buf))
+        elif isinstance(event, StreamReset):
+            slot = self.pending.get(event.stream_id)
+            if slot is not None and not slot[1].done():
+                slot[1].set_exception(ConnectionError("DoQ stream reset by the upstream"))
+        elif isinstance(event, ConnectionTerminated):
+            self.dead = True
+            for _, fut in self.pending.values():
+                if not fut.done():
+                    fut.set_exception(ConnectionError("DoQ connection closed"))
+
+
+class DoQClient:
+    """One QUIC connection to a DoQ upstream, with a fresh stream per query.
+
+    RFC 9250 §5.5 expects a client to reuse its connection. Opening one per
+    query paid a full TLS 1.3 handshake — two round trips — on every lookup.
+    The connection is replaced when the peer closes it, or when a query is given
+    up on and nothing at all arrived on the connection while it waited — so an
+    upstream that went away costs one round of timed-out queries rather than
+    every query until QUIC's own idle timeout notices.
+    """
+
+    def __init__(self, host: str, port: int, configuration: QuicConfiguration):
+        self.host, self.port = host, port
+        self.configuration = configuration
+        self._proto: _DoQProtocol | None = None
+        self._stack: AsyncExitStack | None = None
+        self._lock = asyncio.Lock()
+
+    async def _connection(self) -> _DoQProtocol:
+        async with self._lock:
+            if self._proto is None or self._proto.dead:
+                await self.close()
+                stack = AsyncExitStack()
+                proto = await stack.enter_async_context(quic_connect(
+                    self.host, self.port, configuration=self.configuration,
+                    create_protocol=_DoQProtocol))
+                self._stack, self._proto = stack, proto
+            return self._proto
+
+    async def query(self, wire: bytes) -> bytes:
+        """Send one query; return the response without its length prefix.
+
+        The caller bounds this with its own deadline.
+        """
+        proto = await self._connection()
+        loop = asyncio.get_running_loop()
+        sent_at = loop.time()
+        sid = proto._quic.get_next_available_stream_id()
+        fut: asyncio.Future = loop.create_future()
+        proto.pending[sid] = (bytearray(), fut)
+        try:
+            proto._quic.send_stream_data(sid, len(wire).to_bytes(2, "big") + wire,
+                                         end_stream=True)
+            proto.transmit()
+            data = await fut
+        except BaseException:
+            # Usually the caller's deadline. If the connection carried nothing
+            # at all while this query waited, the peer is gone and the next
+            # query starts a new one. Otherwise it is alive and shared: only
+            # this query was slow, and tearing the connection down would fail
+            # every other query in flight on it.
+            if proto.last_rx < sent_at:
+                proto.dead = True
+            raise
+        finally:
+            proto.pending.pop(sid, None)
+        n = int.from_bytes(data[:2], "big") if len(data) >= 2 else -1
+        if n != len(data) - 2:
+            raise ConnectionError("DoQ response length prefix does not match")
+        return data[2:]
+
+    async def close(self) -> None:
+        stack, self._stack, self._proto = self._stack, None, None
+        if stack is not None:
+            await stack.aclose()

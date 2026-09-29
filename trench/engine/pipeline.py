@@ -905,13 +905,25 @@ class Pipeline:
             sub = Message(id=0)
             sub.set_flag(Flags.RD, True)
             sub.questions.append(Question(tgt, q.rtype, Class.IN))
+            # Through the cache and `_fetch_coalesced`, like any other answer:
+            # calling the forwarder directly skipped the 0x20 check, sanitize,
+            # the rebinding scrub and the client's own upstream group, and paid
+            # a full round trip for every query to a search engine.
+            sctx = QueryContext(query=sub, client_ip=ctx.client_ip, proto="internal")
+            sctx.policy = ctx.policy
+            key = self.cache.key_for(sub, view=self._view(sctx))
+            hit = self.cache.get(key) if key is not None else None
+            up: Message | None = None
             try:
-                up = await self.forwarder.resolve(sub)
-                for rr in up.answers:
-                    if rr.rtype == q.rtype:
-                        resp.answers.append(RR(tgt, rr.rtype, Class.IN, rr.ttl, rr.rdata))
-            except Exception:
-                pass
+                up = hit[0] if hit else (await self._fetch_coalesced(sctx, key)).resp
+            except Exception as e:
+                # The CNAME alone is still a correct answer; the stub resolves
+                # the target itself.
+                log.warning("safe-search target %s did not resolve: %s", target, e)
+            ctx.upstream = sctx.upstream
+            if up is not None:
+                resp.answers.extend(rr for rr in up.answers
+                                    if rr.rtype in (Type.CNAME, q.rtype))
         ctx.response = resp
 
     def _finalize(self, ctx: QueryContext) -> None:

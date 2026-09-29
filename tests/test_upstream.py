@@ -118,6 +118,35 @@ async def test_upstream_doq():
         await srv.stop()
 
 
+@pytest.mark.asyncio
+async def test_doq_upstream_reuses_one_connection():
+    """RFC 9250 §5.5: one connection, a stream per query — not a TLS handshake
+    per lookup."""
+    import asyncio
+
+    from trench.transport.doq import DoQServer
+    from trench.transport.upstream import Upstream, parse_upstream
+    port = free_port()
+    srv = DoQServer(server_pipeline(), "127.0.0.1", port, None, None, CERT_DIR)
+    await srv.start()
+    try:
+        up = Upstream(parse_upstream(f"quic://127.0.0.1:{port}"), verify=False)
+        def q(txid):
+            m = mkquery()
+            m.id = txid
+            return m
+
+        first = await up.query(q(1))
+        proto = up._doq_client._proto
+        rest = await asyncio.gather(*(up.query(q(i)) for i in range(2, 6)))
+        assert up._doq_client._proto is proto
+        assert [r.id for r in (first, *rest)] == [1, 2, 3, 4, 5]
+        await up.close()
+        assert up._doq_client is None
+    finally:
+        await srv.stop()
+
+
 # --- stream reconnect behaviour ---------------------------------------------
 class _FlakyConn:
     """Stands in for `_StreamConn`, failing the first `fail_first` attempts.

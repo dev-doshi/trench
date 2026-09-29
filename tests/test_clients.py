@@ -113,6 +113,28 @@ def test_pipeline_safe_search_chain():
     assert any(rt == Type.A and val == "1.2.3.4" for rt, val in kinds)
 
 
+def test_pipeline_safe_search_target_is_cached():
+    """The rewrite target resolves through the cache: every safe-searched
+    lookup used to cost an upstream round trip."""
+    pipe = build_pipeline()
+    calls = []
+    real = pipe.forwarder.resolve
+
+    async def counting(query, note=None):
+        calls.append(query.question.name.to_text())
+        return await real(query, note)
+
+    pipe.forwarder.resolve = counting
+
+    async def three():
+        for name in ("google.com", "www.google.com", "google.de"):
+            r = await pipe.resolve(mkquery(name), "10.0.0.6")
+            assert any(rr.rtype == Type.A for rr in r.answers)
+
+    asyncio.run(three())
+    assert calls == ["forcesafesearch.google.com."]
+
+
 def test_pipeline_safebrowse_parental():
     pipe = build_pipeline()
     r = asyncio.run(pipe.resolve(mkquery("malware.testing.google.test"), "10.0.0.5"))

@@ -17,12 +17,16 @@ import random
 import secrets
 import ssl
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from ..errors import UpstreamError
 from ..log import get
 from ..wire import Message
 from ..wire.name import suffixes
 from ..wire.rrtypes import Flags
+
+if TYPE_CHECKING:
+    from .quicclient import DoQClient
 
 log = get("upstream")
 
@@ -431,6 +435,7 @@ class Upstream:
         self._session = None  # aiohttp session for DoH
         self._conn: _StreamConn | None = None  # persistent TCP/DoT connection
         self._pool: UdpPool | None = None
+        self._doq_client: DoQClient | None = None   # persistent DoQ connection
         self._ssl: dict[tuple[str, ...], ssl.SSLContext] = {}
         if udp_source_ports > 0 and spec.scheme == "udp":
             self._pool = UdpPool(spec.host, spec.port, udp_source_ports)
@@ -617,48 +622,29 @@ class Upstream:
         return await asyncio.wait_for(self._doq_exchange(wire), self.timeout)
 
     async def _doq_exchange(self, wire: bytes) -> bytes:
-        from aioquic.asyncio import QuicConnectionProtocol
-        from aioquic.quic.configuration import QuicConfiguration
-        from aioquic.quic.events import StreamDataReceived
+        # One connection, reused with a stream per query (RFC 9250 §5.5): a
+        # connection per query paid a TLS 1.3 handshake on every lookup.
+        if self._doq_client is None:
+            from aioquic.quic.configuration import QuicConfiguration
 
-        from .quicclient import quic_connect
+            from .quicclient import DoQClient
 
-        cfg = QuicConfiguration(is_client=True, alpn_protocols=["doq"],
-                                idle_timeout=self.timeout)
-        if not self.verify:
-            cfg.verify_mode = ssl.CERT_NONE
-
-        class _C(QuicConnectionProtocol):
-            def __init__(self, *a, **k):
-                super().__init__(*a, **k)
-                self.fut = asyncio.get_running_loop().create_future()
-                self.buf = bytearray()
-                self.sid: int | None = None
-            def quic_event_received(self, event):
-                if isinstance(event, StreamDataReceived) and event.stream_id == self.sid:
-                    self.buf += event.data
-                    if self.fut.done():
-                        return
-                    # One length-prefixed message, never more: a peer streaming
-                    # without end is cut off at the largest a DNS message can be.
-                    if len(self.buf) > 2 + 65535:
-                        self.fut.set_exception(UpstreamError("DoQ response too long"))
-                    elif event.end_stream:
-                        self.fut.set_result(bytes(self.buf))
-
-        async with quic_connect(self.spec.host, self.spec.port, configuration=cfg,
-                                create_protocol=_C) as client:
-            sid = client.sid = client._quic.get_next_available_stream_id()
-            client._quic.send_stream_data(sid, len(wire).to_bytes(2, "big") + wire,
-                                          end_stream=True)
-            client.transmit()
-            data = await client.fut
-            n = int.from_bytes(data[:2], "big") if len(data) >= 2 else -1
-            if n != len(data) - 2:
-                raise UpstreamError("DoQ response length prefix does not match")
-            return data[2:]
+            # Idle timeout outlives a single query's deadline so the connection
+            # survives the gaps between queries; each query keeps its own bound.
+            cfg = QuicConfiguration(is_client=True, alpn_protocols=["doq"],
+                                    idle_timeout=max(self.timeout, 30.0))
+            if not self.verify:
+                cfg.verify_mode = ssl.CERT_NONE
+            self._doq_client = DoQClient(self.spec.host, self.spec.port, cfg)
+        try:
+            return await self._doq_client.query(wire)
+        except ConnectionError as e:
+            raise UpstreamError(str(e)) from e
 
     async def close(self) -> None:
+        if self._doq_client is not None:
+            await self._doq_client.close()
+            self._doq_client = None
         if self._session is not None and not self._session.closed:
             await self._session.close()
         if self._conn is not None:
