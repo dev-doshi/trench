@@ -210,6 +210,10 @@ def _read_rrs(r: Reader, count: int, msg: Message, owner: Message | None = None)
         rdlen = r.u16()
         start = r.tell()
         if rtype == Type.OPT and owner is not None:
+            if owner.edns is not None or name.labels:
+                # RFC 6891 §6.1.1: one OPT, owned by the root. Two would leave
+                # which size, DO bit and options apply to the reader's choice.
+                raise WireError("duplicate or misplaced OPT record")
             ext_rcode, version, flags = parse_opt_ttl(ttl)
             owner.edns = Edns(udp_size=rclass, ext_rcode=ext_rcode, version=version,
                               flags=flags, options=parse_options(r.read(rdlen)))

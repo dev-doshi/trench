@@ -122,6 +122,37 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Authoritative wildcards follow RFC 4592.** Only `*.<closest encloser>`
+  synthesizes, so `*.example.com` no longer answers `x.foo.example.com` when
+  `foo.example.com` exists, and nothing below an empty non-terminal. A
+  synthesized answer is owned by the query name rather than by `*`, which stub
+  resolvers had been discarding.
+- **Signed zones prove their denials.** NXDOMAIN, NODATA, empty non-terminal
+  and wildcard answers now carry the NSEC or NSEC3 records that cover the name
+  asked for (RFC 4035 §3.1.3, RFC 5155 §7.2). Before, every negative answer got
+  the apex NSEC, which proves nothing for almost any name, so validating
+  resolvers SERVFAILed them. NSEC3 chains now include empty non-terminals.
+  Glue and delegation NS sets are no longer signed or chained (RFC 4035 §2.2).
+- **Negative TTLs** in authoritative answers and on NSEC/NSEC3 records are
+  min(SOA TTL, MINIMUM) (RFC 2308 §3, RFC 9077).
+- **Query header validation.**
+  - A message with QR set is never answered. Doing so let a spoofed response
+    set two servers replying to each other.
+  - A non-QUERY opcode gets NOTIMP instead of REFUSED (RFC 8906).
+  - An EDNS version other than 0 gets BADVERS (RFC 6891 §6.1.3).
+  - QDCOUNT other than 1 gets FORMERR (RFC 9619), except for a cookie-only probe
+    (RFC 7873 §5.4).
+  - A second OPT record, or one not owned by the root, is a FORMERR.
+- **EDNS sizes.** UDP replies are capped at the smaller of the client's and our
+  configured `edns_udp_size` (RFC 6891 §6.2.5), and responses advertise our size
+  rather than echoing the client's.
+- **Stale answers** are served with a 30-second TTL (RFC 8767 §4) and always
+  carry EDE 3, Stale Answer (RFC 8914).
+- **DoH** matches `Content-Type` as a media type, ignoring case and parameters.
+  DoH over HTTP/3 now sends `Cache-Control: max-age` as HTTP/2 does (RFC 8484
+  §5.1).
+- **Upstream replies** whose opcode differs from the query's are rejected.
+
 - **DNSSEC: algorithm 7 validated as BOGUS.** RSASHA1-NSEC3-SHA1 (RFC 5155 §2)
   was missing from the verifier's hash table, so every zone signed with it
   failed validation.

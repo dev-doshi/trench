@@ -114,7 +114,10 @@ class DoH3Protocol(LimitedQuicProtocol, QuicConnectionProtocol):
             if resp is None:
                 self._send(stream_id, 400, b"malformed", b"text/plain")
                 return
-            self._send(stream_id, 200, resp.to_wire(), b"application/dns-message")
+            # RFC 8484 §5.1: the same freshness bound DoH over HTTP/2 sends. An
+            # HTTP cache in between otherwise applies its own heuristics.
+            self._send(stream_id, 200, resp.to_wire(), b"application/dns-message",
+                       max_age=resp.min_ttl() or 0)
         except Exception:
             log.exception("doh3 respond error")
 
@@ -129,13 +132,17 @@ class DoH3Protocol(LimitedQuicProtocol, QuicConnectionProtocol):
                 return None
         return None
 
-    def _send(self, stream_id: int, status: int, body: bytes, ctype: bytes) -> None:
+    def _send(self, stream_id: int, status: int, body: bytes, ctype: bytes,
+              max_age: int | None = None) -> None:
         assert self._http is not None
-        self._http.send_headers(stream_id, [
+        headers = [
             (b":status", str(status).encode()),
             (b"content-type", ctype),
             (b"content-length", str(len(body)).encode()),
-        ])
+        ]
+        if max_age is not None:
+            headers.append((b"cache-control", f"max-age={max_age}".encode()))
+        self._http.send_headers(stream_id, headers)
         self._http.send_data(stream_id, body, end_stream=True)
         self.transmit()
 

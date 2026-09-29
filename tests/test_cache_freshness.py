@@ -139,7 +139,7 @@ async def test_stale_is_served_when_the_refresh_outlives_the_client_timer():
     up.ip, up.delay = "2.2.2.2", 0.4       # refresh is slower than the timer
     resp = await p.resolve(query(), "10.0.0.1")
     assert ip_of(resp) == "1.1.1.1", "waited for the slow refresh instead of answering"
-    assert resp.answers[0].ttl == 1        # stale answers carry a 1s TTL
+    assert resp.answers[0].ttl == 30       # RFC 8767 §4: stale answers carry 30s
     await asyncio.sleep(0.5)               # let the detached refresh land
     assert ip_of(await p.resolve(query(), "10.0.0.1")) == "2.2.2.2", (
         "the background refresh never repaired the cache")

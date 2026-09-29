@@ -27,10 +27,23 @@ PADDED = {"tls", "https", "quic", "h3"}
 PAD_BLOCK = 468
 
 
-def udp_response_limit(query: Message | None) -> int:
+def udp_response_limit(query: Message | None, ours: int = 4096) -> int:
+    """The largest UDP reply this query may receive.
+
+    RFC 6891 §6.2.5: the smaller of the two advertised sizes, never below 512.
+    Taking only the client's figure meant a client advertising 4096 was sent
+    4 KB datagrams no matter what the operator configured — and the whole point
+    of the 1232 default (DNS Flag Day 2020) is to never emit a datagram that the
+    path has to fragment, since fragments are what off-path poisoning rides on.
+    """
     if query is not None and query.edns is not None:
-        return max(512, min(query.edns.udp_size, 4096))
+        return max(512, min(query.edns.udp_size, ours, 4096))
     return 512
+
+
+def _our_udp_size(pipeline) -> int:
+    server = getattr(getattr(pipeline, "config", None), "server", None)
+    return int(getattr(server, "edns_udp_size", 4096) or 4096)
 
 
 def apply_padding(response: Message) -> None:
@@ -92,7 +105,7 @@ async def process_query(pipeline: Pipeline, data: bytes, client_ip: str,
         response = ctx.response
     if stream:
         return response.to_wire()
-    out = response.to_wire(max_size=udp_response_limit(query))
+    out = response.to_wire(max_size=udp_response_limit(query, _our_udp_size(pipeline)))
     if ctx is not None:
         fast.store(data, out, ctx)
     return out

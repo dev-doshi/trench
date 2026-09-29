@@ -111,7 +111,10 @@ class DoHServer(Frontend):
             except Exception:
                 return web.Response(status=400, text="bad base64url")
         else:
-            if request.headers.get("Content-Type") != "application/dns-message":
+            # Compared as a media type (RFC 9110 §8.3.1): case-insensitive and
+            # without parameters. An exact string match turned away
+            # `application/dns-message; charset=binary`, which some clients send.
+            if request.content_type.lower() != "application/dns-message":
                 return web.Response(status=415, text="expected application/dns-message")
             data = await request.read()
 

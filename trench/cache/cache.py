@@ -30,6 +30,13 @@ from ..wire.name import wire_key
 from ..wire.rrtypes import Rcode
 from .shared import key64
 
+#: TTL on a served-stale answer. RFC 8767 §4 recommends 30 s: long enough that
+#: a client does not come straight back to a resolver whose upstream is known
+#: to be failing — a 1 s TTL turned every client into a once-a-second retry
+#: loop against exactly the outage stale data exists to ride out — and short
+#: enough that the fresh answer replaces it promptly once the upstream recovers.
+STALE_TTL = 30
+
 
 class CacheKey(NamedTuple):
     # The lowercased wire form of the name, not its text. Rendering a name to
@@ -138,7 +145,7 @@ class Cache:
             if self.serve_stale and now < entry.stale_until:
                 if allow_stale:
                     self.stats["stale_hits"] += 1
-                    return self._with_ttl(entry.msg, 1), True  # RFC 8767
+                    return self._with_ttl(entry.msg, STALE_TTL), True
                 # expired: treat as a miss so it gets refetched, but keep the
                 # entry around as a fallback in case that refetch fails
             else:
