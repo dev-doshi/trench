@@ -29,6 +29,13 @@ _HDR = struct.Struct("<QdIH")   # keyhash(u64), inserted(f64), ttl(u32), length(
 _HDR_LEN = _HDR.size
 _STRIPES = 64
 
+#: Longest any worker waits for a stripe lock. Holders keep it for a memcpy, so
+#: contention never gets near this; it is reached only when a worker died
+#: holding the lock. That used to block every other worker's event loop — the
+#: whole resolver — on the first query to hash into the stripe. Now the stripe
+#: behaves as empty and the query goes to the worker's own cache and upstream.
+LOCK_TIMEOUT = 0.05
+
 
 def key64(qname: bytes, qtype: int, qclass: int, do: bool, ecs: str = "",
           cd: bool = False, view: str = "") -> int:
@@ -66,7 +73,9 @@ class SharedCache:
 
     def get(self, k: int) -> tuple[bytes, float] | None:
         off, lock = self._slot(k)
-        with lock:
+        if not lock.acquire(timeout=LOCK_TIMEOUT):
+            return None
+        try:
             kh, inserted, ttl, length = _HDR.unpack_from(self.mm, off)
             if kh != k or length == 0:
                 return None
@@ -74,24 +83,34 @@ class SharedCache:
             if remaining <= 0:
                 return None
             wire = bytes(self.mm[off + _HDR_LEN: off + _HDR_LEN + length])
+        finally:
+            lock.release()
         return wire, remaining
 
     def put(self, k: int, wire: bytes, ttl: int) -> None:
         if not wire or len(wire) > self.payload or ttl <= 0:
             return
         off, lock = self._slot(k)
-        with lock:
+        if not lock.acquire(timeout=LOCK_TIMEOUT):
+            return
+        try:
             _HDR.pack_into(self.mm, off, k, time.monotonic(), int(ttl), len(wire))
             self.mm[off + _HDR_LEN: off + _HDR_LEN + len(wire)] = wire
+        finally:
+            lock.release()
 
     def delete(self, k: int) -> None:
         """Invalidate one slot. Needed so a targeted flush is not undone by the
         next L1 miss reading the flushed answer straight back out of L2."""
         off, lock = self._slot(k)
-        with lock:
+        if not lock.acquire(timeout=LOCK_TIMEOUT):
+            return      # get() treats this stripe as empty while it is wedged
+        try:
             kh, _, _, _ = _HDR.unpack_from(self.mm, off)
             if kh == k:
                 _HDR.pack_into(self.mm, off, 0, 0.0, 0, 0)
+        finally:
+            lock.release()
 
     def clear(self) -> None:
         """Invalidate every slot.
@@ -104,7 +123,12 @@ class SharedCache:
         """
         blank = _HDR.pack(0, 0.0, 0, 0)
         for i in range(_STRIPES):
-            with self.locks[i]:
+            lock = self.locks[i]
+            if not lock.acquire(timeout=LOCK_TIMEOUT):
+                continue    # wedged: get() already treats it as empty
+            try:
                 for b in range(i, self.slots, _STRIPES):
                     off = b * self.slot_size
                     self.mm[off:off + _HDR_LEN] = blank
+            finally:
+                lock.release()

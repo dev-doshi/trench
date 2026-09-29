@@ -89,6 +89,11 @@ class QueryLog:
         self._queue: asyncio.Queue[QueryRecord] = asyncio.Queue(maxsize=50_000)
         self._writer_task: asyncio.Task | None = None
         self._running = False
+        # Records shed because the queue was full. Counted, and reported by the
+        # writer, so a gap in the log under load is explained rather than silent.
+        self.dropped = 0
+        self._dropped_reported = 0
+        self._dropped_at = float("-inf")
 
     @property
     def recording(self) -> bool:
@@ -140,7 +145,7 @@ class QueryLog:
         try:
             self._queue.put_nowait(rec)
         except asyncio.QueueFull:  # under flood, shed log load rather than block DNS
-            pass
+            self.dropped += 1
 
     async def start(self) -> None:
         if not self._salt_is_persisted and self.db is not None:
@@ -175,7 +180,15 @@ class QueryLog:
         while self._running:
             await asyncio.sleep(self.batch_ms / 1000)
             try:
+                # Keep writing while a full batch is waiting. One batch per tick
+                # capped the log at max_batch / batch_ms — 2,000 rows a second at
+                # the defaults — and anything faster than that filled the queue
+                # and was shed. Each flush awaits the database, so the loop still
+                # yields between batches.
                 await self._flush()
+                while self._running and self._queue.qsize() >= self.max_batch:
+                    await self._flush()
+                self._report_drops()
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -183,6 +196,14 @@ class QueryLog:
                 # of the process, unretrieved and with nothing in the log to say
                 # so. A bad tick is not a reason to stop writing.
                 log.exception("query log flush failed; continuing")
+
+    def _report_drops(self) -> None:
+        shed = self.dropped - self._dropped_reported
+        now = time.monotonic()
+        if shed and now - self._dropped_at >= 60:   # once a minute, not every tick
+            self._dropped_reported, self._dropped_at = self.dropped, now
+            log.warning("query log queue full: %d records dropped (%d total)",
+                        shed, self.dropped)
 
     async def _flush(self) -> None:
         batch: list[QueryRecord] = []
@@ -219,9 +240,9 @@ class QueryLog:
 
     async def retention_sweep(self) -> int:
         cutoff = int((time.time() - self.retention_days * 86400) * 1_000_000)
-        before = await self.store.fetchone("SELECT COUNT(*) AS n FROM querylog WHERE ts < ?", (cutoff,))
-        await self.store.execute("DELETE FROM querylog WHERE ts < ?", (cutoff,))
-        n = before["n"] if before else 0
+        # One pass: the DELETE's own row count, rather than a COUNT(*) over the
+        # same range first — two full scans of the oldest end of the table.
+        n = await self.store.execute("DELETE FROM querylog WHERE ts < ?", (cutoff,)) or 0
         if n:
             log.info("retention: pruned %d query log rows", n)
         return n

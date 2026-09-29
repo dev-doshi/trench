@@ -88,6 +88,10 @@ API = "/api/v1"
 #: Ceiling on one inbound WebSocket message. The console's own frames are a
 #: handful of bytes; this is generous for them and finite for everyone else.
 WS_MAX_MSG_BYTES = 64 * 1024
+#: Live events one websocket client may have queued before new ones are dropped,
+#: and how many are sent per wake of its loop.
+WS_QUEUE = 2000
+WS_BATCH = 256
 
 
 class _NoUpdater(Exception):
@@ -159,6 +163,7 @@ class APIServer:
         self.start_ts = time.time()
         self._runner: web.AppRunner | None = None
         self._ws: set[web.WebSocketResponse] = set()
+        self._bg: set[asyncio.Task] = set()      # background work started by a request
         # Secrets offered for enrolment but not yet proven. Held here rather
         # than written straight to the user row: a secret stored before the
         # operator's authenticator has produced one matching code is a lockout
@@ -185,6 +190,8 @@ class APIServer:
                  self.host, self.port)
 
     async def stop(self) -> None:
+        for task in list(self._bg):
+            task.cancel()
         for ws in list(self._ws):
             await ws.close()
         if self._runner is not None:
@@ -842,7 +849,12 @@ class APIServer:
 
     async def gravity_refresh(self, request: web.Request) -> web.Response:
         self._require(request, "editor")
-        asyncio.ensure_future(self.app.refresh_blocklists())
+        # Held until done: the loop keeps only a weak reference to a task, so an
+        # unreferenced one can be collected part way through a build. The app
+        # serialises builds itself; this only has to keep the task alive.
+        task = asyncio.ensure_future(self.app.refresh_blocklists())
+        self._bg.add(task)
+        task.add_done_callback(self._bg.discard)
         await self._audit(request, "gravity.refresh")
         return web.json_response({"ok": True})
 
@@ -1136,7 +1148,6 @@ class APIServer:
     async def websocket(self, request: web.Request) -> web.WebSocketResponse:
         """Multiplexed live channel: an initial snapshot, per-query events as they
         happen, and a stats/series refresh every 2s — all typed JSON frames."""
-        from aiohttp import WSMsgType
         # Gate before the upgrade: this feed carries client IPs and queried
         # domains straight out of the in-memory ring, so it needs at least the
         # same role as the REST routes that serve the same data.
@@ -1150,7 +1161,7 @@ class APIServer:
         await ws.prepare(request)
         self._ws.add(ws)
         loop = asyncio.get_running_loop()
-        live: asyncio.Queue = asyncio.Queue(maxsize=2000)
+        live: asyncio.Queue = asyncio.Queue(maxsize=WS_QUEUE)
 
         def on_event(ev: dict) -> None:            # called from the resolve path
             try:
@@ -1158,6 +1169,13 @@ class APIServer:
             except asyncio.QueueFull:
                 pass
         self.app.counters.subscribe(on_event)
+        # Read in a task of its own, so a close from the client is noticed as it
+        # arrives. The loop used to probe `ws.receive()` with a 1 ms timeout
+        # after every event, which cancelled a read in progress each time and
+        # capped a client at one event per probe: under load the queue filled
+        # and the feed dropped events however fast the client could take them.
+        reader = asyncio.ensure_future(_ws_drain(ws))
+        getter: asyncio.Future | None = None
         try:
             # 1) hydrate: current stats + the recent ring so the feed isn't empty
             await ws.send_str(json.dumps({"type": "hello", "data": {
@@ -1165,27 +1183,31 @@ class APIServer:
                 "series": self.app.counters.series(60),
                 "recent": self.app.counters.recent_events(200),
             }}))
-            last_stats = loop.time()
-            while not ws.closed:
-                try:
-                    ev = await asyncio.wait_for(live.get(), timeout=0.5)
-                    await ws.send_str(json.dumps({"type": "query", "data": ev}))
-                except TimeoutError:
-                    pass
-                # detect client close without blocking the stream
-                try:
-                    msg = await asyncio.wait_for(ws.receive(), timeout=0.001)
-                    if msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSING, WSMsgType.ERROR):
-                        break
-                except TimeoutError:
-                    pass
-                if loop.time() - last_stats >= 2.0:
+            next_stats = loop.time() + 2.0
+            while not ws.closed and not reader.done():
+                getter = asyncio.ensure_future(live.get())
+                done, _ = await asyncio.wait(
+                    {getter, reader}, timeout=max(0.0, next_stats - loop.time()),
+                    return_when=asyncio.FIRST_COMPLETED)
+                if getter in done:
+                    batch = [getter.result()]
+                    while len(batch) < WS_BATCH and not live.empty():
+                        batch.append(live.get_nowait())
+                    for ev in batch:
+                        await ws.send_str(json.dumps({"type": "query", "data": ev}))
+                else:
+                    getter.cancel()
+                getter = None
+                if loop.time() >= next_stats:
                     await ws.send_str(json.dumps({"type": "stats", "data": self._stats_payload(),
                                                   "series": self.app.counters.series(60)}))
-                    last_stats = loop.time()
-        except (asyncio.CancelledError, ConnectionResetError):
+                    next_stats = loop.time() + 2.0
+        except ConnectionResetError:
             pass
         finally:
+            if getter is not None:
+                getter.cancel()
+            reader.cancel()
             self.app.counters.unsubscribe(on_event)
             self._ws.discard(ws)
         return ws
@@ -1194,6 +1216,14 @@ class APIServer:
         from pathlib import Path
         index = Path(__file__).resolve().parent.parent / "web" / "dist" / "index.html"
         return web.FileResponse(index)
+
+
+async def _ws_drain(ws: web.WebSocketResponse) -> None:
+    """Consume what the client sends, returning once it closes. Nothing the
+    console sends is acted on; reading is what processes pings and the close
+    handshake."""
+    async for _ in ws:
+        pass
 
 
 async def _json(request: web.Request) -> dict:

@@ -34,6 +34,12 @@ import struct
 _LANE_HDR = struct.Struct("<QQQ")
 _LEN = struct.Struct("<H")
 
+#: Longest any process waits for a lane lock. The critical sections are a few
+#: microseconds, so this is never reached by contention: it is reached only when
+#: a worker was killed holding the lock, and it turns a lock nobody will ever
+#: release into a lost record rather than an event loop blocked for good.
+LOCK_TIMEOUT = 0.05
+
 
 class RecordRing:
     """A single-producer/single-consumer ring per worker, over one shared mmap."""
@@ -88,7 +94,10 @@ class RecordRing:
                 return False
             payload = shrunk
         off = self._lane_off(self.lane)
-        with self.locks[self.lane]:
+        lock = self.locks[self.lane]
+        if not lock.acquire(timeout=LOCK_TIMEOUT):
+            return False
+        try:
             head, tail, dropped = _LANE_HDR.unpack_from(self.mm, off)
             if head - tail >= self.slots:
                 _LANE_HDR.pack_into(self.mm, off, head, tail, dropped + 1)
@@ -97,6 +106,8 @@ class RecordRing:
             _LEN.pack_into(self.mm, slot, len(payload))
             self.mm[slot + _LEN.size: slot + _LEN.size + len(payload)] = payload
             _LANE_HDR.pack_into(self.mm, off, head + 1, tail, dropped)
+        finally:
+            lock.release()
         return True
 
     def _shrink(self, row: list) -> bytes | None:
@@ -128,8 +139,11 @@ class RecordRing:
     def _drain_lane(self, lane: int, limit: int) -> list[list]:
         out: list[list] = []
         off = self._lane_off(lane)
+        lock = self.locks[lane]
         while len(out) < limit:
-            with self.locks[lane]:
+            if not lock.acquire(timeout=LOCK_TIMEOUT):
+                break           # a dead writer's lock: skip the lane, keep the loop
+            try:
                 head, tail, dropped = _LANE_HDR.unpack_from(self.mm, off)
                 if tail >= head:
                     break
@@ -137,6 +151,8 @@ class RecordRing:
                 (length,) = _LEN.unpack_from(self.mm, slot)
                 raw = bytes(self.mm[slot + _LEN.size: slot + _LEN.size + length])
                 _LANE_HDR.pack_into(self.mm, off, head, tail + 1, dropped)
+            finally:
+                lock.release()
             try:
                 out.append(json.loads(raw))
             except ValueError:
@@ -148,7 +164,8 @@ class RecordRing:
         total = 0
         for lane in range(self.lanes):
             off = self._lane_off(lane)
-            with self.locks[lane]:
-                _, _, dropped = _LANE_HDR.unpack_from(self.mm, off)
+            # A single aligned u64 read: without the lock it can be stale, not
+            # torn, and a stale count is fine for a counter that is only shown.
+            _, _, dropped = _LANE_HDR.unpack_from(self.mm, off)
             total += dropped
         return total

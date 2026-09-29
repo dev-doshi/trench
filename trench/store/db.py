@@ -139,10 +139,14 @@ class Database:
             raise RuntimeError(f"could not store the {name} secret")
         return bytes.fromhex(row["value"])
 
-    async def execute(self, sql: str, params: Iterable[Any] = ()) -> None:
+    async def execute(self, sql: str, params: Iterable[Any] = ()) -> int:
+        """Run one statement and commit. Returns the number of rows it changed."""
         try:
-            await self.conn.execute(sql, tuple(params))
+            cur = await self.conn.execute(sql, tuple(params))
+            n = cur.rowcount
+            await cur.close()
             await self.conn.commit()
+            return n
         except BaseException:
             await self._rollback()
             raise

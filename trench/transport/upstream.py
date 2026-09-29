@@ -339,7 +339,9 @@ class _StreamConn:
         self._pending[mid] = fut
         try:
             self.writer.write(len(out).to_bytes(2, "big") + out)   # type: ignore[union-attr]
-            await self.writer.drain()                              # type: ignore[union-attr]
+            # Bounded like the answer is: an upstream that stops reading fills
+            # the socket buffer, and an unbounded drain waited on it forever.
+            await asyncio.wait_for(self.writer.drain(), self.up.timeout)  # type: ignore[union-attr]
             return await asyncio.wait_for(fut, self.up.timeout)
         finally:
             self._pending.pop(mid, None)
@@ -406,6 +408,7 @@ class Upstream:
         self._session = None  # aiohttp session for DoH
         self._conn: _StreamConn | None = None  # persistent TCP/DoT connection
         self._pool: UdpPool | None = None
+        self._ssl: dict[tuple[str, ...], ssl.SSLContext] = {}
         if udp_source_ports > 0 and spec.scheme == "udp":
             self._pool = UdpPool(spec.host, spec.port, udp_source_ports)
 
@@ -536,6 +539,16 @@ class Upstream:
             writer.close()
 
     def _tls_ctx(self, alpn: list[str]) -> ssl.SSLContext:
+        """One context per ALPN set, built once. `create_default_context` loads
+        the system CA store, about 23 ms of blocking work on the event loop, and
+        this ran on every reconnect — up to three times for one query while an
+        upstream was flapping."""
+        ctx = self._ssl.get(tuple(alpn))
+        if ctx is None:
+            ctx = self._ssl[tuple(alpn)] = self._new_tls_ctx(alpn)
+        return ctx
+
+    def _new_tls_ctx(self, alpn: list[str]) -> ssl.SSLContext:
         ctx = ssl.create_default_context()
         ctx.set_alpn_protocols(alpn)
         if not self.verify:
@@ -557,6 +570,12 @@ class Upstream:
             return await r.read()
 
     async def _doq(self, wire: bytes) -> bytes:
+        # The whole exchange, handshake included. `connect` waits for the
+        # handshake with no deadline of its own, so an unreachable upstream held
+        # the query for aioquic's 60-second idle timeout rather than ours.
+        return await asyncio.wait_for(self._doq_exchange(wire), self.timeout)
+
+    async def _doq_exchange(self, wire: bytes) -> bytes:
         from aioquic.asyncio import QuicConnectionProtocol, connect
         from aioquic.quic.configuration import QuicConfiguration
         from aioquic.quic.events import StreamDataReceived
@@ -583,7 +602,7 @@ class Upstream:
             client._quic.send_stream_data(sid, len(wire).to_bytes(2, "big") + wire,
                                           end_stream=True)
             client.transmit()
-            data = await asyncio.wait_for(client.fut, self.timeout)
+            data = await client.fut
             return data[2:]  # strip 2-byte length prefix
 
     async def close(self) -> None:

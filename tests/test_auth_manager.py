@@ -123,6 +123,63 @@ async def test_repeated_failures_lock_the_address_out(auth):
 
 
 @pytest.mark.asyncio
+async def test_a_concurrent_burst_is_counted_before_any_verify_finishes(auth):
+    """The attempt used to be counted after the password check. Every request
+    in a burst passed the lockout check before the first of them was counted,
+    so the threshold did not limit how many guesses got through."""
+    import asyncio
+    await auth.create_user("admin", "pw")
+    verified = 0
+    real = hashutil.verify_password
+
+    def counting(pw, h):
+        nonlocal verified
+        verified += 1
+        return real(pw, h)
+
+    hashutil.verify_password = counting
+    try:
+        await asyncio.gather(*(auth.login("admin", "wrong", ip="10.0.0.9")
+                               for _ in range(4 * LOCKOUT_THRESHOLD)))
+    finally:
+        hashutil.verify_password = real
+    assert verified == LOCKOUT_THRESHOLD
+
+
+@pytest.mark.asyncio
+async def test_login_does_not_block_the_event_loop(auth):
+    """scrypt runs in a thread. The API shares its loop with the DNS listeners,
+    so a verify run inline stalled DNS for its whole duration."""
+    import asyncio
+    await auth.create_user("admin", "pw")
+    real = hashutil.verify_password
+
+    def slow(pw, h):
+        time.sleep(0.3)
+        return real(pw, h)
+
+    worst = 0.0
+
+    async def ticker():
+        nonlocal worst
+        last = time.monotonic()
+        while True:
+            await asyncio.sleep(0.005)
+            now = time.monotonic()
+            worst = max(worst, now - last)
+            last = now
+
+    hashutil.verify_password = slow
+    t = asyncio.create_task(ticker())
+    try:
+        assert await auth.login("admin", "pw")
+    finally:
+        t.cancel()
+        hashutil.verify_password = real
+    assert worst < 0.2
+
+
+@pytest.mark.asyncio
 async def test_the_username_is_locked_out_independently_of_the_address(auth):
     """The address comes from the request; an attacker who can vary it would
     otherwise never trip the counter."""

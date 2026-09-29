@@ -113,3 +113,19 @@ async def test_privacy_is_applied_before_anything_crosses_the_boundary(tmp_path)
     # and the primary, hashing with the same salt, agrees on what it is
     from trench.security.hashutil import hash_identifier
     assert hash_identifier("secret.test", salt) in published
+
+
+def test_a_lane_lock_held_by_a_dead_worker_sheds_instead_of_hanging():
+    import time
+    ring = RecordRing.create(lanes=2)
+    writer = ring.for_lane(1)
+    ring.locks[1].acquire()
+    try:
+        t = time.monotonic()
+        assert writer.push(["x"]) is False
+        assert ring.for_lane(0).drain() == []
+        assert time.monotonic() - t < 2.0
+    finally:
+        ring.locks[1].release()
+    assert writer.push(["y"]) is True
+    assert ring.for_lane(0).drain() == [["y"]]
