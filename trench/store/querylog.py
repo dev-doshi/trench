@@ -12,6 +12,7 @@ import secrets
 import time
 from dataclasses import dataclass
 
+from ..clients.model import mask_client_id
 from ..log import get
 from ..security.hashutil import hash_identifier
 from .db import Database
@@ -424,7 +425,10 @@ class QueryLog:
 
 def record_from_ctx(qname: str, qtype: str, ctx, rcode: str, answers: list[str]) -> QueryRecord:
     return QueryRecord(
-        ts=int(time.time() * 1_000_000), client_ip=ctx.client_ip, client_id=ctx.client_id,
+        ts=int(time.time() * 1_000_000), client_ip=ctx.client_ip,
+        # The id a client presents is its credential (DoH path, DoT SNI);
+        # the log is readable by every viewer, so only a masked form goes in.
+        client_id=mask_client_id(ctx.client_id),
         qname=qname, qtype=qtype, proto=ctx.proto, action=ctx.action, reason=ctx.reason,
         rule=ctx.rule, source=ctx.source, upstream=ctx.upstream, rcode=rcode,
         answers=answers, elapsed_us=ctx.elapsed_us(),

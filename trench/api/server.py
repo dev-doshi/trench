@@ -753,9 +753,10 @@ class APIServer:
 
     # ---- settings ----
     async def settings_get(self, request: web.Request) -> web.Response:
-        self._require(request, "viewer")
+        user = self._require(request, "viewer")
         from . import settings as st
-        body = st.describe(self.app.config)
+        body = st.describe(self.app.config,
+                           reveal=AuthManager.has_role(user, "admin"))
         path = self.app._config_path
         body["config_path"] = str(path or "")
         body["writable"], body["why"] = _config_writable(path)
@@ -1024,10 +1025,16 @@ class APIServer:
     _IDENT_TYPES = ("ip", "cidr", "mac", "clientid", "token")
 
     async def clients_list(self, request: web.Request) -> web.Response:
-        self._require(request, "viewer")
+        user = self._require(request, "viewer")
         rows = await self.app.db.fetchall(
             "SELECT id, ident, ident_type, name, comment, policy FROM client ORDER BY id")
-        return web.json_response({"clients": [dict(r) for r in rows]})
+        out = [dict(r) for r in rows]
+        if not AuthManager.has_role(user, "admin"):
+            # A token ident is a credential; see `clients.model.mask_ident`.
+            from ..clients.model import mask_ident
+            for r in out:
+                r["ident"] = mask_ident(r["ident"], r["ident_type"])
+        return web.json_response({"clients": out})
 
     async def clients_create(self, request: web.Request) -> web.Response:
         self._require(request, "editor")
@@ -1122,12 +1129,14 @@ class APIServer:
         needs is to see them, including whether their lists compiled.
         """
         self._require(request, "viewer")
+        from ..clients.model import mask_ident
         pipe = self.app.pipeline
         configured = self.app.config.filtering.groups or {}
         members: dict[str, list[str]] = {}
         for c in self.app.config.clients:
             if c.group:
-                members.setdefault(c.group, []).append(c.name or c.ident)
+                members.setdefault(c.group, []).append(
+                    c.name or mask_ident(c.ident, c.type))
         out = []
         for name, spec in configured.items():
             live = pipe.group_filters.get(name)

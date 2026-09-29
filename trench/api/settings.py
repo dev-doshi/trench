@@ -39,6 +39,8 @@ import math
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from ..clients.model import mask_ident
+
 #: What `App.apply_config` can adopt into a running process. The names are the
 #: appliers themselves; `App.adopters()` maps each to the method that runs it.
 ADOPTERS = ("upstream", "cache", "pipeline", "clients", "querylog", "fastpath",
@@ -475,6 +477,8 @@ class Col:
     options: list[str] = field(default_factory=list)
     placeholder: str = ""
     help: str = ""
+    #: Redacted for anyone below admin; see `collection_values`.
+    secret: bool = False
 
 
 @dataclass
@@ -583,7 +587,7 @@ COLLECTIONS: list[Collection] = [
             Col("algorithm", "Algorithm", "select",
                 options=["hmac-sha256.", "hmac-sha384.", "hmac-sha512.",
                          "hmac-sha1.", "hmac-md5.sig-alg.reg.int."]),
-            Col("secret", "Secret (base64)"),
+            Col("secret", "Secret (base64)", secret=True),
         ]),
     Collection(
         "dhcp.scope.reservations", "Fixed addresses", "DHCP", "map",
@@ -639,12 +643,40 @@ def _plain(v: Any) -> Any:
     return v
 
 
-def collection_values(config) -> dict[str, Any]:
+REDACTED = "(hidden)"
+
+
+def collection_values(config, reveal: bool = False) -> dict[str, Any]:
+    """Every collection as JSON. Secrets are only included when `reveal`.
+
+    This used to return everything to the lowest role that can read settings,
+    TSIG secrets and DoH client tokens included — so a read-only API token was
+    enough to sign zone updates and to impersonate any token-identified client.
+    Only an admin, who could overwrite those values anyway, sees them.
+    """
     out: dict[str, Any] = {}
     for c in COLLECTIONS:
         v = _dig(config, c.path)
-        out[c.path] = _plain(v) if v is not None else ([] if c.shape == "list" else {})
+        v = _plain(v) if v is not None else ([] if c.shape == "list" else {})
+        if not reveal:
+            v = _redact(c, v)
+        out[c.path] = v
     return out
+
+
+def _redact(c: Collection, value: Any) -> Any:
+    secret_cols = [col.name for col in c.columns if col.secret]
+    rows = value if isinstance(value, list) else list(value.values()) \
+        if isinstance(value, dict) else []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        for name in secret_cols:
+            if row.get(name):
+                row[name] = REDACTED
+        if c.path == "clients" and "ident" in row:
+            row["ident"] = mask_ident(row["ident"], row.get("type", ""))
+    return value
 
 
 def coerce_collection(path: str, value: Any) -> Any:
@@ -667,12 +699,12 @@ def coerce_collection(path: str, value: Any) -> Any:
     return value
 
 
-def describe(config) -> dict[str, Any]:
+def describe(config, reveal: bool = False) -> dict[str, Any]:
     return {
         "groups": GROUPS,
         "collections": [{**asdict(c), "restart": c.restart, "scalar": c.scalar}
                         for c in COLLECTIONS],
-        "collection_values": collection_values(config),
+        "collection_values": collection_values(config, reveal),
         # `restart` is derived, not stored, so the badge the operator sees and
         # the behaviour of the running process cannot say different things.
         "fields": [{**asdict(f), "restart": f.restart} for f in FIELDS],
