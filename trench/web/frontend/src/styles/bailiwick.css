@@ -272,12 +272,15 @@ body {
 /* One row, one control height, set on the row rather than on each control:
    `height` on a flex child does not survive `align-items: stretch` defaults and
    inline-flex children measured themselves, so the segments sat a pixel or two
-   proud of the pickers beside them. */
+   proud of the pickers beside them.
+   The pickers' dropdowns are grandchildren too, and are excluded: pinned at
+   30px, a menu painted its background behind the first option only and let
+   the rest hang see-through over the rows beneath. */
 .bw-ctl {
   display: flex; align-items: center; gap: var(--b-2); padding: var(--b-2) var(--b-4);
   border-bottom: 1px solid var(--b-edge); flex: none;
 }
-.bw-ctl > *, .bw-ctl > * > * { height: 30px; box-sizing: border-box; }
+.bw-ctl > *, .bw-ctl > * > *:not(.bw-menu) { height: 30px; box-sizing: border-box; }
 .bw-ctl .bw-q { line-height: 28px; }
 .bw-q {
   flex: 1; min-width: 200px; background: var(--b-sunk);
@@ -1334,7 +1337,7 @@ html::-webkit-scrollbar, body::-webkit-scrollbar { width: 0; height: 0; }
 @media (pointer: coarse) {
   :root { --b-row: 40px; }
   .bframe-btn, .bsheet a, .bframe-nav a { min-height: 40px; }
-  .bw-ctl > *, .bw-ctl > * > * { height: 36px; }
+  .bw-ctl > *, .bw-ctl > * > *:not(.bw-menu) { height: 36px; }
   .bw-ctl .bw-q { line-height: 34px; }
   .seg button, .st-tabs button { min-height: 36px; }
   .tb td { padding: 10px; }
