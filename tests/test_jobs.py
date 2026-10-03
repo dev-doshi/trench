@@ -146,6 +146,7 @@ async def test_the_console_can_see_and_run_the_jobs(api, monkeypatch):
     assert job["result"] == "ok" and job["trigger"] == "console"
     assert job["detail"].startswith("1,000 domains")
     assert "memory" in body and "sources" in body
+    assert set(body["cpu"]) == {"percent", "cores", "container"}
     async with s.get(f"{base}/api/v1/audit") as r:
         audit = (await r.json())["audit"]
     assert any(a["action"] == "job.run" and a["target"] == "gravity-refresh"
@@ -194,3 +195,16 @@ async def test_a_refresh_that_had_nothing_to_do_does_not_say_done(api):
         await asyncio.sleep(0.01)
     st = app.jobs.jobs["gravity-refresh"]
     assert st.result == "skipped" and "no blocklists" in st.detail
+
+
+def test_cpu_is_a_share_of_the_box_since_the_last_look(monkeypatch):
+    from trench import jobs
+    clock = iter([100.0, 110.0, 110.01])
+    used = iter([(1_000_000, True), (6_000_000, True), (6_000_000, True)])
+    monkeypatch.setattr(jobs.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(jobs, "_cpu_usec", lambda: next(used))
+    monkeypatch.setattr(jobs, "_cores", lambda: 2.0)
+    jobs.cpu()                                  # sets the baseline
+    r = jobs.cpu()                              # 5 CPU-seconds over 10s on 2 cores
+    assert r == {"percent": 25.0, "cores": 2.0, "container": True}
+    assert jobs.cpu()["percent"] is None        # too soon to say anything

@@ -14,6 +14,9 @@ export interface JobFeed {
   building: boolean;
   memory: { rss: number | null; cgroup_current: number | null;
             cgroup_peak: number | null; cgroup_max: number | null };
+  /** Share of the available CPU since the box was last asked; `container`
+   *  says whether that is the whole container or only the answering process. */
+  cpu: { percent: number | null; cores: number | null; container: boolean };
   table: { built_at?: number | null; rules?: number | null; complete?: boolean | null;
            matches_config?: boolean; domains?: number | null };
   sources: { url: string; last_update: number; rule_count: number; status: string; error: string }[];
@@ -28,6 +31,7 @@ export interface JobFeed {
 export const feed = reactive<JobFeed>({
   jobs: [], building: false,
   memory: { rss: null, cgroup_current: null, cgroup_peak: null, cgroup_max: null },
+  cpu: { percent: null, cores: null, container: false },
   table: {}, sources: [], now: Date.now() / 1000, loaded: false, error: "", skew: 0,
 });
 

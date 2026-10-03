@@ -897,7 +897,7 @@ class APIServer:
     async def jobs(self, request: web.Request) -> web.Response:
         self._require(request, "viewer")
         from ..gravity.manager import read_table_meta, table_matches
-        from ..jobs import memory
+        from ..jobs import cpu, memory
         app = self.app
         board = getattr(app, "jobs", None)
         sources: list[dict] = []
@@ -923,6 +923,7 @@ class APIServer:
             "jobs": board.snapshot() if board is not None else [],
             "building": app._building.locked() if hasattr(app, "_building") else False,
             "memory": memory(),
+            "cpu": cpu(),
             "table": table,
             "sources": [x for x in sources if x["url"] in named],
             "now": time.time(),

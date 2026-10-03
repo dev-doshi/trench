@@ -64,6 +64,61 @@ def memory() -> dict:
     }
 
 
+def _cpu_usec() -> tuple[int, bool]:
+    """CPU time spent so far, in microseconds, and whether it is the container's.
+
+    The cgroup's figure when there is one: with several workers this process
+    is only a share of the box, and a list build in a sibling worker is exactly
+    what the number is for.
+    """
+    try:
+        with open("/sys/fs/cgroup/cpu.stat") as f:
+            for line in f:
+                k, _, v = line.partition(" ")
+                if k == "usage_usec":
+                    return int(v), True
+    except (OSError, ValueError):
+        pass
+    t = os.times()
+    return int((t.user + t.system) * 1e6), False
+
+
+def _cores() -> float:
+    """How many CPUs' worth of time the container may use."""
+    try:
+        with open("/sys/fs/cgroup/cpu.max") as f:
+            quota, _, period = f.read().partition(" ")
+        if quota != "max":
+            return max(int(quota) / int(period), 0.01)
+    except (OSError, ValueError, ZeroDivisionError):
+        pass
+    try:
+        return float(len(os.sched_getaffinity(0)))
+    except (AttributeError, OSError):
+        return float(os.cpu_count() or 1)
+
+
+_last_cpu: tuple[float, int] = (time.monotonic(), _cpu_usec()[0])
+
+
+def cpu() -> dict:
+    """Share of the available CPU used since the previous call.
+
+    Two reads of a counter and a subtraction — nothing sleeps to take a
+    sample. The first call after start-up covers the whole time since import.
+    """
+    global _last_cpu
+    now, (used, container) = time.monotonic(), _cpu_usec()
+    then, before = _last_cpu
+    _last_cpu = (now, used)
+    cores = _cores()
+    wall = now - then
+    pct = None
+    if wall > 0.05 and used >= before:
+        pct = round(min(100.0, (used - before) / 1e6 / wall / cores * 100), 1)
+    return {"percent": pct, "cores": round(cores, 2), "container": container}
+
+
 @dataclass
 class JobState:
     name: str

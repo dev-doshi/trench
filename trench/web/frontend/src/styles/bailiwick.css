@@ -1147,6 +1147,13 @@ html::-webkit-scrollbar, body::-webkit-scrollbar { width: 0; height: 0; }
   .bframe-jobs.run .led { animation: bw-pulse 1.4s ease-in-out infinite; }
 }
 @keyframes bw-pulse { 50% { opacity: .3; } }
+/* CPU and memory, beside Jobs: two small figures, coloured only when high */
+.bframe-load { text-decoration: none; color: var(--b-ink-2); gap: 12px;
+  font-variant-numeric: tabular-nums; }
+.bframe-load em { font-style: normal; color: var(--b-ink-4); font-size: 10px;
+  letter-spacing: .06em; margin-right: 2px; }
+.bframe-load .warm { color: var(--b-ink); }
+.bframe-load .bad { color: var(--o-failed); }
 
 /* a Settings tab listed on its own in the place sheet: indented under Settings */
 .bsheet a.sub b { padding-left: 12px; font-weight: 400; color: var(--b-ink-2); }
@@ -1391,6 +1398,7 @@ html::-webkit-scrollbar, body::-webkit-scrollbar { width: 0; height: 0; }
 .col-f input.sw { align-self: start; }
 .col-rm { flex: none; }
 @media (max-width: 640px) {
+  .bframe-load { display: none; }   /* the Jobs tab has the same figures */
   .col-item { flex-direction: column; }
   .col-f.wide { grid-column: span 1; }
 }

@@ -19,6 +19,9 @@
  * is minutes of the heaviest work the box does, and "why is it slow" or "did
  * my new lists apply" should be answerable without opening anything.
  *
+ * Beside it, CPU and memory: the same question ("is the box struggling")
+ * answered in two numbers, from the poll that is already running.
+ *
  * The wordmark is a caliper's two scales, offset. It is the instrument the
  * product is named for and the only drawn ornament anywhere in the interface.
  */
@@ -26,7 +29,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { RouterLink, RouterView, useRoute } from "vue-router";
 import { api } from "./lib/api";
 import { boxNow, useJobFeed } from "./lib/jobfeed";
-import { headline } from "./lib/jobs";
+import { bytes, headline } from "./lib/jobs";
 import { local } from "./lib/local";
 import { forgetNames } from "./lib/names";
 import { store } from "./lib/store";
@@ -91,6 +94,31 @@ watch(() => route.fullPath, () => { moreOpen.value = false; });
 /* Jobs: a quiet word when idle, the running job and its clock when not. */
 const jf = useJobFeed();
 const job = computed(() => { void jf.now; void jf.jobs; return headline(jf.jobs, boxNow()); });
+
+/* Load: CPU as a share of what the container may use, memory against its
+ * ceiling when there is one. Warm past 70%, failed-red past 90%. */
+const load = computed(() => {
+  if (!jf.loaded) return null;
+  const c = jf.cpu, m = jf.memory;
+  const used = m.cgroup_current ?? m.rss;
+  const memPct = used != null && m.cgroup_max ? (used / m.cgroup_max) * 100 : null;
+  const tone = (p: number | null) => (p == null ? "" : p >= 90 ? "bad" : p >= 70 ? "warm" : "");
+  const cores = c.cores ? ` of ${+c.cores.toFixed(2)} core${c.cores === 1 ? "" : "s"}` : "";
+  return {
+    cpu: c.percent == null ? "—" : `${Math.round(c.percent)}%`,
+    cpuTone: tone(c.percent),
+    mem: memPct != null ? `${Math.round(memPct)}%` : bytes(used),
+    memTone: tone(memPct),
+    title: [
+      `CPU ${c.percent == null ? "not measured yet" : c.percent + "%"}${cores}`
+        + (c.container ? " (container)" : " (this process)"),
+      `Memory ${bytes(used)}${m.cgroup_max ? " of " + bytes(m.cgroup_max) : ""}`
+        + (m.cgroup_current != null ? " (container)" : " (this process)"),
+      m.cgroup_peak != null ? `Peak ${bytes(m.cgroup_peak)}` : "",
+      "Open Jobs",
+    ].filter(Boolean).join("\n"),
+  };
+});
 
 const state = computed(() => ({
   live: { label: "answering", cls: "ok" },
@@ -194,6 +222,11 @@ async function signOut() {
                   :title="job ? job.text + ' — open Jobs' : 'Nothing running in the background — open Jobs'"
                   role="status">
         <span class="led" aria-hidden="true" /><span class="lbl">{{ job?.text || "Jobs" }}</span>
+      </RouterLink>
+
+      <RouterLink v-if="load" class="bframe-btn bframe-load" to="/settings?tab=jobs" :title="load.title">
+        <span :class="load.cpuTone"><em>CPU</em> {{ load.cpu }}</span>
+        <span :class="load.memTone"><em>MEM</em> {{ load.mem }}</span>
       </RouterLink>
 
       <button class="bframe-btn" @click="pal?.show()" :aria-keyshortcuts="mod === '⌘K' ? 'Meta+K' : 'Control+K'">
