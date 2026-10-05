@@ -317,3 +317,29 @@ def test_iter_badfilter_finds_only_the_disabling_rules():
 def test_iter_badfilter_ignores_a_line_that_only_mentions_the_word():
     from trench.filter.parser import iter_badfilter
     assert list(iter_badfilter("# $badfilter is a modifier\n", "list")) == []
+
+
+def test_bounded_repeats_in_sequence_are_refused_without_running_them(caplog):
+    """`a{0,16}` six times is 17**6 tries per position. The structural check
+    counted only unbounded repeats, so this reached the timing probe — which
+    measures a pattern only after it returns, and it did not return."""
+    import time
+    t = time.perf_counter()
+    assert parse_line("/" + "a{0,16}" * 6 + "b/", "list") is None
+    assert time.perf_counter() - t < 1.0
+    assert any("too many repeats" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("pattern", [
+    "^ad[0-9]{1,3}\\.[a-z]{2,6}$",
+    "^(.+[_.-])?adse?rv(er?|ice)?s?[0-9]*[_.-]",   # a real list's shape
+    "^track(er|ing)?[0-9]{0,3}\\.",
+])
+def test_ordinary_list_regexes_are_still_accepted(pattern):
+    rule = parse_line(f"/{pattern}/", "list")
+    assert rule is not None and rule.regex is not None
+
+
+@pytest.mark.parametrize("pattern", ["a*a*a{0,16}b", ".*a{0,16}a{0,16}b", "a?" * 24 + "b"])
+def test_repeats_that_multiply_past_the_budget_are_refused(pattern):
+    assert parse_line(f"/{pattern}/", "list") is None

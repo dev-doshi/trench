@@ -152,6 +152,19 @@ def _split_modifiers(line: str) -> tuple[str, str]:
 _MAX_UNBOUNDED = 2
 #: A bounded repeat with a bigger ceiling than this is treated as unbounded.
 _BIG_REPEAT = 16
+#: What one start position may cost the backtracker on a failing name: the
+#: product, over every repeat in the pattern, of how many lengths it can try
+#: (a name is at most 253 characters, so that is the most an unbounded one
+#: can). Counting only the unbounded repeats missed that bounded ones multiply
+#: too: `a{0,16}` six times over is 17**6 tries per position, passed the check
+#: above, and then hung the probe below — which times a pattern only *after* it
+#: returns — for longer than anyone waited. The budget is the two unbounded
+#: repeats allowed above times 32, because real lists put a handful of `?`
+#: after them (`^(.+[_.-])?adse?rv(er?|ice)?s?[0-9]*`). What it admits is
+#: bounded at a couple of seconds on the probes, where the probe refuses it;
+#: what it refuses is everything that ran for hours.
+_NAME_MAX = 253
+_MAX_COST = _NAME_MAX ** _MAX_UNBOUNDED * 32
 #: The slowest a list regex may be on the adversarial probes, in seconds.
 _PROBE_BUDGET = 0.005
 
@@ -168,9 +181,10 @@ def _redos_reason(pat: str) -> str | None:
     innermost groups, so `(a|aa)+` (Fibonacci) and `((a+))+` sailed through.
     """
     unbounded = 0
+    cost = 1
 
     def walk(sub, in_repeat: bool) -> str | None:
-        nonlocal unbounded
+        nonlocal unbounded, cost
         for op, av in sub:
             if op in _REFUSED:
                 return "backreference or lookaround"
@@ -178,6 +192,9 @@ def _redos_reason(pat: str) -> str | None:
                 lo, hi, body = av
                 if hi == _sre_c.MAXREPEAT or hi > _BIG_REPEAT:
                     unbounded += 1
+                    cost *= _NAME_MAX
+                else:
+                    cost *= hi - lo + 1
                 if hi > 1:
                     if in_repeat:
                         return "nested quantifiers"
@@ -211,6 +228,8 @@ def _redos_reason(pat: str) -> str | None:
         return why
     if unbounded > _MAX_UNBOUNDED:
         return f"{unbounded} unbounded quantifiers"
+    if cost > _MAX_COST:
+        return "too many repeats in sequence"
     return None
 
 

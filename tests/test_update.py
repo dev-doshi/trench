@@ -358,6 +358,7 @@ def _serve(monkeypatch, payload: bytes) -> None:
 
     class _Resp:
         content = _Content()
+        url = "https://example.invalid/final"
 
         def raise_for_status(self):
             return None
@@ -980,6 +981,7 @@ async def test_an_implausibly_large_index_is_refused(tmp_path, monkeypatch):
 
     class _Resp:
         content = _Content()
+        url = "https://example.invalid/index"
 
         def raise_for_status(self):
             return None
@@ -1225,3 +1227,54 @@ async def test_a_restart_it_is_not_privileged_to_schedule_is_reported(tmp_path,
     await up._maybe_restart()              # must not raise
     assert any("take effect on the next restart" in r.getMessage()
                for r in caplog.records)
+
+
+@pytest.mark.parametrize("index", ["http://api.github.com/repos/x/y/releases",
+                                   "file:///etc/passwd", "ftp://x/y"])
+def test_an_index_that_is_not_https_is_refused_at_load(index):
+    from trench.config import Config
+    with pytest.raises(Exception, match="https"):
+        Config.model_validate({"updates": {"index": index}})
+
+
+@pytest.mark.parametrize("unit", ["--now", "-x", "trench; reboot", "trench unit", ""])
+def test_a_unit_that_is_not_a_plain_name_is_refused_at_load(unit):
+    from trench.config import Config
+    with pytest.raises(Exception, match="unit"):
+        Config.model_validate({"updates": {"unit": unit}})
+
+
+def test_ordinary_unit_names_are_accepted():
+    from trench.config import Config
+    for unit in ("trench", "trench.service", "trench@main.service"):
+        assert Config.model_validate({"updates": {"unit": unit}}).updates.unit == unit
+
+
+
+@pytest.mark.asyncio
+async def test_an_artifact_url_that_is_not_https_is_never_fetched(tmp_path, monkeypatch):
+    import aiohttp
+    monkeypatch.setattr(aiohttp, "ClientSession", _must_not_run)
+    up = _updater(tmp_path, _index("2.0.0", "2.1.0"))
+    release = Release(version="2.1.0", sha256="ab" * 32,
+                      url="http://x/trench_dns-2.1.0-py3-none-any.whl", size=1)
+    with pytest.raises(UpdateError, match="https"):
+        await up._download(release, tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_a_redirect_down_to_http_is_refused(tmp_path, monkeypatch):
+    """aiohttp follows redirects, and GitHub's asset URLs are redirects; the
+    scheme that matters is the one the bytes finally came over."""
+    import aiohttp
+    payload = b"bytes"
+    _serve(monkeypatch, payload)
+    served = aiohttp.ClientSession(None)
+    resp_cls = type(served.get("https://x"))
+    monkeypatch.setattr(resp_cls, "url", "http://mirror.invalid/w.whl")
+    up = _updater(tmp_path, _index("2.0.0", "2.1.0"))
+    release = Release(version="2.1.0", sha256=hashlib.sha256(payload).hexdigest(),
+                      url="https://x/trench_dns-2.1.0-py3-none-any.whl", size=len(payload))
+    with pytest.raises(UpdateError, match="https"):
+        await up._download(release, tmp_path)
+    assert not (tmp_path / "trench_dns-2.1.0-py3-none-any.whl").exists()

@@ -232,3 +232,83 @@ async def test_a_lost_authenticator_is_recoverable_offline(tmp_path):
         assert await app2.api.auth.totp_secret("admin") == ""
     finally:
         await _shutdown(app2)
+
+
+@pytest.mark.asyncio
+async def test_a_disabled_accounts_tokens_stop_working(tmp_path):
+    """Login refused a disabled account; its tokens were still honoured."""
+    app, base = await _app_with_api(tmp_path)
+    try:
+        async with _session() as s:
+            await _login(s, base)
+            raw = (await (await s.post(f"{base}/api/v1/auth/tokens",
+                                       json={"name": "script"})).json())["token"]
+        await app.db.execute("UPDATE app_user SET disabled=1 WHERE name='admin'")
+        async with _session() as s:
+            r = await s.get(f"{base}/api/v1/system",
+                            headers={"Authorization": f"Bearer {raw}"})
+            assert r.status == 401
+    finally:
+        await _shutdown(app)
+
+
+@pytest.mark.asyncio
+async def test_setting_a_new_password_applies_it_and_ends_other_sessions(tmp_path):
+    """The field used to be written to the config file in the clear and read
+    only on first run, so the old password went on working."""
+    app, base = await _app_with_api(tmp_path)
+    try:
+        async with _session() as other, _session() as s:
+            assert (await _login(other, base)).status == 200
+            assert (await _login(s, base)).status == 200
+            r = await s.put(f"{base}/api/v1/settings",
+                            json={"changes": {"web.admin_password": "short"}})
+            assert r.status == 400
+            r = await s.put(f"{base}/api/v1/settings",
+                            json={"changes": {"web.admin_password": "a-new-long-password"}})
+            assert r.status == 200, await r.text()
+            assert (await (await s.get(f"{base}/api/v1/auth/me")).json())["user"]
+            assert (await (await other.get(f"{base}/api/v1/auth/me")).json())["user"] is None
+        async with _session() as s:
+            assert (await _login(s, base)).status == 401
+        async with _session() as s:
+            r = await s.post(f"{base}/api/v1/auth/login",
+                             json={"name": "admin", "password": "a-new-long-password"})
+            assert r.status == 200
+        assert "a-new-long-password" not in (app.config.web.admin_password or "")
+    finally:
+        await _shutdown(app)
+
+
+@pytest.mark.asyncio
+async def test_api_answers_are_never_cached(tmp_path):
+    app, base = await _app_with_api(tmp_path)
+    try:
+        async with _session() as s:
+            await _login(s, base)
+            assert (await s.get(f"{base}/api/v1/system")).headers["Cache-Control"] == "no-store"
+            # a refusal too: it goes out through the raised path
+            async with _session() as anon:
+                r = await anon.get(f"{base}/api/v1/system")
+                assert r.status == 401 and r.headers["Cache-Control"] == "no-store"
+            # plain HTTP must not claim HSTS: browsers ignore it, proxies may not
+            assert "Strict-Transport-Security" not in (await s.get(f"{base}/api/v1/system")).headers
+    finally:
+        await _shutdown(app)
+
+
+@pytest.mark.asyncio
+async def test_filesystem_paths_are_shown_to_admins_only(tmp_path):
+    app, base = await _app_with_api(tmp_path)
+    try:
+        async with _session() as s:
+            await _login(s, base)
+            raw = (await (await s.post(f"{base}/api/v1/auth/tokens",
+                                       json={"name": "ro", "scope": "viewer"})).json())["token"]
+            assert (await (await s.get(f"{base}/api/v1/privacy")).json())["db_path"]
+        async with _session() as s:
+            h = {"Authorization": f"Bearer {raw}"}
+            assert (await (await s.get(f"{base}/api/v1/privacy", headers=h)).json())["db_path"] == ""
+            assert (await (await s.get(f"{base}/api/v1/settings", headers=h)).json())["config_path"] == ""
+    finally:
+        await _shutdown(app)

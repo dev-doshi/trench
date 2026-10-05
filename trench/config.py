@@ -5,6 +5,7 @@ a copy and triggers a reload. Extended per phase — fields here cover P0/P1.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -510,6 +511,23 @@ class UpdatesConfig(Section):
     # requires Trench to still have the privilege to talk to it.
     restart: Literal["manual", "systemd"] = "manual"
     unit: str = "trench"
+
+    @field_validator("index")
+    @classmethod
+    def _https_index(cls, v: str) -> str:
+        # The digest comes from this same response, so it proves integrity and
+        # nothing else: over plain HTTP anyone on the path chooses the code.
+        if not v.lower().startswith("https://"):
+            raise ValueError("updates.index must be an https:// URL")
+        return v
+
+    @field_validator("unit")
+    @classmethod
+    def _plain_unit(cls, v: str) -> str:
+        # Passed to systemctl as an argument; a leading '-' would be an option.
+        if not re.fullmatch(r"[A-Za-z0-9:_.@-]+", v) or v.startswith("-"):
+            raise ValueError("updates.unit must be a plain systemd unit name")
+        return v
 
 
 class LogConfig(Section):

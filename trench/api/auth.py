@@ -271,7 +271,10 @@ class AuthManager:
         row = await self.db.fetchone(
             "SELECT u.id, u.name, u.role, t.scopes FROM api_token t "
             "JOIN app_user u ON u.id=t.user_id "
-            "WHERE t.token_hash=? AND (t.expires=0 OR t.expires>?)", (th, int(time.time())))
+            # A disabled account cannot sign in; its tokens must not outlive
+            # that either, or disabling someone left their scripts working.
+            "WHERE t.token_hash=? AND u.disabled=0 AND (t.expires=0 OR t.expires>?)",
+            (th, int(time.time())))
         if not row:
             return None
         await self.db.execute("UPDATE api_token SET last_used=? WHERE token_hash=?",

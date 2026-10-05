@@ -70,8 +70,15 @@ def _write_config(src, text: str) -> None:
     src.write_text(text)
 
 
-def _security_headers(resp) -> None:
+def _security_headers(resp, request: web.Request | None = None) -> None:
     """Anti-framing and sniffing headers, on a response or on a raised one."""
+    if request is not None:
+        if request.path.startswith(API + "/"):
+            # Query logs, tokens and settings must not be left in a browser or
+            # proxy cache for the next person at the machine.
+            resp.headers.setdefault("Cache-Control", "no-store")
+        if request.secure:
+            resp.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
     resp.headers.setdefault("X-Frame-Options", "DENY")
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     resp.headers.setdefault("Referrer-Policy", "same-origin")
@@ -169,6 +176,9 @@ class APIServer:
         self._runner: web.AppRunner | None = None
         self._ws: set[web.WebSocketResponse] = set()
         self._bg: set[asyncio.Task] = set()      # background work started by a request
+        # One what-if at a time: it compiles caller-supplied list text, which is
+        # the heaviest thing a viewer can ask this process to do.
+        self._whatif_busy = asyncio.Lock()
         # Secrets offered for enrolment but not yet proven. Held here rather
         # than written straight to the user row: a secret stored before the
         # operator's authenticator has produced one matching code is a lockout
@@ -337,9 +347,9 @@ class APIServer:
                     and e.content_type != "application/json"):
                 e.text = json.dumps({"error": e.text or e.reason})
                 e.content_type = "application/json"
-            _security_headers(e)
+            _security_headers(e, request)
             raise
-        _security_headers(resp)
+        _security_headers(resp, request)
         return resp
 
     def _require(self, request: web.Request, role: str) -> dict:
@@ -558,7 +568,7 @@ class APIServer:
 
     async def privacy(self, request: web.Request) -> web.Response:
         """What is actually stored, where, and what survives a reboot — legibly."""
-        self._require(request, "viewer")
+        admin = AuthManager.has_role(self._require(request, "viewer"), "admin")
         ql = self.app.querylog
         levels = {
             0: ("Full logging", "Every query stored with client IP, domain, and answer."),
@@ -578,7 +588,8 @@ class APIServer:
             "level_description": desc,
             "retention_days": ql.retention_days if ql else 0,
             "stored_count": (await ql.count()) if ql else 0,
-            "db_path": str(self.app.config.data_path / self.app.config.querylog.db),
+            "db_path": (str(self.app.config.data_path / self.app.config.querylog.db)
+                        if admin else ""),
             "survives_reboot": level < 3,
             "levels": [{"level": k, "name": v[0], "description": v[1]} for k, v in levels.items()],
         })
@@ -762,7 +773,8 @@ class APIServer:
         body = st.describe(self.app.config,
                            reveal=AuthManager.has_role(user, "admin"))
         path = self.app._config_path
-        body["config_path"] = str(path or "")
+        # Filesystem layout is reconnaissance; only an admin can act on it.
+        body["config_path"] = str(path or "") if AuthManager.has_role(user, "admin") else ""
         body["writable"], body["why"] = _config_writable(path)
         return web.json_response(body)
 
@@ -784,6 +796,16 @@ class APIServer:
         changes = {k: v for k, v in changes.items()
                    if not (getattr(st._BY_PATH.get(k), "secret", False)
                            and (v is None or v == ""))}
+        # The new password is applied to the account now and never written to
+        # the config file. It used to be: in the clear, in a YAML file, where
+        # it did nothing — `ensure_admin` reads it only when no user exists yet,
+        # so an operator rotating a password they feared was leaked left the
+        # old one working and published the new one.
+        new_pw = changes.pop("web.admin_password", None)
+        if new_pw is not None:
+            await self._change_password(request, new_pw)
+            if not changes:
+                return web.json_response({"ok": True, "reloaded": True, "restart": False})
         if not changes:
             raise _bad_request("no changes")
         ok, why = _config_writable(self.app._config_path)
@@ -794,6 +816,17 @@ class APIServer:
         await self._audit(request, "settings.write", ",".join(sorted(changes)))
         return web.json_response({"ok": True, "reloaded": applied,
                                   "restart": st.needs_restart(list(changes))})
+
+    async def _change_password(self, request: web.Request, password) -> None:
+        """Set the signed-in account's password and end its other sessions."""
+        if not isinstance(password, str) or len(password) < 12:
+            raise _bad_request("a new password must be at least 12 characters")
+        user = request[_USER]
+        await self.auth.set_password(user["name"], password)
+        # A session opened with the old password is exactly what a rotation is
+        # meant to end.
+        self.auth.end_other_sessions(user["id"], request.cookies.get("dgsession", ""))
+        await self._audit(request, "user.password", user["name"])
 
     async def _save_settings(self, changes: dict) -> bool:
         """Validate `changes`, write them to the config file, and apply them in
@@ -1064,12 +1097,20 @@ class APIServer:
                 return web.json_response(
                     {"error": f"{key} must be a list of strings"}, status=400)
             lists[key] = value
-        delta = compile_delta(deny=lists["deny"], allow=lists["allow"],
-                              list_text=_str(body, "list_text"))
-        result = await whatif_from_querylog(
-            self.app.db, self.app.filter, delta,
-            hours=_num(body, "hours", 24, 24 * 30, float),
-            limit=_num(body, "limit", 5000, 50_000))
+        if self._whatif_busy.locked():
+            return web.json_response({"error": "a what-if is already running"}, status=429)
+        async with self._whatif_busy:
+            # Off the loop. The text is the caller's, every regex in it is
+            # probed against hostile names, and a viewer's megabyte of it
+            # compiled here held up every DNS answer this process gives —
+            # with one worker, the whole network's.
+            delta = await asyncio.to_thread(compile_delta, deny=lists["deny"],
+                                            allow=lists["allow"],
+                                            list_text=_str(body, "list_text"))
+            result = await whatif_from_querylog(
+                self.app.db, self.app.filter, delta,
+                hours=_num(body, "hours", 24, 24 * 30, float),
+                limit=_num(body, "limit", 5000, 50_000))
         return web.json_response(result.to_json())
 
     async def collateral(self, request: web.Request) -> web.Response:

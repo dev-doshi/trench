@@ -101,7 +101,7 @@ const plaintext = computed(() => {
               ? `${p.retention_days} day${p.retention_days === 1 ? "" : "s"}, then rows are deleted`
               : "kept until you purge them" }}
           </dd>
-          <dt>Stored at</dt><dd>{{ p.db_path }}</dd>
+          <template v-if="p.db_path"><dt>Stored at</dt><dd>{{ p.db_path }}</dd></template>
           <dt>Survives a reboot</dt>
           <dd class="ui">
             {{ p.survives_reboot

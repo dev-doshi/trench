@@ -390,6 +390,15 @@ def _check_index(index: Any) -> list:
     return index
 
 
+def _require_https(url: Any, what: str) -> None:
+    """The sha256 arrives in the same index as the URL, so it proves the bytes
+    are the ones the index named — not who named them. TLS is the only thing
+    standing between a release and whoever is on the path, including after a
+    redirect."""
+    if not str(url).lower().startswith("https://"):
+        raise UpdateError(f"refusing to fetch the {what} over anything but https: {url}")
+
+
 def _artifact_name(url: str) -> str:
     """The filename to save an artifact under, taken from its URL and checked.
 
@@ -518,6 +527,7 @@ class Updater:
             aiohttp.ClientSession(timeout=timeout, headers=headers) as session,
             session.get(self.cfg.index) as resp,
         ):
+            _require_https(resp.url, "release index")
             resp.raise_for_status()
             body = await resp.content.read(MAX_ARTIFACT_BYTES + 1)
             if len(body) > MAX_ARTIFACT_BYTES:
@@ -632,6 +642,7 @@ class Updater:
         an exotic one, and "404 while fetching the wheel" is something an
         operator can act on.
         """
+        _require_https(release.url, "artifact")
         target = into / _artifact_name(release.url)
         digest = hashlib.sha256()
         total = 0
@@ -643,6 +654,7 @@ class Updater:
                 aiohttp.ClientSession(timeout=timeout, headers=headers) as session,
                 session.get(release.url) as resp,
             ):
+                _require_https(resp.url, "artifact")
                 resp.raise_for_status()
                 with open(target, "wb") as fh:
                     async for chunk in resp.content.iter_chunked(65536):

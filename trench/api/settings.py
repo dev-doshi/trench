@@ -452,8 +452,10 @@ FIELDS: list[Field_] = [
     Field_("web.cert", "Console certificate", "text", "Console", applies="restart"),
     Field_("web.key", "Console private key", "text", "Console", applies="restart"),
     Field_("web.admin_password", "Set a new admin password", "text", "Console",
-           applies="restart", secret=True,
-           help="Write-only: it is never sent back to this page. Leave empty to "
+           applies="live", secret=True,
+           help="Changes the password of the account you are signed in as, "
+                "at once, and signs it out everywhere else. At least 12 "
+                "characters. Never stored in the config file; leave empty to "
                 "keep the current one."),
 
     # ── deployment ──────────────────────────────────────────────────────────

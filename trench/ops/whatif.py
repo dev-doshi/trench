@@ -14,6 +14,7 @@ to the current decision, anything else keeps the current verdict.
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -104,4 +105,6 @@ async def whatif_from_querylog(db, current: FilterEngine, delta: FilterEngine, *
         "SELECT qname, COUNT(*) AS hits FROM querylog "
         "WHERE ts >= ? AND qname != '' GROUP BY +qname ORDER BY hits DESC LIMIT ?",  # +: see APIServer.analytics
         (cutoff, limit))
-    return diff_decisions(current, delta, [(r["qname"], r["hits"]) for r in rows])
+    # Off the loop: tens of thousands of names through rules the caller wrote.
+    return await asyncio.to_thread(diff_decisions, current, delta,
+                                   [(r["qname"], r["hits"]) for r in rows])
