@@ -8,7 +8,7 @@
 
 # uv is used for one thing: turning uv.lock into a hash-pinned requirements
 # file. It is mounted for that step only and never lands in the image.
-FROM ghcr.io/astral-sh/uv:0.8.17 AS uv
+FROM ghcr.io/astral-sh/uv:0.12.23 AS uv
 
 FROM python:3.12-slim-bookworm
 
